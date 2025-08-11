@@ -4,15 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	// 👇 ЗАМЕНИ на реальные пакеты/типы из твоих *_pb.go
-	bookpb "crypt_proto/pb"    // из PublicAggreBookTickerV3Api.proto
-	wrapperpb "crypt_proto/pb" // из PushDataV3ApiWrapper.proto
+	pb "crypt_proto/pb" // твой пакет со сгенерёнными *.pb.go
 )
 
 func main() {
@@ -23,9 +22,7 @@ func main() {
 		log.Fatal("dial:", err)
 	}
 	defer c.Close()
-	log.Println("connected")
 
-	// подписка на три топика
 	sub := map[string]any{
 		"method": "SUBSCRIPTION",
 		"params": []string{
@@ -37,9 +34,8 @@ func main() {
 	if err := c.WriteJSON(sub); err != nil {
 		log.Fatal("send sub:", err)
 	}
-	log.Println("subscription sent")
 
-	// пингуем периодически
+	// поддерживаем линк
 	go func() {
 		t := time.NewTicker(45 * time.Second)
 		defer t.Stop()
@@ -48,54 +44,65 @@ func main() {
 		}
 	}()
 
-	// читаем бесконечно
 	for {
-		mt, msg, err := c.ReadMessage()
+		mt, raw, err := c.ReadMessage()
 		if err != nil {
 			log.Fatal("read:", err)
 		}
 
-		// ACK/ошибки приходят как TEXT/JSON — распечатаем красиво
+		// ACK/ошибки — текст/JSON
 		if mt == websocket.TextMessage {
 			var v any
-			if json.Unmarshal(msg, &v) == nil {
-				pre, _ := json.MarshalIndent(v, "", "  ")
-				fmt.Printf("ACK:\n%s\n\n", pre)
+			if json.Unmarshal(raw, &v) == nil {
+				b, _ := json.MarshalIndent(v, "", "  ")
+				fmt.Printf("ACK:\n%s\n", b)
 			} else {
-				fmt.Printf("TEXT:\n%s\n\n", string(msg))
+				fmt.Printf("TEXT:\n%s\n", string(raw))
 			}
 			continue
 		}
-
 		if mt != websocket.BinaryMessage {
 			continue
 		}
 
-		// 1) Декодируем внешнюю обёртку
-		//    Тип возьми из PushDataV3ApiWrapper.proto (например, PushDataV3ApiWrapper / PushData)
-		var w wrapperpb.PushDataV3ApiWrapper // <-- подставь точное имя типа
-		if err := proto.Unmarshal(msg, &w); err != nil {
-			log.Printf("wrapper unmarshal: %v", err)
+		// 1) Декодируем ОБЁРТКУ
+		var w pb.PushDataV3ApiWrapper
+		if err := proto.Unmarshal(raw, &w); err != nil {
+			// бинарь не нашей схемы — пропускаем
 			continue
 		}
 
-		// (необязательно) покажем метаданные обёртки
-		wJSON, _ := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(&w)
-		fmt.Printf("WRAPPER: %s\n", wJSON)
-
-		// 2) Декодируем полезную нагрузку как BookTicker
-		//    Тип возьми из PublicAggreBookTickerV3Api.proto (например, PublicAggreBookTickerV3Api / BookTicker)
-		var bt bookpb.PublicAggreBookTickerV3Api // <-- подставь точное имя типа
-		if err := proto.Unmarshal(w.GetD(), &bt); err != nil {
-			log.Printf("bookTicker unmarshal: %v", err)
-			continue
+		// 2) Вытаскиваем symbol/ts из обёртки
+		symbol := w.GetSymbol()
+		if symbol == "" {
+			// если symbol пуст — берём из channel (последний сегмент после '@')
+			ch := w.GetChannel()
+			if ch != "" {
+				parts := strings.Split(ch, "@")
+				symbol = parts[len(parts)-1]
+			}
+		}
+		ts := time.Now()
+		if t := w.GetSendTime(); t > 0 {
+			ts = time.UnixMilli(t)
 		}
 
-		// 3) Выведем в JSON (универсально, без знания имён полей)
-		out, _ := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(&bt)
-		fmt.Printf("BOOK_TICKER: %s\n\n", out)
+		// 3) oneof Body → нас интересует PublicAggreBookTicker
+		switch body := w.GetBody().(type) {
+		case *pb.PushDataV3ApiWrapper_PublicAggreBookTicker:
+			bt := body.PublicAggreBookTicker
 
-		// Если хочешь конкретные поля (symbol/bid/ask/ts), используй геттеры:
-		// fmt.Println(bt.GetS(), bt.GetBp(), bt.GetAp(), bt.GetT())
+			bid, _ := strconv.ParseFloat(bt.GetBidPrice(), 64)
+			ask, _ := strconv.ParseFloat(bt.GetAskPrice(), 64)
+			bq, _ := strconv.ParseFloat(bt.GetBidQuantity(), 64)
+			aq, _ := strconv.ParseFloat(bt.GetAskQuantity(), 64)
+
+			fmt.Printf("%s  bid=%.8f (%.6f)  ask=%.8f (%.6f)  ts=%s\n",
+				symbol, bid, bq, ask, aq, ts.Format(time.RFC3339Nano))
+
+		// (не обязательно) если вдруг придёт другой кейс — можно игнорить
+		default:
+			// fmt.Printf("other body: %T\n", body)
+		}
 	}
 }
