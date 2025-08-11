@@ -1,8 +1,9 @@
 // spot@public.miniTickers.v3.api
 
 syntax = "proto3";
-
-import "PublicMiniTickerV3Api.proto";
+package pb;
+option go_package = "crypt_proto/pb";
+//import "PublicMiniTickerV3Api.proto";
 
 option java_package = "com.mxc.push.common.protobuf";
 option optimize_for = SPEED;

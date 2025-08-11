@@ -1,7 +1,9 @@
 // spot@public.bookTicker.v3.api.pb
 
 syntax = "proto3";
-import "PublicBookTickerV3Api.proto";
+package pb;
+option go_package = "crypt_proto/pb";
+//import "PublicBookTickerV3Api.proto";
 
 option java_package = "com.mxc.push.common.protobuf";
 option optimize_for = SPEED;
