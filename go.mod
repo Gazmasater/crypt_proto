@@ -6,3 +6,5 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	google.golang.org/protobuf v1.36.6
 )
+
+require github.com/joho/godotenv v1.5.1
