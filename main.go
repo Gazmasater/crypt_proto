@@ -14,10 +14,14 @@ import (
 	pb "crypt_proto/pb" // твой пакет со сгенерёнными *.pb.go
 )
 
+// хранит последний top по символу для дедупликации
+type top struct{ bp, bq, ap, aq string } // bidPrice, bidQty, askPrice, askQty
+var lastTop = map[string]top{}
+
 func main() {
 	const wsURL = "wss://wbs-api.mexc.com/ws"
 
-	// 1) Подключаемся к публичному WS
+	// 1) Подключение к публичному WS
 	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		log.Fatal("dial:", err)
@@ -37,7 +41,7 @@ func main() {
 		log.Fatal("send sub:", err)
 	}
 
-	// 3) Пинги, чтобы держать соединение живым
+	// 3) Пинги для поддержания соединения
 	go func() {
 		t := time.NewTicker(45 * time.Second)
 		defer t.Stop()
@@ -46,7 +50,7 @@ func main() {
 		}
 	}()
 
-	// 4) Чтение сообщений и печать в прежнем формате
+	// 4) Чтение сообщений
 	for {
 		mt, raw, err := c.ReadMessage()
 		if err != nil {
@@ -78,8 +82,7 @@ func main() {
 		// symbol/ts
 		symbol := w.GetSymbol()
 		if symbol == "" {
-			ch := w.GetChannel()
-			if ch != "" {
+			if ch := w.GetChannel(); ch != "" {
 				parts := strings.Split(ch, "@")
 				symbol = parts[len(parts)-1]
 			}
@@ -89,21 +92,33 @@ func main() {
 			ts = time.UnixMilli(t)
 		}
 
-		// Интересует PublicAggreBookTicker — ВЫВОД НЕ МЕНЯЕМ
+		// Интересует PublicAggreBookTicker — выводим только при изменениях
 		switch body := w.GetBody().(type) {
 		case *pb.PushDataV3ApiWrapper_PublicAggreBookTicker:
 			bt := body.PublicAggreBookTicker
 
-			bid, _ := strconv.ParseFloat(bt.GetBidPrice(), 64)
-			ask, _ := strconv.ParseFloat(bt.GetAskPrice(), 64)
-			bq, _ := strconv.ParseFloat(bt.GetBidQuantity(), 64)
-			aq, _ := strconv.ParseFloat(bt.GetAskQuantity(), 64)
+			// строки для дедупа
+			bpS, bqS := bt.GetBidPrice(), bt.GetBidQuantity()
+			apS, aqS := bt.GetAskPrice(), bt.GetAskQuantity()
+			cur := top{bpS, bqS, apS, aqS}
+
+			// если значения идентичны предыдущим — пропускаем вывод
+			if prev, ok := lastTop[symbol]; ok && prev == cur {
+				continue // перейти к следующему сообщению цикла for
+			}
+			lastTop[symbol] = cur
+
+			// парсим в числа и печатаем в исходном формате
+			bid, _ := strconv.ParseFloat(bpS, 64)
+			ask, _ := strconv.ParseFloat(apS, 64)
+			bq, _ := strconv.ParseFloat(bqS, 64)
+			aq, _ := strconv.ParseFloat(aqS, 64)
 
 			fmt.Printf("%s  bid=%.8f (%.6f)  ask=%.8f (%.6f)  ts=%s\n",
 				symbol, bid, bq, ask, aq, ts.Format(time.RFC3339Nano))
 
 		default:
-			// другое тело — игнор
+			// другие типы тел не выводим
 		}
 	}
 }
