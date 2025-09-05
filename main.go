@@ -188,10 +188,15 @@ func parsePBWrapperMid(raw []byte) (sym string, mid float64, ok bool) {
 func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interval string, out chan<- string) {
 	defer wg.Done()
 
+	const (
+		baseRetry = 2 * time.Second
+		maxRetry  = 30 * time.Second
+	)
+
 	urlWS := "wss://wbs-api.mexc.com/ws" // актуальный публичный WS
 	topic := "spot@public.aggre.bookTicker.v3.api.pb@" + interval + "@" + symbol
 
-	retry := time.Second * 2
+	retry := baseRetry
 
 	for {
 		select {
@@ -202,19 +207,30 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 
 		conn, _, err := websocket.DefaultDialer.Dial(urlWS, nil)
 		if err != nil {
-			log.Printf("[PUB] dial err: %v", err)
+			log.Printf("[PUB] dial err: %v (retry in %v)", err, retry)
 			time.Sleep(retry)
+			if retry < maxRetry {
+				retry *= 2
+				if retry > maxRetry {
+					retry = maxRetry
+				}
+			}
 			continue
 		}
-		log.Printf("[PUB] connected")
+		log.Printf("[PUB] connected to %s", urlWS)
+		retry = baseRetry // сбрасываем бэкофф после успешного коннекта
 
-		// read deadline + pong
+		// дедлайн для чтения + обработчик PONG с печатью RTT
 		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-		conn.SetPongHandler(func(string) error {
+
+		var lastPing time.Time
+		conn.SetPongHandler(func(appData string) error {
+			rtt := time.Since(lastPing)
+			log.Printf("[PING] Pong от %s через %v", urlWS, rtt)
 			return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		})
 
-		// keepalive
+		// keepalive (PING с логом времени отправки)
 		stopPing := make(chan struct{})
 		go func() {
 			t := time.NewTicker(45 * time.Second)
@@ -222,14 +238,19 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 			for {
 				select {
 				case <-t.C:
-					_ = conn.WriteControl(websocket.PingMessage, []byte("hb"), time.Now().Add(5*time.Second))
+					lastPing = time.Now()
+					if err := conn.WriteControl(websocket.PingMessage, []byte("hb"), time.Now().Add(5*time.Second)); err != nil {
+						log.Printf("⚠️ [PING] send error: %v", err)
+						return
+					}
+					log.Printf("[PING] Sent at %s", lastPing.Format("15:04:05.000"))
 				case <-stopPing:
 					return
 				}
 			}
 		}()
 
-		// subscribe
+		// подписка
 		sub := map[string]any{
 			"method": "SUBSCRIPTION",
 			"params": []string{topic},
@@ -244,35 +265,41 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 		}
 		log.Printf("[PUB] SUB → %s", topic)
 
-		// read loop
+		// цикл чтения
 		for {
 			mt, raw, err := conn.ReadMessage()
 			if err != nil {
 				log.Printf("[PUB] read err: %v (reconnect)", err)
 				break
 			}
-			if mt == websocket.TextMessage {
-				// печатный ACK/ошибки
+			switch mt {
+			case websocket.TextMessage:
 				var v any
 				if json.Unmarshal(raw, &v) == nil {
 					b, _ := json.MarshalIndent(v, "", "  ")
-					log.Printf("[PUB ACK]\n%s", string(b))
+					log.Printf("[PUB ACK]\n%s", b)
 				} else {
 					log.Printf("[PUB TEXT] %s", string(raw))
 				}
-				continue
-			}
-			if mt != websocket.BinaryMessage {
-				continue
-			}
-			if sym, mid, ok := parsePBWrapperMid(raw); ok {
-				out <- fmt.Sprintf(`{"type":"bookTicker","s":"%s","mid":%.10f}`, sym, mid)
+			case websocket.BinaryMessage:
+				if sym, mid, ok := parsePBWrapperMid(raw); ok {
+					out <- fmt.Sprintf(`{"type":"bookTicker","s":"%s","mid":%.10f}`, sym, mid)
+				}
+			default:
+				// игнорируем другие типы
 			}
 		}
 
+		// cleanup и реконнект
 		close(stopPing)
 		_ = conn.Close()
 		time.Sleep(retry)
+		if retry < maxRetry {
+			retry *= 2
+			if retry > maxRetry {
+				retry = maxRetry
+			}
+		}
 	}
 }
 
