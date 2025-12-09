@@ -123,6 +123,13 @@ func parsePBWrapperQuote(raw []byte) (sym string, bid, ask, bidQty, askQty float
 }
 
 
+[ARB] +0.387%  BDX→USDT  USDT→BTC  BTC→BDX
+  BDXBTC (BDX/BTC): bid=0.0000009479 ask=0.0000009548  spread=0.0000000069 (0.72529%)  bidQty=0.0000 askQty=0.0000
+  BDXUSDT (BDX/USDT): bid=0.0869300000 ask=0.0870700000  spread=0.0001400000 (0.16092%)  bidQty=0.0000 askQty=0.0000
+  BTCUSDT (BTC/USDT): bid=90421.9500000000 ask=90422.0600000000  spread=0.1100000000 (0.00012%)  bidQty=0.0000 askQty=0.0000
+
+
+
 
 
 
