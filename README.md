@@ -469,6 +469,108 @@ func main() {
 
 
 
+func main() {
+
+	// pprof HTTP-сервер
+	go func() {
+		log.Println("pprof on http://localhost:6060/debug/pprof/")
+		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+			log.Printf("pprof server error: %v", err)
+		}
+	}()
+
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+	debug = cfg.Debug
+
+	// грузим символы из triangles_markets.csv (или другого файла)
+	symbols, err := loadSymbolsFromTriangles(cfg.SymbolsFile)
+	if err != nil {
+		log.Fatalf("load symbols: %v", err)
+	}
+	if len(symbols) == 0 {
+		log.Fatal("нет символов в файле ", cfg.SymbolsFile)
+	}
+	log.Printf("символов для подписки всего: %d", len(symbols))
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	events := make(chan Event, 8192)
+
+	var wg sync.WaitGroup
+
+	// ---- Чанкуем по 50 символов на одно WS-подключение ----
+	const maxPerConn = 50
+
+	chunks := make([][]string, 0)
+	for i := 0; i < len(symbols); i += maxPerConn {
+		j := i + maxPerConn
+		if j > len(symbols) {
+			j = len(symbols)
+		}
+		chunks = append(chunks, symbols[i:j])
+	}
+	log.Printf("будем использовать %d WS-подключений", len(chunks))
+
+	for idx, chunk := range chunks {
+		wg.Add(1)
+		go func(i int, syms []string) {
+			log.Printf("[WS #%d] symbols in this conn: %d", i, len(syms))
+			runPublicBookTicker(ctx, &wg, syms, cfg.BookInterval, events)
+		}(idx, chunk)
+	}
+
+	// Консумер: хранит последний mid по символу, печатает агрегированно раз в секунду
+	go func() {
+		lastMid := make(map[string]float64)
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					return
+				}
+				lastMid[ev.Symbol] = ev.Mid
+			case <-ticker.C:
+				// тут потом будет движок треугольников
+				fmt.Printf("known mids: %d symbols\n", len(lastMid))
+				// можно вывести несколько для контроля
+				i := 0
+				for sym, mid := range lastMid {
+					if i >= 5 {
+						break
+					}
+					fmt.Printf("[MID] %s = %.10f\n", sym, mid)
+					i++
+				}
+			}
+		}
+	}()
+
+	<-ctx.Done()
+
+	time.Sleep(300 * time.Millisecond)
+	close(events)
+	wg.Wait()
+	log.Println("bye")
+}
+
+
+go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+http://localhost:6060/debug/pprof/profile?seconds=30: server response: 404 Not Found
+failed to fetch any source profiles
+
+
+
+
 
 
 
