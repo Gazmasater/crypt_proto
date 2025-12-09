@@ -501,7 +501,7 @@ type Event struct {
 	Mid    float64
 }
 
-/* =========================  PROТО DECODER  ========================= */
+/* =========================  PROTO DECODER  ========================= */
 
 // Пул для protobuf-структуры, чтобы не аллоцировать на каждый тик
 var wrapperPool = sync.Pool{
@@ -644,7 +644,7 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbols []stri
 		topic := "spot@public.aggre.bookTicker.v3.api.pb@" + interval + "@" + sym
 		params = append(params, topic)
 	}
-	log.Printf("[PUB] всего символов для подписки: %d", len(params))
+	log.Printf("[PUB] всего символов для подписки в этом conn: %d", len(params))
 
 	retry := baseRetry
 
@@ -780,7 +780,7 @@ func main() {
 	if len(symbols) == 0 {
 		log.Fatal("нет символов в файле ", cfg.SymbolsFile)
 	}
-	log.Printf("символов для подписки: %d", len(symbols))
+	log.Printf("символов для подписки всего: %d", len(symbols))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -788,8 +788,27 @@ func main() {
 	events := make(chan Event, 8192)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go runPublicBookTicker(ctx, &wg, symbols, cfg.BookInterval, events)
+
+	// ---- Чанкуем по 50 символов на одно WS-подключение ----
+	const maxPerConn = 50
+
+	chunks := make([][]string, 0)
+	for i := 0; i < len(symbols); i += maxPerConn {
+		j := i + maxPerConn
+		if j > len(symbols) {
+			j = len(symbols)
+		}
+		chunks = append(chunks, symbols[i:j])
+	}
+	log.Printf("будем использовать %d WS-подключений", len(chunks))
+
+	for idx, chunk := range chunks {
+		wg.Add(1)
+		go func(i int, syms []string) {
+			log.Printf("[WS #%d] symbols in this conn: %d", i, len(syms))
+			runPublicBookTicker(ctx, &wg, syms, cfg.BookInterval, events)
+		}(idx, chunk)
+	}
 
 	// Консумер: хранит последний mid по символу, печатает агрегированно раз в секунду
 	go func() {
@@ -805,9 +824,16 @@ func main() {
 				}
 				lastMid[ev.Symbol] = ev.Mid
 			case <-ticker.C:
-				// здесь ты потом будешь запускать движок треугольников
+				// тут потом будет движок треугольников
+				fmt.Printf("known mids: %d symbols\n", len(lastMid))
+				// можно вывести несколько для контроля
+				i := 0
 				for sym, mid := range lastMid {
+					if i >= 5 {
+						break
+					}
 					fmt.Printf("[MID] %s = %.10f\n", sym, mid)
+					i++
 				}
 			}
 		}
@@ -822,15 +848,7 @@ func main() {
 }
 
 
-2025/12/09 13:17:38.638865 символов для подписки: 595
-2025/12/09 13:17:38.639555 [PUB] всего символов для подписки: 595
-2025/12/09 13:17:39.830847 [PUB] connected to wss://wbs-api.mexc.com/ws
-2025/12/09 13:17:39.831466 [PUB] SUB → 595 топиков
-2025/12/09 13:18:10.904908 [PUB] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/09 13:18:14.030428 [PUB] connected to wss://wbs-api.mexc.com/ws
-2025/12/09 13:18:14.030987 [PUB] SUB → 595 топиков
-^C2025/12/09 13:18:44.645514 [PUB] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/09 13:18:46.646431 bye
+
 
 
 
