@@ -565,8 +565,29 @@ func main() {
 
 go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-http://localhost:6060/debug/pprof/profile?seconds=30: server response: 404 Not Found
-failed to fetch any source profiles
+Saved profile in /home/gaz358/pprof/pprof.crypt_proto.samples.cpu.002.pb.gz
+File: crypt_proto
+Build ID: e50e95d419e4c821cc5b5a0c756a5e457b8dc03f
+Type: cpu
+Time: 2025-12-09 14:12:27 MSK
+Duration: 30.13s, Total samples = 4.90s (16.26%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 2700ms, 55.10% of 4900ms total
+Dropped 114 nodes (cum <= 24.50ms)
+Showing top 10 nodes out of 145
+      flat  flat%   sum%        cum   cum%
+    1630ms 33.27% 33.27%     1630ms 33.27%  internal/runtime/syscall.Syscall6
+     480ms  9.80% 43.06%      480ms  9.80%  runtime.futex
+     110ms  2.24% 45.31%      110ms  2.24%  runtime.nextFreeFast (inline)
+      90ms  1.84% 47.14%     1680ms 34.29%  crypto/tls.(*Conn).readRecordOrCCS
+      90ms  1.84% 48.98%      340ms  6.94%  runtime.selectgo
+      80ms  1.63% 50.61%       80ms  1.63%  runtime.memclrNoHeapPointers
+      60ms  1.22% 51.84%       60ms  1.22%  runtime.unlock2
+      60ms  1.22% 53.06%       60ms  1.22%  runtime.write1
+      50ms  1.02% 54.08%      320ms  6.53%  google.golang.org/protobuf/internal/impl.(*MessageInfo).initOneofFieldCoders.func1
+      50ms  1.02% 55.10%      230ms  4.69%  runtime.mallocgcSmallNoscan
+(pprof) 
 
 
 
