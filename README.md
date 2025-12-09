@@ -822,5 +822,16 @@ func main() {
 }
 
 
+2025/12/09 13:17:38.638865 символов для подписки: 595
+2025/12/09 13:17:38.639555 [PUB] всего символов для подписки: 595
+2025/12/09 13:17:39.830847 [PUB] connected to wss://wbs-api.mexc.com/ws
+2025/12/09 13:17:39.831466 [PUB] SUB → 595 топиков
+2025/12/09 13:18:10.904908 [PUB] read err: websocket: close 1005 (no status) (reconnect)
+2025/12/09 13:18:14.030428 [PUB] connected to wss://wbs-api.mexc.com/ws
+2025/12/09 13:18:14.030987 [PUB] SUB → 595 топиков
+^C2025/12/09 13:18:44.645514 [PUB] read err: websocket: close 1005 (no status) (reconnect)
+2025/12/09 13:18:46.646431 bye
+
+
 
 
