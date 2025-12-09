@@ -375,3 +375,58 @@ top – какие функции больше всего памяти держ�
 
 web – посмотреть граф.
 
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.crypt_proto.samples.cpu.001.pb.gz
+File: crypt_proto
+Build ID: d6412055ba3de7f602608e9145f5f555602b06aa
+Type: cpu
+Time: 2025-12-09 11:33:26 MSK
+Duration: 30.05s, Total samples = 90ms (  0.3%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 90ms, 100% of 90ms total
+Showing top 10 nodes out of 44
+      flat  flat%   sum%        cum   cum%
+      20ms 22.22% 22.22%       20ms 22.22%  internal/runtime/syscall.Syscall6
+      10ms 11.11% 33.33%       10ms 11.11%  crypto/tls.(*Conn).handshakeContext
+      10ms 11.11% 44.44%       10ms 11.11%  google.golang.org/protobuf/internal/impl.(*MessageInfo).initOneofFieldCoders.func1
+      10ms 11.11% 55.56%       20ms 22.22%  google.golang.org/protobuf/internal/impl.(*MessageInfo).unmarshalPointerEager
+      10ms 11.11% 66.67%       10ms 11.11%  io.ReadAll
+      10ms 11.11% 77.78%       10ms 11.11%  runtime.futex
+      10ms 11.11% 88.89%       20ms 22.22%  runtime.notesleep
+      10ms 11.11%   100%       10ms 11.11%  runtime.selectgo
+         0     0%   100%       30ms 33.33%  bufio.(*Reader).Peek
+         0     0%   100%       30ms 33.33%  bufio.(*Reader).fill
+(pprof) 
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
+Saved profile in /home/gaz358/pprof/pprof.crypt_proto.alloc_objects.alloc_space.inuse_objects.inuse_space.001.pb.gz
+File: crypt_proto
+Build ID: d6412055ba3de7f602608e9145f5f555602b06aa
+Type: inuse_space
+Time: 2025-12-09 11:35:04 MSK
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 4327.54kB, 100% of 4327.54kB total
+Showing top 10 nodes out of 37
+      flat  flat%   sum%        cum   cum%
+ 1762.94kB 40.74% 40.74%  1762.94kB 40.74%  runtime/pprof.StartCPUProfile
+    1026kB 23.71% 64.45%     1026kB 23.71%  runtime.allocm
+  514.38kB 11.89% 76.33%   514.38kB 11.89%  crypto/tls.(*Conn).unmarshalHandshakeMessage
+  512.22kB 11.84% 88.17%   512.22kB 11.84%  runtime.malg
+  512.01kB 11.83%   100%   512.01kB 11.83%  runtime/pprof.elfBuildID
+         0     0%   100%   514.38kB 11.89%  crypto/tls.(*Conn).HandshakeContext
+         0     0%   100%   514.38kB 11.89%  crypto/tls.(*Conn).clientHandshake
+         0     0%   100%   514.38kB 11.89%  crypto/tls.(*Conn).handshakeContext
+         0     0%   100%   514.38kB 11.89%  crypto/tls.(*Conn).readHandshake
+         0     0%   100%   514.38kB 11.89%  crypto/tls.(*clientHandshakeStateTLS13).handshake
+(pprof) 
+
+
+
+
