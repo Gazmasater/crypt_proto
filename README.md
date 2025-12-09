@@ -221,7 +221,7 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 
 			switch mt {
 			case websocket.TextMessage:
-				// ACK/ошибки подписки и т.п. — только в debug
+				// ACK/ошибки подписки — только в debug
 				var tmp any
 				if err := json.Unmarshal(raw, &tmp); err == nil {
 					j, _ := json.Marshal(tmp)
@@ -241,7 +241,7 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 					}
 				}
 			default:
-				// игнорируем прочие типы
+				// игнор
 			}
 		}
 
