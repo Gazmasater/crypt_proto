@@ -596,5 +596,14 @@ func main() {
 
 
 
+known mids: 360 symbols, profitable triangles: 0
+known mids: 360 symbols, profitable triangles: 0
+known mids: 360 symbols, profitable triangles: 2
+[ARB] +2.785%  BRL→USDT  USDT→BTC  BTC→BRL  markets: BTCBRL(BTC/BRL), BTCUSDT(BTC/USDT), BRLUSDT(BRL/USDT)
+[ARB] +2.773%  BTC→BRL  BRL→MX  MX→BTC  markets: BTCBRL(BTC/BRL), MXBTC(MX/BTC), MXBRL(MX/BRL)
+known mids: 360 symbols, profitable triangles: 0
+known mids: 360 symbols, profitable triangles: 0
+
+
 
 
