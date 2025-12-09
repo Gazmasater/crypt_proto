@@ -49,8 +49,6 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-
-
 package main
 
 import (
@@ -59,6 +57,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
@@ -77,9 +77,9 @@ import (
 /* =========================  CONFIG  ========================= */
 
 type Config struct {
-	BookInterval string // "100ms" | "10ms"
+	BookInterval string
 	Debug        bool
-	SymbolsFile  string // файл с треугольниками (или парами), по умолч. triangles_markets.csv
+	SymbolsFile  string
 }
 
 func loadConfig() (Config, error) {
@@ -111,6 +111,74 @@ func dlog(format string, args ...any) {
 	if debug {
 		log.Printf(format, args...)
 	}
+}
+
+/* =========================  МАРКЕТЫ / ТРЕУГОЛЬНИКИ  ========================= */
+
+type Market struct {
+	Symbol string
+	Base   string
+	Quote  string
+}
+
+type Triangle struct {
+	M [3]Market
+}
+
+// Загружаем треугольники из CSV и одновременно собираем уникальные символы
+func loadTriangles(path string) ([]Triangle, []string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+
+	// заголовок
+	if _, err := r.Read(); err != nil {
+		return nil, nil, fmt.Errorf("read header: %w", err)
+	}
+
+	var tris []Triangle
+	seen := make(map[string]struct{})
+
+	for {
+		rec, err := r.Read()
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			return nil, nil, fmt.Errorf("read record: %w", err)
+		}
+		if len(rec) < 6 {
+			continue
+		}
+
+		b1, q1 := strings.TrimSpace(rec[0]), strings.TrimSpace(rec[1])
+		b2, q2 := strings.TrimSpace(rec[2]), strings.TrimSpace(rec[3])
+		b3, q3 := strings.TrimSpace(rec[4]), strings.TrimSpace(rec[5])
+
+		if b1 == "" || q1 == "" || b2 == "" || q2 == "" || b3 == "" || q3 == "" {
+			continue
+		}
+
+		m1 := Market{Base: b1, Quote: q1, Symbol: b1 + q1}
+		m2 := Market{Base: b2, Quote: q2, Symbol: b2 + q2}
+		m3 := Market{Base: b3, Quote: q3, Symbol: b3 + q3}
+
+		tris = append(tris, Triangle{M: [3]Market{m1, m2, m3}})
+
+		seen[m1.Symbol] = struct{}{}
+		seen[m2.Symbol] = struct{}{}
+		seen[m3.Symbol] = struct{}{}
+	}
+
+	symbols := make([]string, 0, len(seen))
+	for s := range seen {
+		symbols = append(symbols, s)
+	}
+	return tris, symbols, nil
 }
 
 /* =========================  EVENTS  ========================= */
@@ -181,63 +249,6 @@ func parsePBWrapperMid(raw []byte) (sym string, mid float64, ok bool) {
 	}
 
 	return "", 0, false
-}
-
-/* =========================  ЗАГРУЗКА СИМВОЛОВ ИЗ CSV  ========================= */
-
-// Ожидаем файл вида:
-// base1,quote1,base2,quote2,base3,quote3
-// ETC,BTC,BTC,USDC,ETC,USDC
-// ...
-// Берём все base/quote, собираем уникальные символы BASE+QUOTE.
-func loadSymbolsFromTriangles(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-
-	// читаем заголовок
-	if _, err := r.Read(); err != nil {
-		return nil, fmt.Errorf("read header: %w", err)
-	}
-
-	seen := make(map[string]struct{})
-
-	for {
-		rec, err := r.Read()
-		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			return nil, fmt.Errorf("read record: %w", err)
-		}
-		if len(rec) < 6 {
-			continue
-		}
-
-		// три рынка (base, quote)
-		bases := []string{rec[0], rec[2], rec[4]}
-		quotes := []string{rec[1], rec[3], rec[5]}
-
-		for i := 0; i < 3; i++ {
-			base := strings.TrimSpace(bases[i])
-			quote := strings.TrimSpace(quotes[i])
-			if base == "" || quote == "" {
-				continue
-			}
-			sym := base + quote // формат MEXC: BTC + USDT = BTCUSDT
-			seen[sym] = struct{}{}
-		}
-	}
-
-	symbols := make([]string, 0, len(seen))
-	for s := range seen {
-		symbols = append(symbols, s)
-	}
-	return symbols, nil
 }
 
 /* =========================  WS RUNNER (PUBLIC)  ========================= */
@@ -380,96 +391,112 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbols []stri
 	}
 }
 
+/* =========================  АРБИТРАЖ ПО ТРЕУГОЛЬНИКАМ  ========================= */
+
+const (
+	tradeFee  = 0.001  // 0.1% комиссия за сделку
+	minProfit = 0.0005 // 0.05% минимальная прибыль по кругу
+)
+
+type TriangleArb struct {
+	Triangle Triangle
+	StartCur string
+	Path     [3]string
+	Profit   float64 // множитель, например 1.001 = +0.1%
+}
+
+// считаем прибыль по одному треугольнику, если есть все котировки
+func evalTriangle(t Triangle, mids map[string]float64) *TriangleArb {
+	// набираем уникальные валюты
+	curSet := make(map[string]struct{})
+	for _, m := range t.M {
+		curSet[m.Base] = struct{}{}
+		curSet[m.Quote] = struct{}{}
+	}
+	if len(curSet) != 3 {
+		return nil
+	}
+	curs := make([]string, 0, 3)
+	for c := range curSet {
+		curs = append(curs, c)
+	}
+
+	// строим маленький граф курсов
+	type key struct{ From, To string }
+	rates := make(map[key]float64)
+
+	ff := 1.0 - tradeFee
+
+	for _, m := range t.M {
+		price, ok := mids[m.Symbol]
+		if !ok || price <= 0 {
+			return nil
+		}
+		// BASE -> QUOTE
+		rates[key{m.Base, m.Quote}] = price * ff
+		// QUOTE -> BASE
+		rates[key{m.Quote, m.Base}] = (1.0 / price) * ff
+	}
+
+	// выберем просто первый порядок curs[0]->curs[1]->curs[2]->curs[0]
+	a, b, c := curs[0], curs[1], curs[2]
+
+	get := func(from, to string) (float64, bool) {
+		r, ok := rates[key{from, to}]
+		return r, ok
+	}
+
+	r1, ok1 := get(a, b)
+	r2, ok2 := get(b, c)
+	r3, ok3 := get(c, a)
+
+	if !(ok1 && ok2 && ok3) {
+		// попробуем другой порядок: a->c->b->a
+		r1, ok1 = get(a, c)
+		r2, ok2 = get(c, b)
+		r3, ok3 = get(b, a)
+		if !(ok1 && ok2 && ok3) {
+			return nil
+		}
+		profit := r1 * r2 * r3
+		if profit <= 1.0+minProfit {
+			return nil
+		}
+		return &TriangleArb{
+			Triangle: t,
+			StartCur: a,
+			Path:     [3]string{a + "→" + c, c + "→" + b, b + "→" + a},
+			Profit:   profit,
+		}
+	}
+
+	profit := r1 * r2 * r3
+	if profit <= 1.0+minProfit {
+		return nil
+	}
+	return &TriangleArb{
+		Triangle: t,
+		StartCur: a,
+		Path:     [3]string{a + "→" + b, b + "→" + c, c + "→" + a},
+		Profit:   profit,
+	}
+}
+
+// находим все прибыльные треугольники за текущий тик
+func findProfitableTriangles(tris []Triangle, mids map[string]float64) []TriangleArb {
+	var res []TriangleArb
+	for _, t := range tris {
+		if arb := evalTriangle(t, mids); arb != nil {
+			res = append(res, *arb)
+		}
+	}
+	return res
+}
+
 /* =========================  MAIN  ========================= */
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
-	cfg, err := loadConfig()
-	if err != nil {
-		log.Fatal(err)
-	}
-	debug = cfg.Debug
-
-	// грузим символы из triangles_markets.csv (или другого файла)
-	symbols, err := loadSymbolsFromTriangles(cfg.SymbolsFile)
-	if err != nil {
-		log.Fatalf("load symbols: %v", err)
-	}
-	if len(symbols) == 0 {
-		log.Fatal("нет символов в файле ", cfg.SymbolsFile)
-	}
-	log.Printf("символов для подписки всего: %d", len(symbols))
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	events := make(chan Event, 8192)
-
-	var wg sync.WaitGroup
-
-	// ---- Чанкуем по 50 символов на одно WS-подключение ----
-	const maxPerConn = 50
-
-	chunks := make([][]string, 0)
-	for i := 0; i < len(symbols); i += maxPerConn {
-		j := i + maxPerConn
-		if j > len(symbols) {
-			j = len(symbols)
-		}
-		chunks = append(chunks, symbols[i:j])
-	}
-	log.Printf("будем использовать %d WS-подключений", len(chunks))
-
-	for idx, chunk := range chunks {
-		wg.Add(1)
-		go func(i int, syms []string) {
-			log.Printf("[WS #%d] symbols in this conn: %d", i, len(syms))
-			runPublicBookTicker(ctx, &wg, syms, cfg.BookInterval, events)
-		}(idx, chunk)
-	}
-
-	// Консумер: хранит последний mid по символу, печатает агрегированно раз в секунду
-	go func() {
-		lastMid := make(map[string]float64)
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case ev, ok := <-events:
-				if !ok {
-					return
-				}
-				lastMid[ev.Symbol] = ev.Mid
-			case <-ticker.C:
-				// тут потом будет движок треугольников
-				fmt.Printf("known mids: %d symbols\n", len(lastMid))
-				// можно вывести несколько для контроля
-				i := 0
-				for sym, mid := range lastMid {
-					if i >= 5 {
-						break
-					}
-					fmt.Printf("[MID] %s = %.10f\n", sym, mid)
-					i++
-				}
-			}
-		}
-	}()
-
-	<-ctx.Done()
-
-	time.Sleep(300 * time.Millisecond)
-	close(events)
-	wg.Wait()
-	log.Println("bye")
-}
-
-
-
-
-func main() {
 
 	// pprof HTTP-сервер
 	go func() {
@@ -479,23 +506,21 @@ func main() {
 		}
 	}()
 
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
 	cfg, err := loadConfig()
 	if err != nil {
 		log.Fatal(err)
 	}
 	debug = cfg.Debug
 
-	// грузим символы из triangles_markets.csv (или другого файла)
-	symbols, err := loadSymbolsFromTriangles(cfg.SymbolsFile)
+	// грузим треугольники и список символов
+	tris, symbols, err := loadTriangles(cfg.SymbolsFile)
 	if err != nil {
-		log.Fatalf("load symbols: %v", err)
+		log.Fatalf("load triangles: %v", err)
 	}
 	if len(symbols) == 0 {
 		log.Fatal("нет символов в файле ", cfg.SymbolsFile)
 	}
-	log.Printf("символов для подписки всего: %d", len(symbols))
+	log.Printf("треугольников: %d, символов для подписки всего: %d", len(tris), len(symbols))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -525,8 +550,8 @@ func main() {
 		}(idx, chunk)
 	}
 
-	// Консумер: хранит последний mid по символу, печатает агрегированно раз в секунду
-	go func() {
+	// Консумер: хранит последний mid по символу, раз в секунду ищет прибыльные треугольники
+	go func(tris []Triangle) {
 		lastMid := make(map[string]float64)
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
@@ -539,20 +564,27 @@ func main() {
 				}
 				lastMid[ev.Symbol] = ev.Mid
 			case <-ticker.C:
-				// тут потом будет движок треугольников
-				fmt.Printf("known mids: %d symbols\n", len(lastMid))
-				// можно вывести несколько для контроля
-				i := 0
-				for sym, mid := range lastMid {
+				prof := findProfitableTriangles(tris, lastMid)
+				fmt.Printf("known mids: %d symbols, profitable triangles: %d\n", len(lastMid), len(prof))
+
+				// выводим максимум 5 лучших за тик
+				for i, a := range prof {
 					if i >= 5 {
 						break
 					}
-					fmt.Printf("[MID] %s = %.10f\n", sym, mid)
-					i++
+					perc := (a.Profit - 1.0) * 100.0
+					m1, m2, m3 := a.Triangle.M[0], a.Triangle.M[1], a.Triangle.M[2]
+					fmt.Printf("[ARB] %+0.3f%%  %s  markets: %s(%s/%s), %s(%s/%s), %s(%s/%s)\n",
+						perc,
+						strings.Join(a.Path[:], "  "),
+						m1.Symbol, m1.Base, m1.Quote,
+						m2.Symbol, m2.Base, m2.Quote,
+						m3.Symbol, m3.Base, m3.Quote,
+					)
 				}
 			}
 		}
-	}()
+	}(tris)
 
 	<-ctx.Done()
 
@@ -561,35 +593,6 @@ func main() {
 	wg.Wait()
 	log.Println("bye")
 }
-
-
-go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.crypt_proto.samples.cpu.002.pb.gz
-File: crypt_proto
-Build ID: e50e95d419e4c821cc5b5a0c756a5e457b8dc03f
-Type: cpu
-Time: 2025-12-09 14:12:27 MSK
-Duration: 30.13s, Total samples = 4.90s (16.26%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 2700ms, 55.10% of 4900ms total
-Dropped 114 nodes (cum <= 24.50ms)
-Showing top 10 nodes out of 145
-      flat  flat%   sum%        cum   cum%
-    1630ms 33.27% 33.27%     1630ms 33.27%  internal/runtime/syscall.Syscall6
-     480ms  9.80% 43.06%      480ms  9.80%  runtime.futex
-     110ms  2.24% 45.31%      110ms  2.24%  runtime.nextFreeFast (inline)
-      90ms  1.84% 47.14%     1680ms 34.29%  crypto/tls.(*Conn).readRecordOrCCS
-      90ms  1.84% 48.98%      340ms  6.94%  runtime.selectgo
-      80ms  1.63% 50.61%       80ms  1.63%  runtime.memclrNoHeapPointers
-      60ms  1.22% 51.84%       60ms  1.22%  runtime.unlock2
-      60ms  1.22% 53.06%       60ms  1.22%  runtime.write1
-      50ms  1.02% 54.08%      320ms  6.53%  google.golang.org/protobuf/internal/impl.(*MessageInfo).initOneofFieldCoders.func1
-      50ms  1.02% 55.10%      230ms  4.69%  runtime.mallocgcSmallNoscan
-(pprof) 
-
-
 
 
 
