@@ -2,16 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -30,8 +23,6 @@ import (
 /* =========================  CONFIG  ========================= */
 
 type Config struct {
-	APIKey       string
-	APISecret    string
 	Symbol       string // напр. BTCUSDT
 	BookInterval string // "100ms" | "10ms"
 	Debug        bool
@@ -39,9 +30,8 @@ type Config struct {
 
 func loadConfig() (Config, error) {
 	_ = godotenv.Load(".env")
+
 	cfg := Config{
-		APIKey:       os.Getenv("MEXC_API_KEY"),
-		APISecret:    os.Getenv("MEXC_SECRET_KEY"),
 		Symbol:       os.Getenv("SYMBOL"),
 		BookInterval: os.Getenv("BOOK_INTERVAL"),
 	}
@@ -52,11 +42,7 @@ func loadConfig() (Config, error) {
 	if cfg.BookInterval == "" {
 		cfg.BookInterval = "100ms"
 	}
-	if cfg.APIKey == "" || cfg.APISecret == "" {
-		return cfg, errors.New("MEXC_API_KEY / MEXC_SECRET_KEY пусты")
-	}
 
-	// DEBUG=true в .env чтобы включить детальные логи
 	if strings.ToLower(os.Getenv("DEBUG")) == "true" {
 		cfg.Debug = true
 	}
@@ -74,103 +60,11 @@ func dlog(format string, args ...any) {
 	}
 }
 
-/* =========================  REST UTILS  ========================= */
-
-func hmacSHA256Hex(secret, data string) string {
-	h := hmac.New(sha256.New, []byte(secret))
-	h.Write([]byte(data))
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-func mexcDriftMs(ctx context.Context) (int64, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.mexc.com/api/v3/time", nil)
-	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	var v struct {
-		ServerTime int64 `json:"serverTime"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		return 0, err
-	}
-	local := time.Now().UnixMilli()
-	return v.ServerTime - local, nil
-}
-
-func signParams(secret string, v url.Values, driftMs int64) url.Values {
-	if v == nil {
-		v = url.Values{}
-	}
-	v.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli()+driftMs, 10))
-	if v.Get("recvWindow") == "" {
-		v.Set("recvWindow", "60000")
-	}
-	v.Set("signature", hmacSHA256Hex(secret, v.Encode()))
-	return v
-}
-
-func rest(ctx context.Context, method, endpoint, apiKey string, v url.Values) (int, []byte, error) {
-	if len(v) > 0 {
-		endpoint += "?" + v.Encode()
-	}
-	req, _ := http.NewRequestWithContext(ctx, method, endpoint, nil)
-	req.Header.Set("X-MEXC-APIKEY", apiKey)
-
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-
-	b, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, b, nil
-}
-
-func createListenKey(ctx context.Context, apiKey, secret string, driftMs int64) (string, error) {
-	st, body, err := rest(ctx, http.MethodPost, "https://api.mexc.com/api/v3/userDataStream", apiKey, signParams(secret, nil, driftMs))
-	if err != nil {
-		return "", fmt.Errorf("listenKey req: %w", err)
-	}
-	if st != http.StatusOK {
-		return "", fmt.Errorf("listenKey %d: %s", st, strings.TrimSpace(string(body)))
-	}
-	var out struct {
-		ListenKey string `json:"listenKey"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil || out.ListenKey == "" {
-		return "", fmt.Errorf("listenKey decode: %v; body=%s", err, body)
-	}
-	return out.ListenKey, nil
-}
-
-func closeListenKey(ctx context.Context, apiKey, secret, listenKey string, driftMs int64) {
-	v := url.Values{}
-	v.Set("listenKey", listenKey)
-	_, _, _ = rest(ctx, http.MethodDelete, "https://api.mexc.com/api/v3/userDataStream", apiKey, signParams(secret, v, driftMs))
-}
-
 /* =========================  EVENTS  ========================= */
 
-type EventType int
-
-const (
-	EventBookTicker EventType = iota + 1
-	EventUser
-	EventUserPB
-)
-
 type Event struct {
-	Type EventType
-
-	// Для паблик-книги
 	Symbol string
 	Mid    float64
-
-	// Для приватного стрима (текстовое сообщение)
-	Raw []byte
 }
 
 /* =========================  PROTO DECODER  ========================= */
@@ -180,10 +74,9 @@ var wrapperPool = sync.Pool{
 	New: func() any { return new(pb.PushDataV3ApiWrapper) },
 }
 
-// Возвращаем символ и mid=(bid+ask)/2 если это (aggre.)bookTicker
+// Возвращаем символ и mid=(bid+ask)/2, если это (aggre.)bookTicker
 func parsePBWrapperMid(raw []byte) (sym string, mid float64, ok bool) {
 	w, _ := wrapperPool.Get().(*pb.PushDataV3ApiWrapper)
-	// гарантируем возврат объекта в пул
 	defer func() {
 		*w = pb.PushDataV3ApiWrapper{} // очищаем
 		wrapperPool.Put(w)
@@ -237,7 +130,7 @@ func parsePBWrapperMid(raw []byte) (sym string, mid float64, ok bool) {
 	return "", 0, false
 }
 
-/* =========================  WS RUNNERS  ========================= */
+/* =========================  WS RUNNER (PUBLIC)  ========================= */
 
 func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interval string, out chan<- Event) {
 	defer wg.Done()
@@ -247,7 +140,7 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 		maxRetry  = 30 * time.Second
 	)
 
-	urlWS := "wss://wbs-api.mexc.com/ws" // актуальный публичный WS
+	urlWS := "wss://wbs-api.mexc.com/ws"
 	topic := "spot@public.aggre.bookTicker.v3.api.pb@" + interval + "@" + symbol
 
 	retry := baseRetry
@@ -272,9 +165,8 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 			continue
 		}
 		log.Printf("[PUB] connected to %s", urlWS)
-		retry = baseRetry // сброс бэкоффа
+		retry = baseRetry
 
-		// дедлайн + PONG handler
 		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 
 		var lastPing time.Time
@@ -329,205 +221,5 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 
 			switch mt {
 			case websocket.TextMessage:
-				// ACK и прочий мусор: логируем только в debug
-				dlog("[PUB TEXT] %s", string(raw))
-			case websocket.BinaryMessage:
-				if sym, mid, ok := parsePBWrapperMid(raw); ok {
-					// без fmt.Sprintf / JSON — просто событие
-					select {
-					case out <- Event{Type: EventBookTicker, Symbol: sym, Mid: mid}:
-					case <-ctx.Done():
-						close(stopPing)
-						_ = conn.Close()
-						return
-					}
-				}
-			default:
-				// игнорируем
-			}
-		}
-
-		// cleanup и реконнект
-		close(stopPing)
-		_ = conn.Close()
-		time.Sleep(retry)
-		if retry < maxRetry {
-			retry *= 2
-			if retry > maxRetry {
-				retry = maxRetry
-			}
-		}
-	}
-}
-
-func runPrivateUserStream(ctx context.Context, wg *sync.WaitGroup, apiKey, secret string, out chan<- Event) {
-	defer wg.Done()
-
-	retry := 2 * time.Second
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		// drift + listenKey
-		drift, err := mexcDriftMs(ctx)
-		if err != nil {
-			log.Printf("[PRIV] drift err: %v (continue w/0)", err)
-			drift = 0
-		}
-		lk, err := createListenKey(ctx, apiKey, secret, drift)
-		if err != nil {
-			log.Printf("[PRIV] create listenKey err: %v", err)
-			time.Sleep(retry)
-			continue
-		}
-		log.Printf("[PRIV] listenKey OK")
-
-		urlWS := "wss://wbs-api.mexc.com/ws?listenKey=" + lk
-
-		conn, _, err := websocket.DefaultDialer.Dial(urlWS, nil)
-		if err != nil {
-			log.Printf("[PRIV] dial err: %v", err)
-			time.Sleep(retry)
-			continue
-		}
-		log.Printf("[PRIV] connected")
-
-		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-		conn.SetPongHandler(func(string) error {
-			return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-		})
-
-		// keepalive PING
-		stopPing := make(chan struct{})
-		go func() {
-			t := time.NewTicker(45 * time.Second)
-			defer t.Stop()
-			for {
-				select {
-				case <-t.C:
-					_ = conn.WriteControl(websocket.PingMessage, []byte("hb"), time.Now().Add(5*time.Second))
-				case <-stopPing:
-					return
-				}
-			}
-		}()
-
-		readErr := false
-		for {
-			mt, raw, err := conn.ReadMessage()
-			if err != nil {
-				log.Printf("[PRIV] read err: %v (reconnect)", err)
-				readErr = true
-				break
-			}
-
-			switch mt {
-			case websocket.TextMessage:
-				// user-событие; если нужно сохранить — копируем
-				cp := make([]byte, len(raw))
-				copy(cp, raw)
-				select {
-				case out <- Event{Type: EventUser, Raw: cp}:
-				case <-ctx.Done():
-					close(stopPing)
-					_ = conn.Close()
-					return
-				}
-			case websocket.BinaryMessage:
-				// у MEXC user stream тоже бывают pb; пока просто факт
-				select {
-				case out <- Event{Type: EventUserPB}:
-				case <-ctx.Done():
-					close(stopPing)
-					_ = conn.Close()
-					return
-				}
-			default:
-				// игнор
-			}
-		}
-
-		close(stopPing)
-		_ = conn.Close()
-		// закрыть listenKey
-		closeListenKey(context.Background(), apiKey, secret, lk, drift)
-
-		if readErr {
-			time.Sleep(retry)
-		}
-	}
-}
-
-/* =========================  MAIN  ========================= */
-
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
-	cfg, err := loadConfig()
-	if err != nil {
-		log.Fatal(err)
-	}
-	debug = cfg.Debug
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	// канал событий
-	events := make(chan Event, 4096)
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go runPublicBookTicker(ctx, &wg, cfg.Symbol, cfg.BookInterval, events)
-	go runPrivateUserStream(ctx, &wg, cfg.APIKey, cfg.APISecret, events)
-
-	// консумер событий
-	go func() {
-		// хранить последние mid по символам
-		lastMid := make(map[string]float64)
-
-		// для user-событий — просто печатать как есть (можно потом вынести в отдельную обработку)
-		printUser := func(raw []byte) {
-			// без лишнего JSON-форматирования
-			fmt.Printf("[USER] %s\n", string(raw))
-		}
-
-		ticker := time.NewTicker(1 * time.Second) // печатаем агрегированно раз в секунду
-		defer ticker.Stop()
-
-		for {
-			select {
-			case ev, ok := <-events:
-				if !ok {
-					return
-				}
-				switch ev.Type {
-				case EventBookTicker:
-					lastMid[ev.Symbol] = ev.Mid
-				case EventUser:
-					printUser(ev.Raw)
-				case EventUserPB:
-					// если нужно — добавить расшифровку
-					dlog("[USER.PB] получено бинарное сообщение")
-				}
-			case <-ticker.C:
-				// аккуратно печатаем состояние книги (без спама)
-				for sym, mid := range lastMid {
-					fmt.Printf("[MID] %s = %.10f\n", sym, mid)
-				}
-			}
-		}
-	}()
-
-	<-ctx.Done()
-
-	// корректное завершение
-	time.Sleep(300 * time.Millisecond)
-	close(events)
-	wg.Wait()
-	log.Println("bye")
-}
+				//
 
