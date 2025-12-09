@@ -2,16 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -30,113 +23,66 @@ import (
 /* =========================  CONFIG  ========================= */
 
 type Config struct {
-	APIKey       string
-	APISecret    string
 	Symbol       string // напр. BTCUSDT
 	BookInterval string // "100ms" | "10ms"
+	Debug        bool
 }
 
 func loadConfig() (Config, error) {
 	_ = godotenv.Load(".env")
+
 	cfg := Config{
-		APIKey:       os.Getenv("MEXC_API_KEY"),
-		APISecret:    os.Getenv("MEXC_SECRET_KEY"),
 		Symbol:       os.Getenv("SYMBOL"),
 		BookInterval: os.Getenv("BOOK_INTERVAL"),
 	}
+
 	if cfg.Symbol == "" {
 		cfg.Symbol = "BTCUSDT"
 	}
 	if cfg.BookInterval == "" {
 		cfg.BookInterval = "100ms"
 	}
-	if cfg.APIKey == "" || cfg.APISecret == "" {
-		return cfg, errors.New("MEXC_API_KEY / MEXC_SECRET_KEY пусты")
+
+	if strings.ToLower(os.Getenv("DEBUG")) == "true" {
+		cfg.Debug = true
 	}
+
 	return cfg, nil
 }
 
-/* =========================  REST UTILS  ========================= */
+/* =========================  LOGGING  ========================= */
 
-func hmacSHA256Hex(secret, data string) string {
-	h := hmac.New(sha256.New, []byte(secret))
-	h.Write([]byte(data))
-	return hex.EncodeToString(h.Sum(nil))
+var debug bool
+
+func dlog(format string, args ...any) {
+	if debug {
+		log.Printf(format, args...)
+	}
 }
 
-func mexcDriftMs(ctx context.Context) (int64, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.mexc.com/api/v3/time", nil)
-	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	var v struct {
-		ServerTime int64 `json:"serverTime"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		return 0, err
-	}
-	local := time.Now().UnixMilli()
-	return v.ServerTime - local, nil
-}
+/* =========================  EVENTS  ========================= */
 
-func signParams(secret string, v url.Values, driftMs int64) url.Values {
-	if v == nil {
-		v = url.Values{}
-	}
-	v.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli()+driftMs, 10))
-	if v.Get("recvWindow") == "" {
-		v.Set("recvWindow", "60000")
-	}
-	v.Set("signature", hmacSHA256Hex(secret, v.Encode()))
-	return v
-}
-
-func rest(ctx context.Context, method, endpoint, apiKey string, v url.Values) (int, []byte, error) {
-	if len(v) > 0 {
-		endpoint += "?" + v.Encode()
-	}
-	req, _ := http.NewRequestWithContext(ctx, method, endpoint, nil)
-	req.Header.Set("X-MEXC-APIKEY", apiKey)
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, b, nil
-}
-
-func createListenKey(ctx context.Context, apiKey, secret string, driftMs int64) (string, error) {
-	st, body, err := rest(ctx, http.MethodPost, "https://api.mexc.com/api/v3/userDataStream", apiKey, signParams(secret, nil, driftMs))
-	if err != nil {
-		return "", fmt.Errorf("listenKey req: %w", err)
-	}
-	if st != http.StatusOK {
-		return "", fmt.Errorf("listenKey %d: %s", st, strings.TrimSpace(string(body)))
-	}
-	var out struct {
-		ListenKey string `json:"listenKey"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil || out.ListenKey == "" {
-		return "", fmt.Errorf("listenKey decode: %v; body=%s", err, body)
-	}
-	return out.ListenKey, nil
-}
-
-func closeListenKey(ctx context.Context, apiKey, secret, listenKey string, driftMs int64) {
-	v := url.Values{}
-	v.Set("listenKey", listenKey)
-	_, _, _ = rest(ctx, http.MethodDelete, "https://api.mexc.com/api/v3/userDataStream", apiKey, signParams(secret, v, driftMs))
+type Event struct {
+	Symbol string
+	Mid    float64
 }
 
 /* =========================  PROTO DECODER  ========================= */
 
-// Возвращаем символ и mid=(bid+ask)/2 если это (aggre.)bookTicker
+// Пул для protobuf-структуры, чтобы не аллоцировать на каждый тик
+var wrapperPool = sync.Pool{
+	New: func() any { return new(pb.PushDataV3ApiWrapper) },
+}
+
+// Возвращаем символ и mid=(bid+ask)/2, если это (aggre.)bookTicker
 func parsePBWrapperMid(raw []byte) (sym string, mid float64, ok bool) {
-	var w pb.PushDataV3ApiWrapper
-	if err := proto.Unmarshal(raw, &w); err != nil {
+	w, _ := wrapperPool.Get().(*pb.PushDataV3ApiWrapper)
+	defer func() {
+		*w = pb.PushDataV3ApiWrapper{} // очищаем
+		wrapperPool.Put(w)
+	}()
+
+	if err := proto.Unmarshal(raw, w); err != nil {
 		return "", 0, false
 	}
 
@@ -180,12 +126,13 @@ func parsePBWrapperMid(raw []byte) (sym string, mid float64, ok bool) {
 		}
 		return sym, (bid + ask) / 2, true
 	}
+
 	return "", 0, false
 }
 
-/* =========================  WS RUNNERS  ========================= */
+/* =========================  WS RUNNER (PUBLIC)  ========================= */
 
-func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interval string, out chan<- string) {
+func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interval string, out chan<- Event) {
 	defer wg.Done()
 
 	const (
@@ -193,7 +140,7 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 		maxRetry  = 30 * time.Second
 	)
 
-	urlWS := "wss://wbs-api.mexc.com/ws" // актуальный публичный WS
+	urlWS := "wss://wbs-api.mexc.com/ws"
 	topic := "spot@public.aggre.bookTicker.v3.api.pb@" + interval + "@" + symbol
 
 	retry := baseRetry
@@ -218,19 +165,18 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 			continue
 		}
 		log.Printf("[PUB] connected to %s", urlWS)
-		retry = baseRetry // сбрасываем бэкофф после успешного коннекта
+		retry = baseRetry
 
-		// дедлайн для чтения + обработчик PONG с печатью RTT
 		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 
 		var lastPing time.Time
 		conn.SetPongHandler(func(appData string) error {
 			rtt := time.Since(lastPing)
-			log.Printf("[PING] Pong от %s через %v", urlWS, rtt)
+			dlog("[PING] Pong от %s через %v", urlWS, rtt)
 			return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		})
 
-		// keepalive (PING с логом времени отправки)
+		// keepalive (PING)
 		stopPing := make(chan struct{})
 		go func() {
 			t := time.NewTicker(45 * time.Second)
@@ -240,10 +186,10 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 				case <-t.C:
 					lastPing = time.Now()
 					if err := conn.WriteControl(websocket.PingMessage, []byte("hb"), time.Now().Add(5*time.Second)); err != nil {
-						log.Printf("⚠️ [PING] send error: %v", err)
+						dlog("⚠️ [PING] send error: %v", err)
 						return
 					}
-					log.Printf("[PING] Sent at %s", lastPing.Format("15:04:05.000"))
+					dlog("[PING] Sent at %s", lastPing.Format("15:04:05.000"))
 				case <-stopPing:
 					return
 				}
@@ -272,25 +218,34 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 				log.Printf("[PUB] read err: %v (reconnect)", err)
 				break
 			}
+
 			switch mt {
 			case websocket.TextMessage:
-				var v any
-				if json.Unmarshal(raw, &v) == nil {
-					b, _ := json.MarshalIndent(v, "", "  ")
-					log.Printf("[PUB ACK]\n%s", b)
+				// ACK/ошибки подписки и т.п. — только в debug
+				var tmp any
+				if err := json.Unmarshal(raw, &tmp); err == nil {
+					j, _ := json.Marshal(tmp)
+					dlog("[PUB TEXT] %s", string(j))
 				} else {
-					log.Printf("[PUB TEXT] %s", string(raw))
+					dlog("[PUB TEXT RAW] %s", string(raw))
 				}
 			case websocket.BinaryMessage:
 				if sym, mid, ok := parsePBWrapperMid(raw); ok {
-					out <- fmt.Sprintf(`{"type":"bookTicker","s":"%s","mid":%.10f}`, sym, mid)
+					ev := Event{Symbol: sym, Mid: mid}
+					select {
+					case out <- ev:
+					case <-ctx.Done():
+						close(stopPing)
+						_ = conn.Close()
+						return
+					}
 				}
 			default:
-				// игнорируем другие типы
+				// игнорируем прочие типы
 			}
 		}
 
-		// cleanup и реконнект
+		// cleanup + реконнект
 		close(stopPing)
 		_ = conn.Close()
 		time.Sleep(retry)
@@ -303,107 +258,6 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 	}
 }
 
-func runPrivateUserStream(ctx context.Context, wg *sync.WaitGroup, apiKey, secret string, out chan<- string) {
-	defer wg.Done()
-
-	retry := time.Second * 2
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		// drift + listenKey
-		drift, err := mexcDriftMs(ctx)
-		if err != nil {
-			log.Printf("[PRIV] drift err: %v (continue w/0)", err)
-			drift = 0
-		}
-		lk, err := createListenKey(ctx, apiKey, secret, drift)
-		if err != nil {
-			log.Printf("[PRIV] create listenKey err: %v", err)
-			time.Sleep(retry)
-			continue
-		}
-		log.Printf("[PRIV] listenKey OK")
-
-		urlWS := "wss://wbs-api.mexc.com/ws?listenKey=" + lk
-
-		conn, _, err := websocket.DefaultDialer.Dial(urlWS, nil)
-		if err != nil {
-			log.Printf("[PRIV] dial err: %v", err)
-			time.Sleep(retry)
-			continue
-		}
-		log.Printf("[PRIV] connected")
-
-		// read deadline + PONG
-		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-		conn.SetPongHandler(func(string) error {
-			return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-		})
-
-		// keepalive (PING)
-		stopPing := make(chan struct{})
-		go func() {
-			t := time.NewTicker(45 * time.Second)
-			defer t.Stop()
-			for {
-				select {
-				case <-t.C:
-					_ = conn.WriteControl(websocket.PingMessage, []byte("hb"), time.Now().Add(5*time.Second))
-				case <-stopPing:
-					return
-				}
-			}
-		}()
-
-		// read loop
-		readErr := false
-		for {
-			mt, raw, err := conn.ReadMessage()
-			if err != nil {
-				log.Printf("[PRIV] read err: %v (reconnect)", err)
-				readErr = true
-				break
-			}
-			if mt == websocket.TextMessage {
-				// событие аккаунта / ACK
-				out <- fmt.Sprintf(`{"type":"user","raw":%s}`, safeText(raw))
-				continue
-			}
-			if mt == websocket.BinaryMessage {
-				// у MEXC user stream тоже бывают pb — просто выведем длину
-				out <- fmt.Sprintf(`{"type":"user.pb","bytes":%d}`, len(raw))
-				continue
-			}
-		}
-
-		// cleanup
-		close(stopPing)
-		_ = conn.Close()
-		// закрыть listenKey
-		closeListenKey(context.Background(), apiKey, secret, lk, drift)
-
-		// задержка и повторная попытка
-		if readErr {
-			time.Sleep(retry)
-		}
-	}
-}
-
-func safeText(b []byte) string {
-	// если это JSON — оставим как есть, иначе экранируем строкой
-	var v any
-	if json.Unmarshal(b, &v) == nil {
-		return string(b)
-	}
-	j, _ := json.Marshal(string(b))
-	return string(j)
-}
-
 /* =========================  MAIN  ========================= */
 
 func main() {
@@ -413,27 +267,40 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	debug = cfg.Debug
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// канал событий (книга/юзер)
-	events := make(chan string, 1024)
+	events := make(chan Event, 4096)
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(1)
 	go runPublicBookTicker(ctx, &wg, cfg.Symbol, cfg.BookInterval, events)
-	go runPrivateUserStream(ctx, &wg, cfg.APIKey, cfg.APISecret, events)
 
-	// консумер событий
+	// Консумер: хранит последний mid по символу, печатает агрегированно раз в секунду
 	go func() {
-		for ev := range events {
-			fmt.Println(ev)
+		lastMid := make(map[string]float64)
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					return
+				}
+				lastMid[ev.Symbol] = ev.Mid
+			case <-ticker.C:
+				for sym, mid := range lastMid {
+					fmt.Printf("[MID] %s = %.10f\n", sym, mid)
+				}
+			}
 		}
 	}()
 
 	<-ctx.Done()
-	// даём горутинам корректно завершиться
+
 	time.Sleep(300 * time.Millisecond)
 	close(events)
 	wg.Wait()
