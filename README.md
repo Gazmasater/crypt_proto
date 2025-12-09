@@ -307,3 +307,60 @@ func main() {
 	log.Println("bye")
 }
 
+
+
+func main() {
+    log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+    cfg, err := loadConfig()
+    if err != nil {
+        log.Fatal(err)
+    }
+    debug = cfg.Debug
+
+    // pprof HTTP server
+    go func() {
+        log.Println("pprof on :6060")
+        if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+            log.Printf("pprof server error: %v", err)
+        }
+    }()
+
+    ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+    defer cancel()
+
+    events := make(chan Event, 4096)
+
+    var wg sync.WaitGroup
+    wg.Add(1)
+    go runPublicBookTicker(ctx, &wg, cfg.Symbol, cfg.BookInterval, events)
+
+    // консумер как раньше...
+    // ...
+
+    <-ctx.Done()
+    time.Sleep(300 * time.Millisecond)
+    close(events)
+    wg.Wait()
+    log.Println("bye")
+}
+
+
+go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+
+
+top – какие функции больше всего жрут CPU;
+
+top -cum – по накопленному времени (полезно смотреть цепочки);
+
+web – открыть граф в браузере (нужен graphviz).
+
+go tool pprof http://localhost:6060/debug/pprof/heap
+
+
+Внутри pprof:
+
+top – какие функции больше всего памяти держат;
+
+web – посмотреть граф.
+
