@@ -60,56 +60,50 @@ FEE_PCT=0.1          # 0.1% = 0.001
 MIN_PROFIT_PCT=0.3   # 0.3% = 0.003
 
 
-// Консумер: на каждый тик котировки пересчитывает арбитраж
+
+// Консумер: на КАЖДОМ тике пересчитывает все треугольники
 go func(tris []Triangle, ctx context.Context) {
-    last := make(map[string]Quote)
+	last := make(map[string]Quote)
 
-    // минимальный интервал между выводами, чтобы не зафлудить stdout
-    const minLogGap = 200 * time.Millisecond
-    nextLogTime := time.Now()
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
 
-    for {
-        select {
-        case ev, ok := <-events:
-            if !ok {
-                return
-            }
-            // обновили котировку по символу
-            last[ev.Symbol] = Quote{
-                Bid:    ev.Bid,
-                Ask:    ev.Ask,
-                BidQty: ev.BidQty,
-                AskQty: ev.AskQty,
-            }
+			// обновляем последнюю котировку по символу
+			last[ev.Symbol] = Quote{
+				Bid:    ev.Bid,
+				Ask:    ev.Ask,
+				BidQty: ev.BidQty,
+				AskQty: ev.AskQty,
+			}
 
-            // ограничиваем частоту логов
-            if time.Now().Before(nextLogTime) {
-                continue
-            }
-            nextLogTime = time.Now().Add(minLogGap)
+			// считаем треугольники на каждом тике
+			prof := findProfitableTriangles(tris, last)
+			if len(prof) == 0 {
+				// прибыльных нет — вообще ничего не выводим
+				continue
+			}
 
-            prof := findProfitableTriangles(tris, last)
-            if len(prof) == 0 {
-                // прибыльных нет – молчим
-                continue
-            }
+			fmt.Printf("\nquotes known: %d symbols, profitable triangles: %d\n",
+				len(last), len(prof))
 
-            fmt.Printf("\nquotes known: %d symbols, profitable triangles: %d\n",
-                len(last), len(prof))
+			maxShow := 5
+			if len(prof) < maxShow {
+				maxShow = len(prof)
+			}
+			for i := 0; i < maxShow; i++ {
+				printTriangleWithDetails(prof[i], last)
+			}
 
-            maxShow := 5
-            if len(prof) < maxShow {
-                maxShow = len(prof)
-            }
-            for i := 0; i < maxShow; i++ {
-                printTriangleWithDetails(prof[i], last)
-            }
-
-        case <-ctx.Done():
-            return
-        }
-    }
+		case <-ctx.Done():
+			return
+		}
+	}
 }(tris, ctx)
+
 
 
 
