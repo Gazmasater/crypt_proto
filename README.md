@@ -727,4 +727,10 @@ func main() {
 }
 
 
+quotes known: 360 symbols, profitable triangles (on AAVEUSDT update): 1
+[ARB] +3864251.067%  AAVE→USDT→USDC→AAVE
+  AAVE/USDT (AAVEUSDT): bid=196.8100000000 ask=196.9300000000  spread=0.1200000000 (0.06095%)  bidQty=0.0000 askQty=0.0000
+  USDT/USDC (AAVEUSDC): bid=196.4900000000 ask=197.2100000000  spread=0.7200000000 (0.36576%)  bidQty=0.0000 askQty=0.0000
+  AAVE/USDC (USDCUSDT): bid=0.9998000000 ask=0.9999000000  spread=0.0001000000 (0.01000%)  bidQty=0.0000 askQty=0.0000
+
 
