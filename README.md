@@ -3,36 +3,13 @@
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go run .
-2025/12/09 10:44:49.019965 [PRIV] create listenKey err: listenKey 400: {"code":10072,"msg":"Api key info invalid"}
-2025/12/09 10:44:49.064542 [PUB] connected to wss://wbs-api.mexc.com/ws
-2025/12/09 10:44:49.064696 [PUB] SUB → spot@public.aggre.bookTicker.v3.api.pb@100ms@BTCUSDT
-2025/12/09 10:44:49.383447 [PUB ACK]
-{
-  "code": 0,
-  "id": 1765266289,
-  "msg": "spot@public.aggre.bookTicker.v3.api.pb@100ms@BTCUSDT"
-}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-{"type":"bookTicker","s":"BTCUSDT","mid":90490.8950000000}
-2025/12/09 10:44:51.651214 [PRIV] create listenKey err: listenKey 400: {"code":10072,"msg":"Api key info invalid"}
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ git push origin privat
+To https://github.com/Gazmasater/crypt_proto.git
+ ! [rejected]        privat -> privat (fetch first)
+error: failed to push some refs to 'https://github.com/Gazmasater/crypt_proto.git'
+hint: Updates were rejected because the remote contains work that you do not
+hint: have locally. This is usually caused by another repository pushing to
+hint: the same ref. If you want to integrate the remote changes, use
+hint: 'git pull' before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ 
