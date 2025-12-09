@@ -714,5 +714,29 @@ func main() {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/main.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "b1.PublicBookTicker.GetBidVolume undefined (type *pb.PublicBookTickerV3Api has no field or method GetBidVolume)",
+	"source": "compiler",
+	"startLineNumber": 210,
+	"startColumn": 29,
+	"endLineNumber": 210,
+	"endColumn": 41,
+	"origin": "extHost1"
+}]
+
+
 
 
