@@ -60,74 +60,56 @@ FEE_PCT=0.1          # 0.1% = 0.001
 MIN_PROFIT_PCT=0.3   # 0.3% = 0.003
 
 
-// Возвращаем symbol, bid, ask (объёмы пока 0 — заполним, когда увидим реальные поля в pb)
-func parsePBWrapperQuote(raw []byte) (sym string, bid, ask, bidQty, askQty float64, ok bool) {
-	w, _ := wrapperPool.Get().(*pb.PushDataV3ApiWrapper)
-	defer func() {
-		*w = pb.PushDataV3ApiWrapper{}
-		wrapperPool.Put(w)
-	}()
+// Консумер: на каждый тик котировки пересчитывает арбитраж
+go func(tris []Triangle, ctx context.Context) {
+    last := make(map[string]Quote)
 
-	if err := proto.Unmarshal(raw, w); err != nil {
-		return "", 0, 0, 0, 0, false
-	}
+    // минимальный интервал между выводами, чтобы не зафлудить stdout
+    const minLogGap = 200 * time.Millisecond
+    nextLogTime := time.Now()
 
-	sym = w.GetSymbol()
-	if sym == "" {
-		ch := w.GetChannel()
-		if i := strings.LastIndex(ch, "@"); i >= 0 && i+1 < len(ch) {
-			sym = ch[i+1:]
-		}
-	}
-	if sym == "" {
-		return "", 0, 0, 0, 0, false
-	}
+    for {
+        select {
+        case ev, ok := <-events:
+            if !ok {
+                return
+            }
+            // обновили котировку по символу
+            last[ev.Symbol] = Quote{
+                Bid:    ev.Bid,
+                Ask:    ev.Ask,
+                BidQty: ev.BidQty,
+                AskQty: ev.AskQty,
+            }
 
-	// PublicBookTicker
-	if b1, ok1 := w.GetBody().(*pb.PushDataV3ApiWrapper_PublicBookTicker); ok1 && b1.PublicBookTicker != nil {
-		bp := b1.PublicBookTicker.GetBidPrice()
-		ap := b1.PublicBookTicker.GetAskPrice()
-		if bp == "" || ap == "" {
-			return "", 0, 0, 0, 0, false
-		}
+            // ограничиваем частоту логов
+            if time.Now().Before(nextLogTime) {
+                continue
+            }
+            nextLogTime = time.Now().Add(minLogGap)
 
-		bid, err1 := strconv.ParseFloat(bp, 64)
-		ask, err2 := strconv.ParseFloat(ap, 64)
-		if err1 != nil || err2 != nil || bid <= 0 || ask <= 0 {
-			return "", 0, 0, 0, 0, false
-		}
+            prof := findProfitableTriangles(tris, last)
+            if len(prof) == 0 {
+                // прибыльных нет – молчим
+                continue
+            }
 
-		// объёмы пока не парсим — ставим 0
-		return sym, bid, ask, 0, 0, true
-	}
+            fmt.Printf("\nquotes known: %d symbols, profitable triangles: %d\n",
+                len(last), len(prof))
 
-	// PublicAggreBookTicker
-	if b2, ok2 := w.GetBody().(*pb.PushDataV3ApiWrapper_PublicAggreBookTicker); ok2 && b2.PublicAggreBookTicker != nil {
-		bp := b2.PublicAggreBookTicker.GetBidPrice()
-		ap := b2.PublicAggreBookTicker.GetAskPrice()
-		if bp == "" || ap == "" {
-			return "", 0, 0, 0, 0, false
-		}
+            maxShow := 5
+            if len(prof) < maxShow {
+                maxShow = len(prof)
+            }
+            for i := 0; i < maxShow; i++ {
+                printTriangleWithDetails(prof[i], last)
+            }
 
-		bid, err1 := strconv.ParseFloat(bp, 64)
-		ask, err2 := strconv.ParseFloat(ap, 64)
-		if err1 != nil || err2 != nil || bid <= 0 || ask <= 0 {
-			return "", 0, 0, 0, 0, false
-		}
-
-		// объёмы пока не парсим — ставим 0
-		return sym, bid, ask, 0, 0, true
-	}
-
-	return "", 0, 0, 0, 0, false
-}
-
-
-[ARB] +0.387%  BDX→USDT  USDT→BTC  BTC→BDX
-  BDXBTC (BDX/BTC): bid=0.0000009479 ask=0.0000009548  spread=0.0000000069 (0.72529%)  bidQty=0.0000 askQty=0.0000
-  BDXUSDT (BDX/USDT): bid=0.0869300000 ask=0.0870700000  spread=0.0001400000 (0.16092%)  bidQty=0.0000 askQty=0.0000
-  BTCUSDT (BTC/USDT): bid=90421.9500000000 ask=90422.0600000000  spread=0.1100000000 (0.00012%)  bidQty=0.0000 askQty=0.0000
-
+        case <-ctx.Done():
+            return
+        }
+    }
+}(tris, ctx)
 
 
 
