@@ -221,5 +221,90 @@ func runPublicBookTicker(ctx context.Context, wg *sync.WaitGroup, symbol, interv
 
 			switch mt {
 			case websocket.TextMessage:
-				//
+				// ACK/ошибки подписки и т.п. — только в debug
+				var tmp any
+				if err := json.Unmarshal(raw, &tmp); err == nil {
+					j, _ := json.Marshal(tmp)
+					dlog("[PUB TEXT] %s", string(j))
+				} else {
+					dlog("[PUB TEXT RAW] %s", string(raw))
+				}
+			case websocket.BinaryMessage:
+				if sym, mid, ok := parsePBWrapperMid(raw); ok {
+					ev := Event{Symbol: sym, Mid: mid}
+					select {
+					case out <- ev:
+					case <-ctx.Done():
+						close(stopPing)
+						_ = conn.Close()
+						return
+					}
+				}
+			default:
+				// игнорируем прочие типы
+			}
+		}
+
+		// cleanup + реконнект
+		close(stopPing)
+		_ = conn.Close()
+		time.Sleep(retry)
+		if retry < maxRetry {
+			retry *= 2
+			if retry > maxRetry {
+				retry = maxRetry
+			}
+		}
+	}
+}
+
+/* =========================  MAIN  ========================= */
+
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+	debug = cfg.Debug
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	events := make(chan Event, 4096)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go runPublicBookTicker(ctx, &wg, cfg.Symbol, cfg.BookInterval, events)
+
+	// Консумер: хранит последний mid по символу, печатает агрегированно раз в секунду
+	go func() {
+		lastMid := make(map[string]float64)
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					return
+				}
+				lastMid[ev.Symbol] = ev.Mid
+			case <-ticker.C:
+				for sym, mid := range lastMid {
+					fmt.Printf("[MID] %s = %.10f\n", sym, mid)
+				}
+			}
+		}
+	}()
+
+	<-ctx.Done()
+
+	time.Sleep(300 * time.Millisecond)
+	close(events)
+	wg.Wait()
+	log.Println("bye")
+}
+
 
