@@ -207,23 +207,15 @@ func parsePBWrapperQuote(raw []byte) (sym string, bid, ask, bidQty, askQty float
 		if bp == "" || ap == "" {
 			return "", 0, 0, 0, 0, false
 		}
-		bv := b1.PublicBookTicker.GetBidVolume()
-		av := b1.PublicBookTicker.GetAskVolume()
 
 		bid, err1 := strconv.ParseFloat(bp, 64)
 		ask, err2 := strconv.ParseFloat(ap, 64)
-		bidQty, err3 := strconv.ParseFloat(bv, 64)
-		askQty, err4 := strconv.ParseFloat(av, 64)
 		if err1 != nil || err2 != nil || bid <= 0 || ask <= 0 {
 			return "", 0, 0, 0, 0, false
 		}
-		if err3 != nil {
-			bidQty = 0
-		}
-		if err4 != nil {
-			askQty = 0
-		}
-		return sym, bid, ask, bidQty, askQty, true
+
+		// объёмы пока не парсим — ставим 0
+		return sym, bid, ask, 0, 0, true
 	}
 
 	// PublicAggreBookTicker
@@ -233,23 +225,15 @@ func parsePBWrapperQuote(raw []byte) (sym string, bid, ask, bidQty, askQty float
 		if bp == "" || ap == "" {
 			return "", 0, 0, 0, 0, false
 		}
-		bv := b2.PublicAggreBookTicker.GetBidVolume()
-		av := b2.PublicAggreBookTicker.GetAskVolume()
 
 		bid, err1 := strconv.ParseFloat(bp, 64)
 		ask, err2 := strconv.ParseFloat(ap, 64)
-		bidQty, err3 := strconv.ParseFloat(bv, 64)
-		askQty, err4 := strconv.ParseFloat(av, 64)
 		if err1 != nil || err2 != nil || bid <= 0 || ask <= 0 {
 			return "", 0, 0, 0, 0, false
 		}
-		if err3 != nil {
-			bidQty = 0
-		}
-		if err4 != nil {
-			askQty = 0
-		}
-		return sym, bid, ask, bidQty, askQty, true
+
+		// объёмы пока не парсим — ставим 0
+		return sym, bid, ask, 0, 0, true
 	}
 
 	return "", 0, 0, 0, 0, false
@@ -600,11 +584,12 @@ func main() {
 		}(idx, chunk)
 	}
 
-	// Консумер: хранит последние котировки, раз в секунду ищет прибыльные треугольники
-	go func(tris []Triangle) {
+	go func(tris []Triangle, ctx context.Context) {
 		last := make(map[string]Quote)
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
+
+		// минимальный интервал между выводами, чтобы не зафлудить stdout
+		const minLogGap = 200 * time.Millisecond
+		nextLogTime := time.Now()
 
 		for {
 			select {
@@ -612,23 +597,29 @@ func main() {
 				if !ok {
 					return
 				}
+				// обновили котировку по символу
 				last[ev.Symbol] = Quote{
 					Bid:    ev.Bid,
 					Ask:    ev.Ask,
 					BidQty: ev.BidQty,
 					AskQty: ev.AskQty,
 				}
-			case <-ticker.C:
+
+				// ограничиваем частоту логов
+				if time.Now().Before(nextLogTime) {
+					continue
+				}
+				nextLogTime = time.Now().Add(minLogGap)
+
 				prof := findProfitableTriangles(tris, last)
 				if len(prof) == 0 {
-					// прибыльных нет — ничего не пишем
+					// прибыльных нет – молчим
 					continue
 				}
 
 				fmt.Printf("\nquotes known: %d symbols, profitable triangles: %d\n",
 					len(last), len(prof))
 
-				// максимум несколько штук за тик
 				maxShow := 5
 				if len(prof) < maxShow {
 					maxShow = len(prof)
@@ -636,9 +627,12 @@ func main() {
 				for i := 0; i < maxShow; i++ {
 					printTriangleWithDetails(prof[i], last)
 				}
+
+			case <-ctx.Done():
+				return
 			}
 		}
-	}(tris)
+	}(tris, ctx)
 
 	<-ctx.Done()
 	log.Println("ctx done, waiting ws goroutines...")
