@@ -723,4 +723,10 @@ func main() {
 
 
 
+uotes known: 360 symbols, profitable triangles (on DOTUSDC update): 2
+[ARB] +178290041384.829%  DOT→BTC→USDC→DOT
+  DOT/BTC (DOTBTC): bid=0.0000236000 ask=0.0000236900  spread=0.0000000900 (0.38063%)  bidQty=0.0000 askQty=0.0000
+  BTC/USDC (DOTUSDC): bid=2.1500000000 ask=2.1600000000  spread=0.0100000000 (0.46404%)  bidQty=0.0000 askQty=0.0000
+  DOT/USDC (BTCUSDC): bid=91110.1300000000 ask=91131.3400000000  spread=21.2100000000 (0.02328%)  bidQty=0.0000 askQty=0.0000
+
 
