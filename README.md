@@ -115,7 +115,6 @@ func loadConfig() (Config, error) {
 		cfg.BookInterval = "100ms"
 	}
 
-	// комиссия, % (например, 0.1 для 0.1%)
 	if s := os.Getenv("FEE_PCT"); s != "" {
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil {
@@ -123,10 +122,9 @@ func loadConfig() (Config, error) {
 		}
 		cfg.FeePct = f
 	} else {
-		cfg.FeePct = 0.1
+		cfg.FeePct = 0.1 // по умолчанию 0.1%
 	}
 
-	// минимальная прибыль по кругу, % (например, 0.5)
 	if s := os.Getenv("MIN_PROFIT_PCT"); s != "" {
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil {
@@ -134,7 +132,7 @@ func loadConfig() (Config, error) {
 		}
 		cfg.MinProfitPct = f
 	} else {
-		cfg.MinProfitPct = 0.5
+		cfg.MinProfitPct = 0.5 // по умолчанию 0.5%
 	}
 
 	if strings.ToLower(os.Getenv("DEBUG")) == "true" {
@@ -144,7 +142,7 @@ func loadConfig() (Config, error) {
 	return cfg, nil
 }
 
-/* =========================  LOGGING / GLOBALЫ  ========================= */
+/* =========================  GLOBALS  ========================= */
 
 var (
 	debug         bool
@@ -158,55 +156,50 @@ func dlog(format string, args ...any) {
 	}
 }
 
-/* =========================  MARKET / TRIANGLE TYPES  ========================= */
+/* =========================  TYPES  ========================= */
 
 type Quote struct {
-	Bid    float64
-	Ask    float64
-	BidQty float64
-	AskQty float64
+	Bid float64
+	Ask float64
 }
 
 type Event struct {
 	Symbol string
 	Bid    float64
 	Ask    float64
-	BidQty float64
-	AskQty float64
 }
 
 // Треугольник по валютам A,B,C и рынкам:
-//   MAB = A/B, MBC = B/C, MAC = A/C
-// где тикеры рынков: A+B, B+C, A+C (например, BTCUSDT, ETHUSDT)
+//  A/B, B/C, A/C
+// тикеры: AB, BC, AC (например BTCUSDT, ETHUSDT)
 type Triangle struct {
 	A   string
 	B   string
 	C   string
-	MAB string // A/B  (тикер, например BTCUSDT)
+	MAB string // A/B
 	MBC string // B/C
 	MAC string // A/C
 }
 
 type TriangleArb struct {
 	T         Triangle
-	ProfitPct float64 // прибыль в %
+	ProfitPct float64
 }
 
-/* =========================  ЗАГРУЗКА ТРЕУГОЛЬНИКОВ  ========================= */
+/* =========================  TRIANGLES LOAD  ========================= */
 
 // triangles_markets.csv строками вида:
 // base1,quote1,base2,quote2,base3,quote3
-// пример: ETC,BTC,BTC,USDC,ETC,USDC
-// считаем, что это:
 //
-// 1) рынок A/B: base1,quote1      => A=base1, B=quote1
-// 2) рынок B/C: base2,quote2      => B=base2, C=quote2
-// 3) рынок A/C: base3,quote3      => A=base3, C=quote3
+// предполагаем структуру:
+//   рынок1: base1/quote1 = A/B
+//   рынок2: base2/quote2 = B/C
+//   рынок3: base3/quote3 = A/C
 //
-// и тикеры:
-//  MAB = A+B
-//  MBC = B+C
-//  MAC = A+C
+// и что:
+//   base1 == base3 == A
+//   quote1 == base2 == B
+//   quote2 == quote3 == C
 func loadTrianglesFromFile(path string) ([]Triangle, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -242,10 +235,12 @@ func loadTrianglesFromFile(path string) ([]Triangle, error) {
 			continue
 		}
 
-		// предполагаем, что:
-		//   base1 == base3 == A
-		//   quote1 == base2 == B
-		//   quote2 == quote3 == C
+		// валидируем структуру
+		if base1 != base3 || quote1 != base2 || quote2 != quote3 {
+			dlog("skip row: %v (inconsistent A/B/C mapping)", rec)
+			continue
+		}
+
 		A := base1
 		B := quote1
 		C := quote2
@@ -254,21 +249,19 @@ func loadTrianglesFromFile(path string) ([]Triangle, error) {
 		MBC := base2 + quote2 // B/C
 		MAC := base3 + quote3 // A/C
 
-		t := Triangle{
+		tris = append(tris, Triangle{
 			A:   A,
 			B:   B,
 			C:   C,
 			MAB: MAB,
 			MBC: MBC,
 			MAC: MAC,
-		}
-		tris = append(tris, t)
+		})
 	}
 
 	return tris, nil
 }
 
-// получаем список уникальных тикеров рынков
 func extractSymbols(tris []Triangle) []string {
 	m := make(map[string]struct{})
 	for _, t := range tris {
@@ -290,7 +283,7 @@ func extractSymbols(tris []Triangle) []string {
 	return out
 }
 
-// индекс: symbol -> какие треугольники его используют
+// индекс: символ рынка → индексы треугольников
 func buildTriangleIndex(tris []Triangle) map[string][]int {
 	idx := make(map[string][]int)
 	for i, t := range tris {
@@ -304,10 +297,9 @@ func buildTriangleIndex(tris []Triangle) map[string][]int {
 	return idx
 }
 
-/* =========================  PROTOBUF PARSER (MEXC PB v3)  ========================= */
+/* =========================  PROTO PARSER  ========================= */
 
-// Достаём символ и bid/ask из PB-обёртки.
-// Поддерживаем PublicBookTicker и PublicAggreBookTicker.
+// Парсим protobuf-обёртку MEXC PB v3: достаём symbol, bid, ask.
 func parsePBWrapperQuote(raw []byte) (sym string, bid, ask float64, ok bool) {
 	var w pb.PushDataV3ApiWrapper
 	if err := proto.Unmarshal(raw, &w); err != nil {
@@ -360,37 +352,57 @@ func parsePBWrapperQuote(raw []byte) (sym string, bid, ask float64, ok bool) {
 
 /* =========================  TRIANGLE EVAL  ========================= */
 
-// Считаем арбитраж по треугольнику t на основе mid-цен.
-// Формула:
-//   pAB = A/B (B за 1 A)
-//   pBC = B/C (C за 1 B)
-//   pAC = A/C (C за 1 A)
+func pow3(x float64) float64 { return x * x * x }
+
+// Считаем арбитраж по треугольнику t на mid-ценах.
+//  pAB = A/B (B за 1 A)
+//  pBC = B/C (C за 1 B)
+//  pAC = A/C (C за 1 A)
 //
-// и арб-фактор:
-//   raw = (pAB * pBC) / pAC
-// учёт комиссии на 3 сделки: factor = raw * (1-feeRate)^3
-// если factor <= 1+minProfitRate → арба нет.
+// cross = (pAB * pBC) / pAC
+// factor = cross * (1-fee)^3
+// profit = factor - 1
 func evalTriangle(t Triangle, quotes map[string]Quote) *TriangleArb {
-	qAB, ok1 := quotes[t.MAB]
-	qBC, ok2 := quotes[t.MBC]
-	qAC, ok3 := quotes[t.MAC]
+	qAB, ok1 := quotes[t.MAB] // A/B
+	qBC, ok2 := quotes[t.MBC] // B/C
+	qAC, ok3 := quotes[t.MAC] // A/C
 	if !ok1 || !ok2 || !ok3 {
 		return nil
 	}
-	if qAB.Bid <= 0 || qAB.Ask <= 0 || qBC.Bid <= 0 || qBC.Ask <= 0 || qAC.Bid <= 0 || qAC.Ask <= 0 {
+	if qAB.Bid <= 0 || qAB.Ask <= 0 ||
+		qBC.Bid <= 0 || qBC.Ask <= 0 ||
+		qAC.Bid <= 0 || qAC.Ask <= 0 {
 		return nil
 	}
 
 	midAB := (qAB.Bid + qAB.Ask) / 2
 	midBC := (qBC.Bid + qBC.Ask) / 2
 	midAC := (qAC.Bid + qAC.Ask) / 2
-	if midAB <= 0 || midBC <= 0 || midAC <= 0 {
+
+	// sanity-чек по самим ценам
+	const (
+		minPrice = 1e-12
+		maxPrice = 1e9
+	)
+	if midAB < minPrice || midAB > maxPrice ||
+		midBC < minPrice || midBC > maxPrice ||
+		midAC < minPrice || midAC > maxPrice {
+		dlog("skip triangle %s-%s-%s: mid out of range (AB=%g BC=%g AC=%g)",
+			t.A, t.B, t.C, midAB, midBC, midAC)
 		return nil
 	}
 
-	raw := (midAB * midBC) / midAC
-	factor := raw * pow3(1.0-feeRate) // комиссия на 3 сделки
+	cross := (midAB * midBC) / midAC
 
+	// ещё sanity: cross должен быть около 1,
+	// если вдруг cross 1000 или 1e-6 — это почти точно мусор или неправильный треугольник.
+	if cross < 0.5 || cross > 1.5 {
+		dlog("suspicious cross=%g for %s-%s-%s (AB=%g BC=%g AC=%g)",
+			cross, t.A, t.B, t.C, midAB, midBC, midAC)
+		return nil
+	}
+
+	factor := cross * pow3(1.0-feeRate)
 	profit := factor - 1.0
 	if profit <= minProfitRate {
 		return nil
@@ -402,11 +414,6 @@ func evalTriangle(t Triangle, quotes map[string]Quote) *TriangleArb {
 	}
 }
 
-func pow3(x float64) float64 {
-	return x * x * x
-}
-
-// Считаем только по подмножеству треугольников (индексы idxs)
 func findProfitableTrianglesForSymbol(
 	tris []Triangle,
 	idxs []int,
@@ -441,13 +448,12 @@ func printTriangleWithDetails(arb TriangleArb, quotes map[string]Quote) {
 		mid := (q.Bid + q.Ask) / 2
 		spreadAbs := q.Ask - q.Bid
 		spreadPct := spreadAbs / mid * 100
-		fmt.Printf("  %s (%s): bid=%.*f ask=%.*f  spread=%.*f (%0.5f%%)  bidQty=%0.4f askQty=%0.4f\n",
+		fmt.Printf("  %s (%s): bid=%.*f ask=%.*f  spread=%.*f (%0.5f%%)\n",
 			label, mkt,
 			10, q.Bid,
 			10, q.Ask,
 			10, spreadAbs,
 			spreadPct,
-			q.BidQty, q.AskQty,
 		)
 	}
 
@@ -457,7 +463,7 @@ func printTriangleWithDetails(arb TriangleArb, quotes map[string]Quote) {
 	fmt.Println()
 }
 
-/* =========================  WS RUNNER (PUBLIC, MULTI-SYMBOL)  ========================= */
+/* =========================  WS RUNNER  ========================= */
 
 func runPublicBookTicker(
 	ctx context.Context,
@@ -475,7 +481,6 @@ func runPublicBookTicker(
 	)
 
 	urlWS := "wss://wbs-api.mexc.com/ws"
-
 	retry := baseRetry
 
 	for {
@@ -505,11 +510,10 @@ func runPublicBookTicker(
 		var lastPing time.Time
 		conn.SetPongHandler(func(appData string) error {
 			rtt := time.Since(lastPing)
-			dlog("[WS #%d] PONG via %s in %v", connID, urlWS, rtt)
+			dlog("[WS #%d] PONG in %v", connID, rtt)
 			return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		})
 
-		// ping goroutine
 		stopPing := make(chan struct{})
 		go func(id int, c *websocket.Conn, stop <-chan struct{}) {
 			t := time.NewTicker(45 * time.Second)
@@ -528,11 +532,13 @@ func runPublicBookTicker(
 			}
 		}(connID, conn, stopPing)
 
-		// подписка: пачка топиков
+		// подписка на пачку топиков
 		topics := make([]string, 0, len(symbols))
 		for _, s := range symbols {
-			topics = append(topics,
-				fmt.Sprintf("spot@public.aggre.bookTicker.v3.api.pb@%s@%s", interval, s))
+			topics = append(
+				topics,
+				fmt.Sprintf("spot@public.aggre.bookTicker.v3.api.pb@%s@%s", interval, s),
+			)
 		}
 
 		sub := map[string]any{
@@ -566,7 +572,6 @@ func runPublicBookTicker(
 				} else {
 					dlog("[WS #%d TEXT RAW] %s", connID, string(raw))
 				}
-
 			case websocket.BinaryMessage:
 				if sym, bid, ask, ok := parsePBWrapperQuote(raw); ok {
 					ev := Event{Symbol: sym, Bid: bid, Ask: ask}
@@ -579,11 +584,10 @@ func runPublicBookTicker(
 					}
 				}
 			default:
-				// игнор прочих типов
+				// игнор
 			}
 		}
 
-		// cleanup + реконнект
 		close(stopPing)
 		_ = conn.Close()
 		time.Sleep(retry)
@@ -601,7 +605,7 @@ func runPublicBookTicker(
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	// pprof HTTP-сервер
+	// pprof-сервер
 	go func() {
 		log.Println("pprof on http://localhost:6060/debug/pprof/")
 		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
@@ -632,11 +636,9 @@ func main() {
 	}
 	log.Printf("треугольников всего: %d", len(tris))
 
-	// индекс: symbol -> индексы треугольников
 	triBySymbol := buildTriangleIndex(tris)
 	log.Printf("символов в индексе треугольников: %d", len(triBySymbol))
 
-	// список всех символов для подписки
 	symbols := extractSymbols(tris)
 	log.Printf("символов для подписки всего: %d", len(symbols))
 
@@ -668,7 +670,7 @@ func main() {
 	}
 
 	// Консумер: на КАЖДОМ тике считает только треугольники,
-	// где участвует обновившийся символ.
+	// где участвует обновившийся символ, и выводит ТОЛЬКО прибыльные.
 	go func(tris []Triangle, ctx context.Context, triBySymbol map[string][]int) {
 		last := make(map[string]Quote)
 
@@ -679,15 +681,8 @@ func main() {
 					return
 				}
 
-				// обновляем последнюю котировку по символу
-				last[ev.Symbol] = Quote{
-					Bid:    ev.Bid,
-					Ask:    ev.Ask,
-					BidQty: ev.BidQty,
-					AskQty: ev.AskQty,
-				}
+				last[ev.Symbol] = Quote{Bid: ev.Bid, Ask: ev.Ask}
 
-				// смотрим только треугольники, где этот symbol участвует
 				idxs := triBySymbol[ev.Symbol]
 				if len(idxs) == 0 {
 					continue
@@ -726,11 +721,5 @@ func main() {
 	log.Println("bye")
 }
 
-
-quotes known: 360 symbols, profitable triangles (on AAVEUSDT update): 1
-[ARB] +3864251.067%  AAVE→USDT→USDC→AAVE
-  AAVE/USDT (AAVEUSDT): bid=196.8100000000 ask=196.9300000000  spread=0.1200000000 (0.06095%)  bidQty=0.0000 askQty=0.0000
-  USDT/USDC (AAVEUSDC): bid=196.4900000000 ask=197.2100000000  spread=0.7200000000 (0.36576%)  bidQty=0.0000 askQty=0.0000
-  AAVE/USDC (USDCUSDT): bid=0.9998000000 ask=0.9999000000  spread=0.0001000000 (0.01000%)  bidQty=0.0000 askQty=0.0000
 
 
