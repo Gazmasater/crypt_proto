@@ -60,8 +60,8 @@ func loadConfig() Config {
 		bi = "100ms"
 	}
 
-	feePct := loadEnvFloat("FEE_PCT", 0.1)        // проценты
-	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.3) // проценты
+	feePct := loadEnvFloat("FEE_PCT", 0.04)       // проценты
+	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.5) // проценты
 
 	debug := strings.ToLower(os.Getenv("DEBUG")) == "true"
 
