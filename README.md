@@ -729,4 +729,30 @@ func main() {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.crypt_proto.samples.cpu.004.pb.gz
+File: crypt_proto
+Build ID: f0a2617e0041c50521d3b339469c6f6bafe54141
+Type: cpu
+Time: 2025-12-10 03:17:58 MSK
+Duration: 30.08s, Total samples = 4.65s (15.46%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 2.43s, 52.26% of 4.65s total
+Dropped 137 nodes (cum <= 0.02s)
+Showing top 10 nodes out of 136
+      flat  flat%   sum%        cum   cum%
+     1.53s 32.90% 32.90%      1.53s 32.90%  internal/runtime/syscall.Syscall6
+     0.41s  8.82% 41.72%      0.41s  8.82%  runtime.futex
+     0.10s  2.15% 43.87%      0.49s 10.54%  google.golang.org/protobuf/internal/impl.(*MessageInfo).unmarshalPointerEager
+     0.09s  1.94% 45.81%      0.31s  6.67%  runtime.selectgo
+     0.06s  1.29% 47.10%      0.06s  1.29%  memeqbody
+     0.06s  1.29% 48.39%      0.06s  1.29%  runtime.nextFreeFast (inline)
+     0.06s  1.29% 49.68%      0.06s  1.29%  unicode/utf8.Valid
+     0.04s  0.86% 50.54%      0.06s  1.29%  github.com/gorilla/websocket.(*messageReader).Read
+     0.04s  0.86% 51.40%      0.66s 14.19%  google.golang.org/protobuf/proto.UnmarshalOptions.unmarshal
+     0.04s  0.86% 52.26%      0.31s  6.67%  main.main.func2
+
+
 
