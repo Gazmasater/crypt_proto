@@ -88,3 +88,9 @@ Showing top 10 nodes out of 148
      240ms  1.32% 49.67%      660ms  3.64%  runtime.scanobject
 
 
+	 [ARB] +0.779%  EUR→USDT→DOGE→EUR
+  EURUSDT (EUR/USDT): bid=1.1642000000 ask=1.1699000000  spread=0.0057000000 (0.48841%)  bidQty=12985.2100 askQty=1300.1900
+  DOGEUSDT (DOGE/USDT): bid=0.1480100000 ask=0.1481500000  spread=0.0001400000 (0.09454%)  bidQty=1507.9900 askQty=2544.1700
+  DOGEEUR (DOGE/EUR): bid=0.1284000000 ask=0.1286400000  spread=0.0002400000 (0.18674%)  bidQty=2000.0000 askQty=784.7000
+
+
