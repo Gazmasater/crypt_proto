@@ -64,28 +64,27 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.crypt_proto.samples.cpu.006.pb.gz
+Saved profile in /home/gaz358/pprof/pprof.crypt_proto.samples.cpu.008.pb.gz
 File: crypt_proto
 Build ID: e917f6089adf5df784007f2200e913a21bb75414
 Type: cpu
-Time: 2025-12-10 15:20:13 MSK
-Duration: 30.16s, Total samples = 7.12s (23.61%)
+Time: 2025-12-10 16:21:00 MSK
+Duration: 30.18s, Total samples = 18.12s (60.04%)
 Entering interactive mode (type "help" for commands, "o" for options)
 (pprof) top
-Showing nodes accounting for 3460ms, 48.60% of 7120ms total
-Dropped 151 nodes (cum <= 35.60ms)
-Showing top 10 nodes out of 158
+Showing nodes accounting for 9000ms, 49.67% of 18120ms total
+Dropped 288 nodes (cum <= 90.60ms)
+Showing top 10 nodes out of 148
       flat  flat%   sum%        cum   cum%
-    1650ms 23.17% 23.17%     1650ms 23.17%  internal/runtime/syscall.Syscall6
-     760ms 10.67% 33.85%      760ms 10.67%  runtime.futex
-     180ms  2.53% 36.38%      180ms  2.53%  runtime.procyield
-     160ms  2.25% 38.62%      160ms  2.25%  runtime.nextFreeFast (inline)
-     150ms  2.11% 40.73%      190ms  2.67%  runtime.unlock2
-     130ms  1.83% 42.56%      570ms  8.01%  runtime.selectgo
-     120ms  1.69% 44.24%      330ms  4.63%  runtime.lock2
-     110ms  1.54% 45.79%      110ms  1.54%  strconv.readFloat
-     100ms  1.40% 47.19%     1000ms 14.04%  google.golang.org/protobuf/internal/impl.(*MessageInfo).unmarshalPointerEager
-     100ms  1.40% 48.60%      140ms  1.97%  runtime.findObject
-(pprof) 
+    4290ms 23.68% 23.68%     4290ms 23.68%  internal/runtime/syscall.Syscall6
+    1590ms  8.77% 32.45%     1590ms  8.77%  runtime.futex
+     640ms  3.53% 35.98%      640ms  3.53%  strconv.readFloat
+     460ms  2.54% 38.52%      460ms  2.54%  runtime.procyield
+     410ms  2.26% 40.78%     2820ms 15.56%  google.golang.org/protobuf/internal/impl.(*MessageInfo).unmarshalPointerEager
+     370ms  2.04% 42.83%      370ms  2.04%  runtime.usleep
+     360ms  1.99% 44.81%     1660ms  9.16%  runtime.selectgo
+     330ms  1.82% 46.63%      330ms  1.82%  runtime.nextFreeFast (inline)
+     310ms  1.71% 48.34%      860ms  4.75%  runtime.lock2
+     240ms  1.32% 49.67%      660ms  3.64%  runtime.scanobject
 
 
