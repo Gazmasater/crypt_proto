@@ -82,5 +82,52 @@ crypt_proto/
     proto_decoder.go
 
 
+	[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: debug",
+	"source": "compiler",
+	"startLineNumber": 32,
+	"startColumn": 2,
+	"endLineNumber": 32,
+	"endColumn": 7,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/mexc/ws.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: debug",
+	"source": "compiler",
+	"startLineNumber": 171,
+	"startColumn": 6,
+	"endLineNumber": 171,
+	"endColumn": 11,
+	"origin": "extHost1"
+}]
+
+
 
 
