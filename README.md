@@ -60,209 +60,29 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-Структура каталога та же (crypt_proto), внутри:
+2025-12-11 17:41:03.218
+[ARB] +0.585%  BTC→USDT→OMG→BTC
+  BTCUSDT (BTC/USDT): bid=90457.9400000000 ask=90458.1500000000  spread=0.2100000000 (0.00023%)  bidQty=0.0056 askQty=1.3562
+  OMGUSDT (OMG/USDT): bid=0.0940100000 ask=0.0941000000  spread=0.0000900000 (0.09569%)  bidQty=44.8900 askQty=90.5600
+  OMGBTC (OMG/BTC): bid=0.0000010476 ask=0.0000010488  spread=0.0000000012 (0.11448%)  bidQty=1712.2400 askQty=16.8600
 
-main.go — только запуск и pprof
+2025-12-11 17:41:03.260
+[ARB] +0.585%  BTC→USDT→OMG→BTC
+  BTCUSDT (BTC/USDT): bid=90457.9400000000 ask=90458.1400000000  spread=0.2000000000 (0.00022%)  bidQty=0.0056 askQty=1.3562
+  OMGUSDT (OMG/USDT): bid=0.0940100000 ask=0.0941000000  spread=0.0000900000 (0.09569%)  bidQty=44.8900 askQty=90.5600
+  OMGBTC (OMG/BTC): bid=0.0000010476 ask=0.0000010480  spread=0.0000000004 (0.03818%)  bidQty=1604.8200 askQty=19.3400
+____________________________________________________________________________________________
+2025-12-11 18:29:49.561
+[ARB] +1.044%  BTC→USDT→OMG→BTC
+  BTCUSDT (BTC/USDT): bid=90253.4700000000 ask=90255.3400000000  spread=1.8700000000 (0.00207%)  bidQty=1.7852 askQty=0.0216
+  OMGUSDT (OMG/USDT): bid=0.0925600000 ask=0.0931300000  spread=0.0005700000 (0.61393%)  bidQty=163.7500 askQty=46.9900
+  OMGBTC (OMG/BTC): bid=0.0000010439 ask=0.0000010521  spread=0.0000000082 (0.78244%)  bidQty=38.0200 askQty=455.0600
 
-config.go — конфиг + debug-логгер
-
-domain.go — типы и работа с треугольниками
-
-proto_decoder.go — разбор protobuf от MEXC
-
-ws.go — работа с WebSocket
-
-arb.go — расчёт треугольников, логирование, консюмер
-
-Все файлы ниже можно просто создать рядом и вставить как есть.
-
-
-
-package main
-
-import (
-	"context"
-	"encoding/json"
-	"log"
-	"sync"
-	"time"
-
-	"github.com/gorilla/websocket"
-)
-
-/* =========================  WS SUBSCRIBER  ========================= */
-
-func buildTopics(symbols []string, interval string) []string {
-	topics := make([]string, 0, len(symbols))
-	for _, s := range symbols {
-		topics = append(topics, "spot@public.aggre.bookTicker.v3.api.pb@"+interval+"@"+s)
-	}
-	return topics
-}
-
-func runPublicBookTickerWS(
-	ctx context.Context,
-	wg *sync.WaitGroup, // <-- обычный WaitGroup
-	connID int,
-	symbols []string,
-	interval string,
-	out chan<- Event,
-) {
-	defer wg.Done()
-
-	const (
-		baseRetry = 2 * time.Second
-		maxRetry  = 30 * time.Second
-	)
-
-	urlWS := "wss://wbs-api.mexc.com/ws"
-	topics := buildTopics(symbols, interval)
-	retry := baseRetry
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		conn, _, err := websocket.DefaultDialer.Dial(urlWS, nil)
-		if err != nil {
-			log.Printf("[WS #%d] dial err: %v (retry in %v)", connID, err, retry)
-			time.Sleep(retry)
-			retry = nextRetry(retry, maxRetry)
-			continue
-		}
-
-		log.Printf("[WS #%d] connected to %s (symbols: %d)", connID, urlWS, len(symbols))
-		retry = baseRetry
-
-		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-
-		var lastPing time.Time
-		conn.SetPongHandler(func(appData string) error {
-			rtt := time.Since(lastPing)
-			dlog("[WS #%d] Pong через %v", connID, rtt)
-			return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-		})
-
-		stopPing := make(chan struct{})
-		go pingLoop(connID, conn, &lastPing, stopPing)
-
-		if err := sendSubscription(conn, topics, connID); err != nil {
-			close(stopPing)
-			_ = conn.Close()
-			time.Sleep(retry)
-			retry = nextRetry(retry, maxRetry)
-			continue
-		}
-
-		if !readLoop(ctx, connID, conn, out) {
-			close(stopPing)
-			_ = conn.Close()
-			time.Sleep(retry)
-			retry = nextRetry(retry, maxRetry)
-			continue
-		}
-	}
-}
-
-func nextRetry(cur, max time.Duration) time.Duration {
-	cur *= 2
-	if cur > max {
-		return max
-	}
-	return cur
-}
-
-func pingLoop(connID int, conn *websocket.Conn, lastPing *time.Time, stop <-chan struct{}) {
-	t := time.NewTicker(45 * time.Second)
-	defer t.Stop()
-
-	for {
-		select {
-		case <-t.C:
-			*lastPing = time.Now()
-			if err := conn.WriteControl(
-				websocket.PingMessage,
-				[]byte("hb"),
-				time.Now().Add(5*time.Second),
-			); err != nil {
-				dlog("[WS #%d] ping error: %v", connID, err)
-				return
-			}
-		case <-stop:
-			return
-		}
-	}
-}
-
-func sendSubscription(conn *websocket.Conn, topics []string, connID int) error {
-	sub := map[string]any{
-		"method": "SUBSCRIPTION",
-		"params": topics,
-		"id":     time.Now().Unix(),
-	}
-	if err := conn.WriteJSON(sub); err != nil {
-		log.Printf("[WS #%d] subscribe send err: %v", connID, err)
-		return err
-	}
-	log.Printf("[WS #%d] SUB -> %d topics", connID, len(topics))
-	return nil
-}
-
-func readLoop(ctx context.Context, connID int, conn *websocket.Conn, out chan<- Event) bool {
-	for {
-		mt, raw, err := conn.ReadMessage()
-		if err != nil {
-			log.Printf("[WS #%d] read err: %v (reconnect)", connID, err)
-			return false
-		}
-
-		switch mt {
-		case websocket.TextMessage:
-			handleTextMessage(connID, raw)
-		case websocket.BinaryMessage:
-			sym, q, ok := parsePBQuote(raw)
-			if !ok {
-				continue
-			}
-			ev := Event{
-				Symbol: sym,
-				Bid:    q.Bid,
-				Ask:    q.Ask,
-				BidQty: q.BidQty,
-				AskQty: q.AskQty,
-			}
-			select {
-			case out <- ev:
-			case <-ctx.Done():
-				return true
-			}
-		default:
-			// игнор
-		}
-	}
-}
-
-func handleTextMessage(connID int, raw []byte) {
-	if !debug {
-		return
-	}
-	var tmp any
-	if err := json.Unmarshal(raw, &tmp); err == nil {
-		j, _ := json.Marshal(tmp)
-		dlog("[WS #%d TEXT] %s", connID, string(j))
-	} else {
-		dlog("[WS #%d TEXT RAW] %s", connID, string(raw))
-	}
-}
-
-
-
-
-func runPublicBookTickerWS(ctx context.Context, wg *sync.WaitGroup, ...)
-
+2025-12-11 18:29:49.601
+[ARB] +1.044%  BTC→USDT→OMG→BTC
+  BTCUSDT (BTC/USDT): bid=90253.4700000000 ask=90255.2800000000  spread=1.8100000000 (0.00201%)  bidQty=1.7852 askQty=0.0321
+  OMGUSDT (OMG/USDT): bid=0.0925600000 ask=0.0931300000  spread=0.0005700000 (0.61393%)  bidQty=163.7500 askQty=46.9900
+  OMGBTC (OMG/BTC): bid=0.0000010439 ask=0.0000010521  spread=0.0000000082 (0.78244%)  bidQty=38.0200 askQty=455.0600
 
 
 
