@@ -59,74 +59,66 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-crypt_proto/
-  pb/                     // как было
-  triangles_markets.csv   // как было
-  arbitrage.log           // лог — не код
+1. Пакет mexc: свой debug-флаг
 
-  cmd/
-    cryptarb/
-      main.go
+В начале файла mexc/ws.go (после import) добавь:
 
-  config/
-    config.go
+package mexc
 
-  domain/
-    domain.go
+import (
+    // ...
+)
 
-  arb/
-    arb.go
+// глобальный флаг для отладочных логов в пакете mexc
+var debug bool
 
-  mexc/
-    ws.go
-    proto_decoder.go
+// публичный сеттер, чтобы main мог включать/выключать
+func SetDebug(v bool) {
+    debug = v
+}
 
 
-	[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: debug",
-	"source": "compiler",
-	"startLineNumber": 32,
-	"startColumn": 2,
-	"endLineNumber": 32,
-	"endColumn": 7,
-	"origin": "extHost1"
-}]
+И оставь твой dlog примерно таким:
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/mexc/ws.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: debug",
-	"source": "compiler",
-	"startLineNumber": 171,
-	"startColumn": 6,
-	"endLineNumber": 171,
-	"endColumn": 11,
-	"origin": "extHost1"
-}]
+func dlog(format string, args ...any) {
+    if debug {
+        log.Printf(format, args...)
+    }
+}
+
+
+(если dlog уже есть – просто убедись, что он смотрит на этот debug.)
+
+2. В cmd/cryptarb/main.go убрать старый debug
+
+Скорее всего, у тебя там где-то есть строка вроде:
+
+debug = cfg.Debug
+
+
+и при этом переменная debug больше не объявлена в main.
+Эту строку нужно заменить на вызов для mexc:
+
+package main
+
+import (
+    // ...
+    "crypt_proto/mexc"
+)
+
+func main() {
+    cfg := config.Load()
+
+    // включаем/выключаем отладку в пакете mexc
+    mexc.SetDebug(cfg.Debug)
+
+    // дальше твой код...
+}
+
+
+Если в main больше нигде debug не используется – просто больше его не трогаем, он теперь «живёт» внутри mexc.
+
+
 
 
 
