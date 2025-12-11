@@ -59,39 +59,27 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+crypt_proto/
+  pb/                     // как было
+  triangles_markets.csv   // как было
+  arbitrage.log           // лог — не код
 
-cmd/
-  cryptarb/
-    main.go            // запуск: конфиг, DI
+  cmd/
+    cryptarb/
+      main.go
 
-internal/
   config/
-    config.go          // чтение .env, флагов
+    config.go
 
   domain/
-    triangle.go        // Triangle, Leg, Pair, buildTriangleFromPairs
-    quote.go           // Quote, Event
-    eval.go            // evalTriangle
+    domain.go
 
-  usecase/
-    arbitrage/
-      service.go       // ядро мониторинга треугольников
+  arb/
+    arb.go
 
-  ports/
-    ticker_source.go   // интерфейс источника котировок (биржа)
-    arb_sink.go        // интерфейс для вывода арбитражей (лог/файл/бот)
-
-  adapters/
-    mexc/
-      ws_source.go     // реализация TickerSource для MEXC
-    kucoin/
-      ws_source.go     // реализация TickerSource для KuCoin (позже)
-    sink/
-      stdout_file.go   // реализация ArbSink (stdout + файл)
-
-  triangles/
-    loader.go          // загрузка triangles_markets.csv
-
+  mexc/
+    ws.go
+    proto_decoder.go
 
 
 
