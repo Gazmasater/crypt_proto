@@ -771,4 +771,32 @@ func main() {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.crypt_proto.samples.cpu.015.pb.gz
+File: crypt_proto
+Build ID: 7a737cca38f096a0292ff5de8fc276ad254149f4
+Type: cpu
+Time: 2025-12-12 00:11:58 MSK
+Duration: 30.09s, Total samples = 7.52s (24.99%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 4370ms, 58.11% of 7520ms total
+Dropped 144 nodes (cum <= 37.60ms)
+Showing top 10 nodes out of 149
+      flat  flat%   sum%        cum   cum%
+    2270ms 30.19% 30.19%     2270ms 30.19%  internal/runtime/syscall.Syscall6
+    1000ms 13.30% 43.48%     1000ms 13.30%  runtime.futex
+     190ms  2.53% 46.01%      200ms  2.66%  runtime.unlock2
+     180ms  2.39% 48.40%      180ms  2.39%  strconv.readFloat
+     140ms  1.86% 50.27%      280ms  3.72%  runtime.scanobject
+     140ms  1.86% 52.13%      140ms  1.86%  runtime.usleep
+     120ms  1.60% 53.72%      730ms  9.71%  runtime.netpoll
+     120ms  1.60% 55.32%      570ms  7.58%  runtime.selectgo
+     110ms  1.46% 56.78%      110ms  1.46%  unicode/utf8.Valid
+     100ms  1.33% 58.11%      100ms  1.33%  runtime.nextFreeFast
+(pprof) 
+
+
+
 
