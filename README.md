@@ -55,32 +55,37 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+
+
+
+
+
+Структура каталога та же (crypt_proto), внутри:
+
+main.go — только запуск и pprof
+
+config.go — конфиг + debug-логгер
+
+domain.go — типы и работа с треугольниками
+
+proto_decoder.go — разбор protobuf от MEXC
+
+ws.go — работа с WebSocket
+
+arb.go — расчёт треугольников, логирование, консюмер
+
+Все файлы ниже можно просто создать рядом и вставить как есть.
+
+config.go
 package main
 
 import (
-	"bufio"
-	"context"
-	"encoding/csv"
-	"encoding/json"
-	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"sync"
-	"syscall"
-	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
-	"google.golang.org/protobuf/proto"
-
-	pb "crypt_proto/pb"
-
-	_ "net/http/pprof"
 )
 
 /* =========================  CONFIG  ========================= */
@@ -88,8 +93,8 @@ import (
 type Config struct {
 	TrianglesFile string
 	BookInterval  string
-	FeePerLeg     float64 // как доля, 0.001 = 0.1%
-	MinProfit     float64 // как доля, 0.003 = 0.3%
+	FeePerLeg     float64 // комиссия за одну ногу, доля: 0.0004 = 0.04%
+	MinProfit     float64 // минимальная прибыль за круг, доля: 0.005 = 0.5%
 	Debug         bool
 }
 
@@ -113,6 +118,7 @@ func loadConfig() Config {
 	if tf == "" {
 		tf = "triangles_markets.csv"
 	}
+
 	bi := os.Getenv("BOOK_INTERVAL")
 	if bi == "" {
 		bi = "100ms"
@@ -121,18 +127,18 @@ func loadConfig() Config {
 	feePct := loadEnvFloat("FEE_PCT", 0.04)       // проценты
 	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.5) // проценты
 
-	debug := strings.ToLower(os.Getenv("DEBUG")) == "true"
+	debugFlag := strings.EqualFold(os.Getenv("DEBUG"), "true")
 
 	cfg := Config{
 		TrianglesFile: tf,
 		BookInterval:  bi,
 		FeePerLeg:     feePct / 100.0,
 		MinProfit:     minPct / 100.0,
-		Debug:         debug,
+		Debug:         debugFlag,
 	}
 
-	log.Printf("Triangles file: %s", tf)
-	log.Printf("Book interval: %s", bi)
+	log.Printf("Triangles file: %s", cfg.TrianglesFile)
+	log.Printf("Book interval: %s", cfg.BookInterval)
 	log.Printf("Fee per leg: %.4f %% (rate=%.6f)", feePct, cfg.FeePerLeg)
 	log.Printf("Min profit per cycle: %.4f %% (rate=%.6f)", minPct, cfg.MinProfit)
 
@@ -149,18 +155,32 @@ func dlog(format string, args ...any) {
 	}
 }
 
-/* =========================  TRIANGLES  ========================= */
+domain.go
+package main
+
+import (
+	"bufio"
+	"encoding/csv"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"strings"
+)
+
+/* =========================  DOMAIN TYPES  ========================= */
 
 type Leg struct {
-	From   string // валюта "от"
-	To     string // валюта "к"
-	Symbol string // символ рынка, например BDXUSDT
-	Dir    int8   // +1: From->To = base->quote (продажа базовой по bid); -1: From->To = quote->base (покупка базовой по ask)
+	From   string
+	To     string
+	Symbol string
+	Dir    int8 // +1: From->To = base->quote; -1: From->To = quote->base
 }
 
 type Triangle struct {
 	Legs [3]Leg
-	Name string // удобное имя: A->B->C->A
+	Name string // A→B→C→A
 }
 
 type Quote struct {
@@ -184,9 +204,10 @@ type Pair struct {
 	Symbol string
 }
 
+/* =========================  TRIANGLES  ========================= */
+
 func buildTriangleFromPairs(p1, p2, p3 Pair) (Triangle, bool) {
-	// собираем 3 разные валюты
-	set := map[string]struct{}{
+	currencies := map[string]struct{}{
 		p1.Base:  {},
 		p1.Quote: {},
 		p2.Base:  {},
@@ -194,11 +215,12 @@ func buildTriangleFromPairs(p1, p2, p3 Pair) (Triangle, bool) {
 		p3.Base:  {},
 		p3.Quote: {},
 	}
-	if len(set) != 3 {
+	if len(currencies) != 3 {
 		return Triangle{}, false
 	}
+
 	currs := make([]string, 0, 3)
-	for c := range set {
+	for c := range currencies {
 		currs = append(currs, c)
 	}
 
@@ -216,7 +238,6 @@ func buildTriangleFromPairs(p1, p2, p3 Pair) (Triangle, bool) {
 		{2, 1, 0},
 	}
 
-	// перебираем перестановки валют и пар, ищем замкнутый цикл
 	for _, order := range perm3 {
 		c0, c1, c2 := currs[order[0]], currs[order[1]], currs[order[2]]
 		edges := []edge{
@@ -256,7 +277,6 @@ func buildTriangleFromPairs(p1, p2, p3 Pair) (Triangle, bool) {
 	return Triangle{}, false
 }
 
-// читаем файл треугольников, строим Triangle, множество символов и индекс "символ -> какие треугольники его используют"
 func loadTriangles(path string) ([]Triangle, []string, map[string][]int, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -268,18 +288,20 @@ func loadTriangles(path string) ([]Triangle, []string, map[string][]int, error) 
 	r.TrimLeadingSpace = true
 	r.Comma = ','
 
-	var tris []Triangle
-	symbolSet := make(map[string]struct{})
+	var (
+		tris      []Triangle
+		symbolSet = make(map[string]struct{})
+	)
 
 	for {
 		rec, err := r.Read()
 		if err != nil {
-			if err.Error() == "EOF" {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil, nil, nil, err
 		}
-		// если кто-то руками правил файл — подчищаем
+
 		var fields []string
 		for _, v := range rec {
 			v = strings.TrimSpace(v)
@@ -304,7 +326,6 @@ func loadTriangles(path string) ([]Triangle, []string, map[string][]int, error) 
 
 		t, ok := buildTriangleFromPairs(p1, p2, p3)
 		if !ok {
-			// не удалось собрать реальный цикл валют – пропускаем
 			continue
 		}
 
@@ -319,7 +340,6 @@ func loadTriangles(path string) ([]Triangle, []string, map[string][]int, error) 
 		symbols = append(symbols, s)
 	}
 
-	// индекс по символам
 	index := make(map[string][]int)
 	for i, t := range tris {
 		for _, leg := range t.Legs {
@@ -333,14 +353,25 @@ func loadTriangles(path string) ([]Triangle, []string, map[string][]int, error) 
 	return tris, symbols, index, nil
 }
 
+proto_decoder.go
+package main
+
+import (
+	"strconv"
+	"strings"
+	"sync"
+
+	"google.golang.org/protobuf/proto"
+
+	pb "crypt_proto/pb"
+)
+
 /* =========================  PROTO DECODER  ========================= */
 
-// Пул для wrapper'а
 var wrapperPool = sync.Pool{
 	New: func() any { return new(pb.PushDataV3ApiWrapper) },
 }
 
-// parsePBQuote: бинарное сообщение -> символ + Quote
 func parsePBQuote(raw []byte) (string, Quote, bool) {
 	w, _ := wrapperPool.Get().(*pb.PushDataV3ApiWrapper)
 	defer func() {
@@ -363,72 +394,88 @@ func parsePBQuote(raw []byte) (string, Quote, bool) {
 		return "", Quote{}, false
 	}
 
-	// 1) PublicBookTicker
+	// PublicBookTicker
 	if b1, ok := w.GetBody().(*pb.PushDataV3ApiWrapper_PublicBookTicker); ok && b1.PublicBookTicker != nil {
 		t := b1.PublicBookTicker
-
-		bp := t.GetBidPrice()
-		ap := t.GetAskPrice()
-		if bp == "" || ap == "" {
-			return "", Quote{}, false
-		}
-		bid, err1 := strconv.ParseFloat(bp, 64)
-		ask, err2 := strconv.ParseFloat(ap, 64)
-		if err1 != nil || err2 != nil || bid <= 0 || ask <= 0 {
-			return "", Quote{}, false
-		}
-		return sym, Quote{
-			Bid:    bid,
-			Ask:    ask,
-			BidQty: 0,
-			AskQty: 0,
-		}, true
+		return parseQuoteFromStrings(sym, t.GetBidPrice(), t.GetAskPrice(), "", "")
 	}
 
-	// 2) PublicAggreBookTicker (у него как раз есть количество)
+	// PublicAggreBookTicker
 	if b2, ok := w.GetBody().(*pb.PushDataV3ApiWrapper_PublicAggreBookTicker); ok && b2.PublicAggreBookTicker != nil {
 		t := b2.PublicAggreBookTicker
-
-		bp := t.GetBidPrice()
-		ap := t.GetAskPrice()
-		bq := t.GetBidQuantity()
-		aq := t.GetAskQuantity()
-
-		if bp == "" || ap == "" {
-			return "", Quote{}, false
-		}
-		bid, err1 := strconv.ParseFloat(bp, 64)
-		ask, err2 := strconv.ParseFloat(ap, 64)
-		if err1 != nil || err2 != nil || bid <= 0 || ask <= 0 {
-			return "", Quote{}, false
-		}
-
-		var bidQty, askQty float64
-		if bq != "" {
-			if v, err := strconv.ParseFloat(bq, 64); err == nil {
-				bidQty = v
-			}
-		}
-		if aq != "" {
-			if v, err := strconv.ParseFloat(aq, 64); err == nil {
-				askQty = v
-			}
-		}
-
-		return sym, Quote{
-			Bid:    bid,
-			Ask:    ask,
-			BidQty: bidQty,
-			AskQty: askQty,
-		}, true
+		return parseQuoteFromStrings(
+			sym,
+			t.GetBidPrice(),
+			t.GetAskPrice(),
+			t.GetBidQuantity(),
+			t.GetAskQuantity(),
+		)
 	}
 
 	return "", Quote{}, false
 }
 
+func parseQuoteFromStrings(sym, bp, ap, bq, aq string) (string, Quote, bool) {
+	if bp == "" || ap == "" {
+		return "", Quote{}, false
+	}
+
+	bid, err1 := strconv.ParseFloat(bp, 64)
+	ask, err2 := strconv.ParseFloat(ap, 64)
+	if err1 != nil || err2 != nil || bid <= 0 || ask <= 0 {
+		return "", Quote{}, false
+	}
+
+	var bidQty, askQty float64
+	if bq != "" {
+		if v, err := strconv.ParseFloat(bq, 64); err == nil {
+			bidQty = v
+		}
+	}
+	if aq != "" {
+		if v, err := strconv.ParseFloat(aq, 64); err == nil {
+			askQty = v
+		}
+	}
+
+	return sym, Quote{
+		Bid:    bid,
+		Ask:    ask,
+		BidQty: bidQty,
+		AskQty: askQty,
+	}, true
+}
+
+ws.go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
 /* =========================  WS SUBSCRIBER  ========================= */
 
-func runPublicBookTickerWS(ctx context.Context, wg *sync.WaitGroup, connID int, symbols []string, interval string, out chan<- Event) {
+func buildTopics(symbols []string, interval string) []string {
+	topics := make([]string, 0, len(symbols))
+	for _, s := range symbols {
+		topics = append(topics, "spot@public.aggre.bookTicker.v3.api.pb@"+interval+"@"+s)
+	}
+	return topics
+}
+
+func runPublicBookTickerWS(
+	ctx context.Context,
+	wg WaitGroupLike,
+	connID int,
+	symbols []string,
+	interval string,
+	out chan<- Event,
+) {
 	defer wg.Done()
 
 	const (
@@ -437,13 +484,7 @@ func runPublicBookTickerWS(ctx context.Context, wg *sync.WaitGroup, connID int, 
 	)
 
 	urlWS := "wss://wbs-api.mexc.com/ws"
-
-	// готовим список топиков
-	topics := make([]string, 0, len(symbols))
-	for _, s := range symbols {
-		topics = append(topics, "spot@public.aggre.bookTicker.v3.api.pb@"+interval+"@"+s)
-	}
-
+	topics := buildTopics(symbols, interval)
 	retry := baseRetry
 
 	for {
@@ -457,14 +498,10 @@ func runPublicBookTickerWS(ctx context.Context, wg *sync.WaitGroup, connID int, 
 		if err != nil {
 			log.Printf("[WS #%d] dial err: %v (retry in %v)", connID, err, retry)
 			time.Sleep(retry)
-			if retry < maxRetry {
-				retry *= 2
-				if retry > maxRetry {
-					retry = maxRetry
-				}
-			}
+			retry = nextRetry(retry, maxRetry)
 			continue
 		}
+
 		log.Printf("[WS #%d] connected to %s (symbols: %d)", connID, urlWS, len(symbols))
 		retry = baseRetry
 
@@ -477,98 +514,139 @@ func runPublicBookTickerWS(ctx context.Context, wg *sync.WaitGroup, connID int, 
 			return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		})
 
-		// keepalive
 		stopPing := make(chan struct{})
-		go func() {
-			t := time.NewTicker(45 * time.Second)
-			defer t.Stop()
-			for {
-				select {
-				case <-t.C:
-					lastPing = time.Now()
-					if err := conn.WriteControl(websocket.PingMessage, []byte("hb"), time.Now().Add(5*time.Second)); err != nil {
-						dlog("[WS #%d] ping error: %v", connID, err)
-						return
-					}
-				case <-stopPing:
-					return
-				}
-			}
-		}()
+		go pingLoop(connID, conn, &lastPing, stopPing)
 
-		// подписка
-		sub := map[string]any{
-			"method": "SUBSCRIPTION",
-			"params": topics,
-			"id":     time.Now().Unix(),
-		}
-		if err := conn.WriteJSON(sub); err != nil {
-			log.Printf("[WS #%d] subscribe send err: %v", connID, err)
+		if err := sendSubscription(conn, topics, connID); err != nil {
 			close(stopPing)
 			_ = conn.Close()
 			time.Sleep(retry)
+			retry = nextRetry(retry, maxRetry)
 			continue
 		}
-		log.Printf("[WS #%d] SUB -> %d topics", connID, len(topics))
 
-		// цикл чтения
-		for {
-			mt, raw, err := conn.ReadMessage()
-			if err != nil {
-				log.Printf("[WS #%d] read err: %v (reconnect)", connID, err)
-				break
-			}
-
-			switch mt {
-			case websocket.TextMessage:
-				// ACK/ошибки подписки только в debug
-				var tmp any
-				if err := json.Unmarshal(raw, &tmp); err == nil {
-					j, _ := json.Marshal(tmp)
-					dlog("[WS #%d TEXT] %s", connID, string(j))
-				} else {
-					dlog("[WS #%d TEXT RAW] %s", connID, string(raw))
-				}
-			case websocket.BinaryMessage:
-				sym, q, ok := parsePBQuote(raw)
-				if !ok {
-					continue
-				}
-				ev := Event{
-					Symbol: sym,
-					Bid:    q.Bid,
-					Ask:    q.Ask,
-					BidQty: q.BidQty,
-					AskQty: q.AskQty,
-				}
-				select {
-				case out <- ev:
-				case <-ctx.Done():
-					close(stopPing)
-					_ = conn.Close()
-					return
-				}
-			default:
-				// игнор
-			}
-		}
-
-		close(stopPing)
-		_ = conn.Close()
-		time.Sleep(retry)
-		if retry < maxRetry {
-			retry *= 2
-			if retry > maxRetry {
-				retry = maxRetry
-			}
+		if !readLoop(ctx, connID, conn, out) {
+			close(stopPing)
+			_ = conn.Close()
+			time.Sleep(retry)
+			retry = nextRetry(retry, maxRetry)
+			continue
 		}
 	}
 }
 
-/* =========================  TRIANGLE EVAL  ========================= */
+func nextRetry(cur, max time.Duration) time.Duration {
+	cur *= 2
+	if cur > max {
+		return max
+	}
+	return cur
+}
 
-// считаем один треугольник, если для всех 3-х символов есть котировки
-// возвращаем (profit, ok)
+func pingLoop(connID int, conn *websocket.Conn, lastPing *time.Time, stop <-chan struct{}) {
+	t := time.NewTicker(45 * time.Second)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-t.C:
+			*lastPing = time.Now()
+			if err := conn.WriteControl(
+				websocket.PingMessage,
+				[]byte("hb"),
+				time.Now().Add(5*time.Second),
+			); err != nil {
+				dlog("[WS #%d] ping error: %v", connID, err)
+				return
+			}
+		case <-stop:
+			return
+		}
+	}
+}
+
+func sendSubscription(conn *websocket.Conn, topics []string, connID int) error {
+	sub := map[string]any{
+		"method": "SUBSCRIPTION",
+		"params": topics,
+		"id":     time.Now().Unix(),
+	}
+	if err := conn.WriteJSON(sub); err != nil {
+		log.Printf("[WS #%d] subscribe send err: %v", connID, err)
+		return err
+	}
+	log.Printf("[WS #%d] SUB -> %d topics", connID, len(topics))
+	return nil
+}
+
+func readLoop(ctx context.Context, connID int, conn *websocket.Conn, out chan<- Event) bool {
+	for {
+		mt, raw, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("[WS #%d] read err: %v (reconnect)", connID, err)
+			return false
+		}
+
+		switch mt {
+		case websocket.TextMessage:
+			handleTextMessage(connID, raw)
+		case websocket.BinaryMessage:
+			sym, q, ok := parsePBQuote(raw)
+			if !ok {
+				continue
+			}
+			ev := Event{
+				Symbol: sym,
+				Bid:    q.Bid,
+				Ask:    q.Ask,
+				BidQty: q.BidQty,
+				AskQty: q.AskQty,
+			}
+			select {
+			case out <- ev:
+			case <-ctx.Done():
+				return true
+			}
+		default:
+			// игнорируем прочие типы
+		}
+	}
+}
+
+func handleTextMessage(connID int, raw []byte) {
+	if !debug {
+		return
+	}
+	var tmp any
+	if err := json.Unmarshal(raw, &tmp); err == nil {
+		j, _ := json.Marshal(tmp)
+		dlog("[WS #%d TEXT] %s", connID, string(j))
+	} else {
+		dlog("[WS #%d TEXT RAW] %s", connID, string(raw))
+	}
+}
+
+
+⚠️ В ws.go я использовал интерфейс WaitGroupLike, чтобы можно было тестировать без sync.WaitGroup. Для простоты можешь убрать интерфейс и вернуться к *sync.WaitGroup. Ниже в arb.go будет реализация, которая ждёт именно *sync.WaitGroup. Если не хочешь усложнять, поменяй сигнатуру runPublicBookTickerWS обратно на wg *sync.WaitGroup.
+
+Если не хочешь интерфейс, сразу смотри упрощённый вариант ниже в arb.go и просто исправь сигнатуру как раньше.
+
+arb.go
+package main
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"sync"
+	"time"
+)
+
+/* =========================  TRIANGLE EVAL + PRINT  ========================= */
+
 func evalTriangle(t Triangle, quotes map[string]Quote, fee float64) (float64, bool) {
 	amt := 1.0
 
@@ -578,17 +656,13 @@ func evalTriangle(t Triangle, quotes map[string]Quote, fee float64) (float64, bo
 			return 0, false
 		}
 
-		// From->To
 		if leg.Dir > 0 {
-			// base -> quote, продаём базу по bid
-			amt = amt * q.Bid
+			amt *= q.Bid
 		} else {
-			// quote -> base, покупаем базу за quote по ask
-			amt = amt / q.Ask
+			amt /= q.Ask
 		}
 
-		// комиссия после каждой сделки
-		amt = amt * (1 - fee)
+		amt *= (1 - fee)
 		if amt <= 0 {
 			return 0, false
 		}
@@ -597,11 +671,6 @@ func evalTriangle(t Triangle, quotes map[string]Quote, fee float64) (float64, bo
 	return amt - 1.0, true
 }
 
-// printTriangle пишет в writer (файл + stdout) блок вида:
-//
-// 2025-12-11 14:41:02.532
-// [ARB] +0.693%  USDT→KAS→EUR→USDT
-//   ...
 func printTriangle(w io.Writer, t Triangle, profit float64, quotes map[string]Quote) {
 	ts := time.Now().Format("2006-01-02 15:04:05.000")
 	fmt.Fprintf(w, "%s\n", ts)
@@ -615,13 +684,14 @@ func printTriangle(w io.Writer, t Triangle, profit float64, quotes map[string]Qu
 		if mid > 0 {
 			spreadPct = spreadAbs / mid * 100
 		}
-		side := ""
-		if leg.Dir > 0 {
-			side = fmt.Sprintf("%s/%s", leg.From, leg.To)
-		} else {
+		side := fmt.Sprintf("%s/%s", leg.From, leg.To)
+		if leg.Dir < 0 {
 			side = fmt.Sprintf("%s/%s", leg.To, leg.From)
 		}
-		fmt.Fprintf(w, "  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
+
+		fmt.Fprintf(
+			w,
+			"  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
 			leg.Symbol, side,
 			q.Bid, q.Ask,
 			spreadAbs, spreadPct,
@@ -631,7 +701,132 @@ func printTriangle(w io.Writer, t Triangle, profit float64, quotes map[string]Qu
 	fmt.Fprintln(w)
 }
 
-/* =========================  MAIN  ========================= */
+/* =========================  ARB LOGGING + PIPELINE  ========================= */
+
+func initArbLogger(path string) (io.Writer, func()) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Fatalf("open %s: %v", path, err)
+	}
+	buf := bufio.NewWriter(f)
+
+	out := io.MultiWriter(os.Stdout, buf)
+
+	cleanup := func() {
+		_ = buf.Flush()
+		_ = f.Close()
+	}
+
+	return out, cleanup
+}
+
+func startWSWorkers(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	symbols []string,
+	interval string,
+	out chan<- Event,
+) {
+	const maxPerConn = 50
+
+	var chunks [][]string
+	for i := 0; i < len(symbols); i += maxPerConn {
+		j := i + maxPerConn
+		if j > len(symbols) {
+			j = len(symbols)
+		}
+		chunks = append(chunks, symbols[i:j])
+	}
+
+	log.Printf("будем использовать %d WS-подключений", len(chunks))
+
+	for idx, chunk := range chunks {
+		wg.Add(1)
+		go runPublicBookTickerWS(ctx, wg, idx, chunk, interval, out)
+	}
+}
+
+func consumeEvents(
+	ctx context.Context,
+	events <-chan Event,
+	triangles []Triangle,
+	indexBySymbol map[string][]int,
+	feePerLeg, minProfit float64,
+	out io.Writer,
+) {
+	quotes := make(map[string]Quote)
+
+	const minPrintInterval = 5 * time.Millisecond
+	lastPrint := make(map[int]time.Time)
+
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+
+			// если котировка по символу не изменилась, не пересчитываем
+			if prev, okPrev := quotes[ev.Symbol]; okPrev &&
+				prev.Bid == ev.Bid &&
+				prev.Ask == ev.Ask &&
+				prev.BidQty == ev.BidQty &&
+				prev.AskQty == ev.AskQty {
+				continue
+			}
+
+			quotes[ev.Symbol] = Quote{
+				Bid:    ev.Bid,
+				Ask:    ev.Ask,
+				BidQty: ev.BidQty,
+				AskQty: ev.AskQty,
+			}
+
+			trIDs := indexBySymbol[ev.Symbol]
+			if len(trIDs) == 0 {
+				continue
+			}
+
+			now := time.Now()
+			for _, id := range trIDs {
+				tr := triangles[id]
+				prof, ok := evalTriangle(tr, quotes, feePerLeg)
+				if !ok || prof < minProfit {
+					continue
+				}
+
+				if last, okLast := lastPrint[id]; okLast && now.Sub(last) < minPrintInterval {
+					continue
+				}
+				lastPrint[id] = now
+
+				printTriangle(out, tr, prof, quotes)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+
+Обрати внимание: здесь runPublicBookTickerWS ожидает wg *sync.WaitGroup, поэтому в ws.go сигнатуру функции тоже делай с wg *sync.WaitGroup, как у тебя было изначально.
+
+main.go
+package main
+
+import (
+	"context"
+	"log"
+	"net/http"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	_ "net/http/pprof"
+)
+
+/* =========================  MAIN / APP  ========================= */
 
 func main() {
 	// pprof
@@ -647,18 +842,8 @@ func main() {
 	cfg := loadConfig()
 	debug = cfg.Debug
 
-	// файл для арбитражей
-	arbFile, err := os.OpenFile("arbitrage.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Fatalf("open arbitrage.log: %v", err)
-	}
-	defer arbFile.Close()
-
-	arbBuf := bufio.NewWriter(arbFile)
-	defer arbBuf.Flush()
-
-	// пишем и в stdout, и в файл
-	arbOut := io.MultiWriter(os.Stdout, arbBuf)
+	arbOut, closeArb := initArbLogger("arbitrage.log")
+	defer closeArb()
 
 	triangles, symbols, indexBySymbol, err := loadTriangles(cfg.TrianglesFile)
 	if err != nil {
@@ -678,86 +863,9 @@ func main() {
 	events := make(chan Event, 8192)
 
 	var wg sync.WaitGroup
+	startWSWorkers(ctx, &wg, symbols, cfg.BookInterval, events)
 
-	// чанкуем по 50 символов на одно WS
-	const maxPerConn = 50
-	chunks := make([][]string, 0)
-	for i := 0; i < len(symbols); i += maxPerConn {
-		j := i + maxPerConn
-		if j > len(symbols) {
-			j = len(symbols)
-		}
-		chunks = append(chunks, symbols[i:j])
-	}
-	log.Printf("будем использовать %d WS-подключений", len(chunks))
-
-	for idx, chunk := range chunks {
-		wg.Add(1)
-		go runPublicBookTickerWS(ctx, &wg, idx, chunk, cfg.BookInterval, events)
-	}
-
-	// консумер: на каждом тике обновляем котировку и считаем только те треугольники,
-	// где этот символ участвует; выводим только прибыльные
-	go func() {
-		quotes := make(map[string]Quote)
-
-		// для антиспама логов: не печатаем один и тот же треугольник чаще, чем раз в N мс
-		const minPrintInterval = 5 * time.Millisecond
-		lastPrint := make(map[int]time.Time)
-
-		for {
-			select {
-			case ev, ok := <-events:
-				if !ok {
-					return
-				}
-
-				// если котировка не изменилась вообще — ничего не считаем
-				if prev, okPrev := quotes[ev.Symbol]; okPrev &&
-					prev.Bid == ev.Bid &&
-					prev.Ask == ev.Ask &&
-					prev.BidQty == ev.BidQty &&
-					prev.AskQty == ev.AskQty {
-					continue
-				}
-
-				quotes[ev.Symbol] = Quote{
-					Bid:    ev.Bid,
-					Ask:    ev.Ask,
-					BidQty: ev.BidQty,
-					AskQty: ev.AskQty,
-				}
-
-				trIDs := indexBySymbol[ev.Symbol]
-				if len(trIDs) == 0 {
-					continue
-				}
-
-				now := time.Now()
-
-				for _, id := range trIDs {
-					tr := triangles[id]
-					prof, ok := evalTriangle(tr, quotes, cfg.FeePerLeg)
-					if !ok {
-						continue
-					}
-					if prof >= cfg.MinProfit {
-						// антиспам: один и тот же треугольник не чаще, чем раз в minPrintInterval
-						if last, okLast := lastPrint[id]; okLast {
-							if now.Sub(last) < minPrintInterval {
-								continue
-							}
-						}
-						lastPrint[id] = now
-
-						printTriangle(arbOut, tr, prof, quotes)
-					}
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	go consumeEvents(ctx, events, triangles, indexBySymbol, cfg.FeePerLeg, cfg.MinProfit, arbOut)
 
 	<-ctx.Done()
 	log.Println("shutting down...")
@@ -769,33 +877,13 @@ func main() {
 }
 
 
+Если хочешь, дальше можем:
 
+добавить флаг -json, чтобы вместо текста писать JSON-лог арбитражей;
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.crypt_proto.samples.cpu.015.pb.gz
-File: crypt_proto
-Build ID: 7a737cca38f096a0292ff5de8fc276ad254149f4
-Type: cpu
-Time: 2025-12-12 00:11:58 MSK
-Duration: 30.09s, Total samples = 7.52s (24.99%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 4370ms, 58.11% of 7520ms total
-Dropped 144 nodes (cum <= 37.60ms)
-Showing top 10 nodes out of 149
-      flat  flat%   sum%        cum   cum%
-    2270ms 30.19% 30.19%     2270ms 30.19%  internal/runtime/syscall.Syscall6
-    1000ms 13.30% 43.48%     1000ms 13.30%  runtime.futex
-     190ms  2.53% 46.01%      200ms  2.66%  runtime.unlock2
-     180ms  2.39% 48.40%      180ms  2.39%  strconv.readFloat
-     140ms  1.86% 50.27%      280ms  3.72%  runtime.scanobject
-     140ms  1.86% 52.13%      140ms  1.86%  runtime.usleep
-     120ms  1.60% 53.72%      730ms  9.71%  runtime.netpoll
-     120ms  1.60% 55.32%      570ms  7.58%  runtime.selectgo
-     110ms  1.46% 56.78%      110ms  1.46%  unicode/utf8.Valid
-     100ms  1.33% 58.11%      100ms  1.33%  runtime.nextFreeFast
-(pprof) 
+сделать лимит по количеству одновременных «живых» треугольников;
+
+добавить метрики (кол-во тиков, найденных арбов, средняя прибыль и т.д.).
 
 
 
