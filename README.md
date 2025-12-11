@@ -887,4 +887,29 @@ func main() {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/ws.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: WaitGroupLike",
+	"source": "compiler",
+	"startLineNumber": 24,
+	"startColumn": 5,
+	"endLineNumber": 24,
+	"endColumn": 18,
+	"origin": "extHost1"
+}]
+
+
+
 
