@@ -60,29 +60,37 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-2025-12-11 17:41:03.218
-[ARB] +0.585%  BTC→USDT→OMG→BTC
-  BTCUSDT (BTC/USDT): bid=90457.9400000000 ask=90458.1500000000  spread=0.2100000000 (0.00023%)  bidQty=0.0056 askQty=1.3562
-  OMGUSDT (OMG/USDT): bid=0.0940100000 ask=0.0941000000  spread=0.0000900000 (0.09569%)  bidQty=44.8900 askQty=90.5600
-  OMGBTC (OMG/BTC): bid=0.0000010476 ask=0.0000010488  spread=0.0000000012 (0.11448%)  bidQty=1712.2400 askQty=16.8600
+cmd/
+  cryptarb/
+    main.go            // запуск: конфиг, DI
 
-2025-12-11 17:41:03.260
-[ARB] +0.585%  BTC→USDT→OMG→BTC
-  BTCUSDT (BTC/USDT): bid=90457.9400000000 ask=90458.1400000000  spread=0.2000000000 (0.00022%)  bidQty=0.0056 askQty=1.3562
-  OMGUSDT (OMG/USDT): bid=0.0940100000 ask=0.0941000000  spread=0.0000900000 (0.09569%)  bidQty=44.8900 askQty=90.5600
-  OMGBTC (OMG/BTC): bid=0.0000010476 ask=0.0000010480  spread=0.0000000004 (0.03818%)  bidQty=1604.8200 askQty=19.3400
-____________________________________________________________________________________________
-2025-12-11 18:29:49.561
-[ARB] +1.044%  BTC→USDT→OMG→BTC
-  BTCUSDT (BTC/USDT): bid=90253.4700000000 ask=90255.3400000000  spread=1.8700000000 (0.00207%)  bidQty=1.7852 askQty=0.0216
-  OMGUSDT (OMG/USDT): bid=0.0925600000 ask=0.0931300000  spread=0.0005700000 (0.61393%)  bidQty=163.7500 askQty=46.9900
-  OMGBTC (OMG/BTC): bid=0.0000010439 ask=0.0000010521  spread=0.0000000082 (0.78244%)  bidQty=38.0200 askQty=455.0600
+internal/
+  config/
+    config.go          // чтение .env, флагов
 
-2025-12-11 18:29:49.601
-[ARB] +1.044%  BTC→USDT→OMG→BTC
-  BTCUSDT (BTC/USDT): bid=90253.4700000000 ask=90255.2800000000  spread=1.8100000000 (0.00201%)  bidQty=1.7852 askQty=0.0321
-  OMGUSDT (OMG/USDT): bid=0.0925600000 ask=0.0931300000  spread=0.0005700000 (0.61393%)  bidQty=163.7500 askQty=46.9900
-  OMGBTC (OMG/BTC): bid=0.0000010439 ask=0.0000010521  spread=0.0000000082 (0.78244%)  bidQty=38.0200 askQty=455.0600
+  domain/
+    triangle.go        // Triangle, Leg, Pair, buildTriangleFromPairs
+    quote.go           // Quote, Event
+    eval.go            // evalTriangle
+
+  usecase/
+    arbitrage/
+      service.go       // ядро мониторинга треугольников
+
+  ports/
+    ticker_source.go   // интерфейс источника котировок (биржа)
+    arb_sink.go        // интерфейс для вывода арбитражей (лог/файл/бот)
+
+  adapters/
+    mexc/
+      ws_source.go     // реализация TickerSource для MEXC
+    kucoin/
+      ws_source.go     // реализация TickerSource для KuCoin (позже)
+    sink/
+      stdout_file.go   // реализация ArbSink (stdout + файл)
+
+  triangles/
+    loader.go          // загрузка triangles_markets.csv
 
 
 
