@@ -59,184 +59,224 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-Да, я посмотрел твой код — причина, почему debug не работает, довольно простая:
-
-У тебя сейчас два разных флага debug:
-
-В пакете config
-
-В пакете mexc
-
-В mexc/ws.go есть свой var debug bool, но нигде не устанавливается в true, поэтому:
-
-func handleTextMessage(connID int, raw []byte) {
-    if !debug {      // <- всегда false
-        return
-    }
-    ...
-}
-
-
-И даже если в .env ты ставишь DEBUG=true, это влияет только на config.debug, а до mexc.debug это не доходит.
-
-Давай сделаем один общий флаг debug (в пакете config) и всё к нему привяжем.
-
-1. Пакет config — ОСТАВИТЬ как есть
-
-У тебя уже нормально:
-
-package config
-
-import (
-    "log"
-    "os"
-    "strconv"
-    "strings"
-
-    "github.com/joho/godotenv"
-)
-
-type Config struct {
-    ...
-    Debug bool
-}
-
-var debug bool
-
-func SetDebug(v bool) {
-    debug = v
-}
-
-func Dlog(format string, args ...any) {
-    if !debug {
-        return
-    }
-    log.Printf(format, args...)
-}
-
-
-LoadConfig() читает DEBUG из .env и кладёт в cfg.Debug — это ок.
-
-2. cmd/cryptarb/main.go — включаем глобальный debug
-
-В начале main() обязательно после cfg := config.LoadConfig() добавь:
-
 package main
 
 import (
-    ...
-    "crypt_proto/config"
-    "crypt_proto/mexc"
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"sort"
 )
+
+// ==== KuCoin API structures ====
+
+// Ответ KuCoin /api/v2/symbols
+type kucoinSymbolsResponse struct {
+	Code string `json:"code"`
+	Data []struct {
+		Symbol        string `json:"symbol"`        // "BTC-USDT"
+		BaseCurrency  string `json:"baseCurrency"`  // "BTC"
+		QuoteCurrency string `json:"quoteCurrency"` // "USDT"
+		EnableTrading bool   `json:"enableTrading"`
+	} `json:"data"`
+}
+
+// Маркет (одна торговая пара)
+type pairMarket struct {
+	Symbol string
+	Base   string
+	Quote  string
+}
+
+// Ключ валютной пары без направления (min, max)
+type pairKey struct {
+	A, B string
+}
 
 func main() {
-    // pprof и т.п...
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-    cfg := config.LoadConfig()
+	// 1) Тянем список спот-пар с KuCoin
+	// Документация: GET https://api.kucoin.com/api/v2/symbols
+	resp, err := http.Get("https://api.kucoin.com/api/v2/symbols")
+	if err != nil {
+		log.Fatalf("get kucoin symbols: %v", err)
+	}
+	defer resp.Body.Close()
 
-    // включаем глобальный debug-флаг
-    config.SetDebug(cfg.Debug)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		log.Fatalf("kucoin symbols status %d: %s", resp.StatusCode, string(b))
+	}
 
-    // (если хочешь, можно пробросить в mexc, но после правки ниже это уже не нужно)
-    // mexc.SetDebug(cfg.Debug)
+	var info kucoinSymbolsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		log.Fatalf("decode kucoin symbols: %v", err)
+	}
+	if info.Code != "200000" {
+		log.Fatalf("kucoin api returned code=%s (want 200000)", info.Code)
+	}
 
-    ...
+	log.Printf("total symbols from KuCoin API: %d", len(info.Data))
+
+	// 2) Фильтруем маркеты (только включённые споты)
+	markets := make([]pairMarket, 0, len(info.Data))
+	for _, s := range info.Data {
+		if !s.EnableTrading {
+			continue
+		}
+		base := s.BaseCurrency
+		quote := s.QuoteCurrency
+		if base == "" || quote == "" {
+			continue
+		}
+
+		markets = append(markets, pairMarket{
+			Symbol: s.Symbol, // пример: "BTC-USDT" — дальше для CSV он не нужен, но полезно для отладки
+			Base:   base,
+			Quote:  quote,
+		})
+	}
+	log.Printf("filtered markets: %d", len(markets))
+
+	// 3) Строим pairmap и граф валют
+	pairmap := make(map[pairKey][]pairMarket)
+	adj := make(map[string]map[string]struct{})
+
+	addEdge := func(a, b string) {
+		if adj[a] == nil {
+			adj[a] = make(map[string]struct{})
+		}
+		adj[a][b] = struct{}{}
+	}
+
+	for _, m := range markets {
+		a, b := m.Base, m.Quote
+		key := pairKey{A: a, B: b}
+		if a > b {
+			key = pairKey{A: b, B: a}
+		}
+		pairmap[key] = append(pairmap[key], m)
+
+		addEdge(a, b)
+		addEdge(b, a)
+	}
+
+	log.Printf("currencies (vertices): %d, pair keys: %d", len(adj), len(pairmap))
+
+	// 4) Индексация валют
+	coins := make([]string, 0, len(adj))
+	for c := range adj {
+		coins = append(coins, c)
+	}
+	sort.Strings(coins)
+
+	idx := make(map[string]int, len(coins))
+	for i, c := range coins {
+		idx[c] = i
+	}
+
+	neighbors := make([]map[int]struct{}, len(coins))
+	for i := range neighbors {
+		neighbors[i] = make(map[int]struct{})
+	}
+	for c, neighs := range adj {
+		i := idx[c]
+		for nb := range neighs {
+			j := idx[nb]
+			neighbors[i][j] = struct{}{}
+		}
+	}
+
+	// 5) Поиск валютных треугольников (A,B,C с A<B<C)
+	type triangle struct {
+		A, B, C string
+	}
+
+	triangles := make([]triangle, 0)
+
+	for i := 0; i < len(coins); i++ {
+		ni := neighbors[i]
+
+		for j := range ni {
+			if j <= i {
+				continue
+			}
+			nj := neighbors[j]
+
+			for k := range ni {
+				if k <= j {
+					continue
+				}
+				if _, ok := nj[k]; ok {
+					triangles = append(triangles, triangle{
+						A: coins[i],
+						B: coins[j],
+						C: coins[k],
+					})
+				}
+			}
+		}
+	}
+	log.Printf("found currency triangles: %d", len(triangles))
+
+	// 6) Пишем CSV с реальными маркетами для (A,B), (B,C), (A,C)
+	outFile := "triangles_markets_kucoin.csv"
+	f, err := os.Create(outFile)
+	if err != nil {
+		log.Fatalf("create %s: %v", outFile, err)
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write([]string{"base1", "quote1", "base2", "quote2", "base3", "quote3"}); err != nil {
+		log.Fatalf("write header: %v", err)
+	}
+
+	// выбираем любой маркет для валютной пары (x, y)
+	pick := func(x, y string) (pairMarket, bool) {
+		key := pairKey{A: x, B: y}
+		if x > y {
+			key = pairKey{A: y, B: x}
+		}
+		list := pairmap[key]
+		if len(list) == 0 {
+			return pairMarket{}, false
+		}
+		// можно усложнить выбор (по объёму и т.д.), но пока берём первый
+		return list[0], true
+	}
+
+	count := 0
+	for _, t := range triangles {
+		m1, ok1 := pick(t.A, t.B)
+		m2, ok2 := pick(t.B, t.C)
+		m3, ok3 := pick(t.A, t.C)
+		if !ok1 || !ok2 || !ok3 {
+			continue
+		}
+
+		rec := []string{
+			m1.Base, m1.Quote,
+			m2.Base, m2.Quote,
+			m3.Base, m3.Quote,
+		}
+		if err := w.Write(rec); err != nil {
+			log.Fatalf("write record: %v", err)
+		}
+		count++
+	}
+
+	log.Printf("written triangles to %s: %d", outFile, count)
+	fmt.Println("Готово, файл:", outFile)
 }
 
-
-И не нужно больше никаких глобальных debug в main-пакете.
-
-3. mexc/ws.go — убираем свой debug
-
-Сделай так:
-
-Было (упрощённо)
-package mexc
-
-import (
-    "context"
-    "crypt_proto/config"
-    "crypt_proto/domain"
-    "encoding/json"
-    "log"
-    "sync"
-    "time"
-
-    "github.com/gorilla/websocket"
-)
-
-var debug bool
-
-...
-
-func handleTextMessage(connID int, raw []byte) {
-    if !debug {
-        return
-    }
-    var tmp any
-    if err := json.Unmarshal(raw, &tmp); err == nil {
-        j, _ := json.Marshal(tmp)
-        config.Dlog("[WS #%d TEXT] %s", connID, string(j))
-    } else {
-        config.Dlog("[WS #%d TEXT RAW] %s", connID, string(raw))
-    }
-}
-
-Нужно сделать так
-
-Удалить строку:
-
-var debug bool
-
-
-И в handleTextMessage убрать проверку локального флага:
-
-func handleTextMessage(connID int, raw []byte) {
-    // локальную проверку снимаем, т.к. Dlog сам смотрит на config.debug
-    var tmp any
-    if err := json.Unmarshal(raw, &tmp); err == nil {
-        j, _ := json.Marshal(tmp)
-        config.Dlog("[WS #%d TEXT] %s", connID, string(j))
-    } else {
-        config.Dlog("[WS #%d TEXT RAW] %s", connID, string(raw))
-    }
-}
-
-
-Теперь логика такая:
-
-.env → DEBUG=true
-
-LoadConfig() читает это в cfg.Debug
-
-main вызывает config.SetDebug(cfg.Debug)
-
-config.Dlog(...) в любом пакете печатает логи только если DEBUG=true
-
-4. Как проверить, что всё работает
-
-Убедись, что в .env есть строка:
-
-DEBUG=true
-
-
-Пересобери/перезапусти:
-
-go run ./cmd/cryptarb
-
-
-При подключении к MEXC ты должен начать видеть в логах JSON-ответы / ACK’и от TEXT сообщений вебсокета типа:
-
-[WS #0 TEXT] {"method":"SUBSCRIPTION","code":"0",...}
-
-
-Если поставишь DEBUG=false (или уберёшь переменную из .env), эти строки пропадут, а обычные INFO-логи останутся.
-
-Если хочешь, дальше можем:
-
-Развести два уровня логов: DEBUG и, например, TRACE (для прямого дампа сырого protobuf/JSON).
-
-Сделать флаг включения логов по бирже: отдельно для MEXC, отдельно для KuCoin/OKX.
 
 
 
