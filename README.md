@@ -59,65 +59,184 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-1. Пакет mexc: свой debug-флаг
+Да, я посмотрел твой код — причина, почему debug не работает, довольно простая:
 
-В начале файла mexc/ws.go (после import) добавь:
+У тебя сейчас два разных флага debug:
 
-package mexc
+В пакете config
+
+В пакете mexc
+
+В mexc/ws.go есть свой var debug bool, но нигде не устанавливается в true, поэтому:
+
+func handleTextMessage(connID int, raw []byte) {
+    if !debug {      // <- всегда false
+        return
+    }
+    ...
+}
+
+
+И даже если в .env ты ставишь DEBUG=true, это влияет только на config.debug, а до mexc.debug это не доходит.
+
+Давай сделаем один общий флаг debug (в пакете config) и всё к нему привяжем.
+
+1. Пакет config — ОСТАВИТЬ как есть
+
+У тебя уже нормально:
+
+package config
 
 import (
-    // ...
+    "log"
+    "os"
+    "strconv"
+    "strings"
+
+    "github.com/joho/godotenv"
 )
 
-// глобальный флаг для отладочных логов в пакете mexc
+type Config struct {
+    ...
+    Debug bool
+}
+
 var debug bool
 
-// публичный сеттер, чтобы main мог включать/выключать
 func SetDebug(v bool) {
     debug = v
 }
 
-
-И оставь твой dlog примерно таким:
-
-func dlog(format string, args ...any) {
-    if debug {
-        log.Printf(format, args...)
+func Dlog(format string, args ...any) {
+    if !debug {
+        return
     }
+    log.Printf(format, args...)
 }
 
 
-(если dlog уже есть – просто убедись, что он смотрит на этот debug.)
+LoadConfig() читает DEBUG из .env и кладёт в cfg.Debug — это ок.
 
-2. В cmd/cryptarb/main.go убрать старый debug
+2. cmd/cryptarb/main.go — включаем глобальный debug
 
-Скорее всего, у тебя там где-то есть строка вроде:
-
-debug = cfg.Debug
-
-
-и при этом переменная debug больше не объявлена в main.
-Эту строку нужно заменить на вызов для mexc:
+В начале main() обязательно после cfg := config.LoadConfig() добавь:
 
 package main
 
 import (
-    // ...
+    ...
+    "crypt_proto/config"
     "crypt_proto/mexc"
 )
 
 func main() {
-    cfg := config.Load()
+    // pprof и т.п...
 
-    // включаем/выключаем отладку в пакете mexc
-    mexc.SetDebug(cfg.Debug)
+    cfg := config.LoadConfig()
 
-    // дальше твой код...
+    // включаем глобальный debug-флаг
+    config.SetDebug(cfg.Debug)
+
+    // (если хочешь, можно пробросить в mexc, но после правки ниже это уже не нужно)
+    // mexc.SetDebug(cfg.Debug)
+
+    ...
 }
 
 
-Если в main больше нигде debug не используется – просто больше его не трогаем, он теперь «живёт» внутри mexc.
+И не нужно больше никаких глобальных debug в main-пакете.
 
+3. mexc/ws.go — убираем свой debug
+
+Сделай так:
+
+Было (упрощённо)
+package mexc
+
+import (
+    "context"
+    "crypt_proto/config"
+    "crypt_proto/domain"
+    "encoding/json"
+    "log"
+    "sync"
+    "time"
+
+    "github.com/gorilla/websocket"
+)
+
+var debug bool
+
+...
+
+func handleTextMessage(connID int, raw []byte) {
+    if !debug {
+        return
+    }
+    var tmp any
+    if err := json.Unmarshal(raw, &tmp); err == nil {
+        j, _ := json.Marshal(tmp)
+        config.Dlog("[WS #%d TEXT] %s", connID, string(j))
+    } else {
+        config.Dlog("[WS #%d TEXT RAW] %s", connID, string(raw))
+    }
+}
+
+Нужно сделать так
+
+Удалить строку:
+
+var debug bool
+
+
+И в handleTextMessage убрать проверку локального флага:
+
+func handleTextMessage(connID int, raw []byte) {
+    // локальную проверку снимаем, т.к. Dlog сам смотрит на config.debug
+    var tmp any
+    if err := json.Unmarshal(raw, &tmp); err == nil {
+        j, _ := json.Marshal(tmp)
+        config.Dlog("[WS #%d TEXT] %s", connID, string(j))
+    } else {
+        config.Dlog("[WS #%d TEXT RAW] %s", connID, string(raw))
+    }
+}
+
+
+Теперь логика такая:
+
+.env → DEBUG=true
+
+LoadConfig() читает это в cfg.Debug
+
+main вызывает config.SetDebug(cfg.Debug)
+
+config.Dlog(...) в любом пакете печатает логи только если DEBUG=true
+
+4. Как проверить, что всё работает
+
+Убедись, что в .env есть строка:
+
+DEBUG=true
+
+
+Пересобери/перезапусти:
+
+go run ./cmd/cryptarb
+
+
+При подключении к MEXC ты должен начать видеть в логах JSON-ответы / ACK’и от TEXT сообщений вебсокета типа:
+
+[WS #0 TEXT] {"method":"SUBSCRIPTION","code":"0",...}
+
+
+Если поставишь DEBUG=false (или уберёшь переменную из .env), эти строки пропадут, а обычные INFO-логи останутся.
+
+Если хочешь, дальше можем:
+
+Развести два уровня логов: DEBUG и, например, TRACE (для прямого дампа сырого protobuf/JSON).
+
+Сделать флаг включения логов по бирже: отдельно для MEXC, отдельно для KuCoin/OKX.
 
 
 
