@@ -19,6 +19,12 @@ type Config struct {
 	Debug         bool
 }
 
+var debug bool
+
+func SetDebug(v bool) {
+	debug = v
+}
+
 func loadEnvFloat(name string, def float64) float64 {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
@@ -67,8 +73,6 @@ func LoadConfig() Config {
 }
 
 /* =========================  LOGGING  ========================= */
-
-var debug bool
 
 func Dlog(format string, args ...any) {
 	if debug {

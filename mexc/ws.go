@@ -12,13 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var debug bool
-
 /* =========================  WS SUBSCRIBER  ========================= */
-
-func SetDebug(v bool) {
-	debug = v
-}
 
 func buildTopics(symbols []string, interval string) []string {
 	topics := make([]string, 0, len(symbols))
@@ -174,9 +168,7 @@ func readLoop(ctx context.Context, connID int, conn *websocket.Conn, out chan<- 
 }
 
 func handleTextMessage(connID int, raw []byte) {
-	if !debug {
-		return
-	}
+	// локальную проверку снимаем, т.к. Dlog сам смотрит на config.debug
 	var tmp any
 	if err := json.Unmarshal(raw, &tmp); err == nil {
 		j, _ := json.Marshal(tmp)
