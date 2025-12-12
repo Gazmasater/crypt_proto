@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"crypt_proto/arb"
-	"crypt_proto/config"
-	"crypt_proto/domain"
 	"log"
 	"net/http"
 	"os/signal"
@@ -12,10 +9,15 @@ import (
 	"syscall"
 	"time"
 
+	"crypt_proto/arb"
+	"crypt_proto/config"
+	"crypt_proto/domain"
+	"crypt_proto/exchange"
+	"crypt_proto/kucoin"
+	"crypt_proto/mexc"
+
 	_ "net/http/pprof"
 )
-
-/* =========================  MAIN / APP  ========================= */
 
 func main() {
 	// pprof
@@ -28,11 +30,7 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	cfg := config.LoadConfig()
-	config.SetDebug(cfg.Debug)
-
-	arbOut, closeArb := arb.InitArbLogger("arbitrage.log")
-	defer closeArb()
+	cfg := config.Load()
 
 	triangles, symbols, indexBySymbol, err := domain.LoadTriangles(cfg.TrianglesFile)
 	if err != nil {
@@ -46,16 +44,39 @@ func main() {
 	}
 	log.Printf("символов для подписки всего: %d", len(symbols))
 
+	var feed exchange.MarketDataFeed
+
+	switch cfg.Exchange {
+	case "MEXC":
+		feed = mexc.NewFeed(cfg.Debug)
+	case "KUCOIN":
+		feed = kucoin.NewFeed(cfg.Debug)
+	default:
+		log.Fatalf("unknown EXCHANGE=%q (expected MEXC or KUCOIN)", cfg.Exchange)
+	}
+
+	log.Printf("Using exchange: %s", feed.Name())
+
+	// лог-файл для арбитража
+	logFile, logBuf, arbOut := arb.OpenLogWriter("arbitrage.log")
+	defer logFile.Close()
+	defer logBuf.Flush()
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	events := make(chan domain.Event, 8192)
 
 	var wg sync.WaitGroup
-	arb.StartWSWorkers(ctx, &wg, symbols, cfg.BookInterval, events)
 
-	go arb.ConsumeEvents(ctx, events, triangles, indexBySymbol, cfg.FeePerLeg, cfg.MinProfit, arbOut)
+	// запускаем потребителя
+	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, arbOut)
+	consumer.Start(ctx, events, triangles, indexBySymbol, &wg)
 
+	// запускаем фид биржи
+	feed.Start(ctx, &wg, symbols, cfg.BookInterval, events)
+
+	// ждём сигнал
 	<-ctx.Done()
 	log.Println("shutting down...")
 
