@@ -1,7 +1,9 @@
-package main
+package mexc
 
 import (
 	"context"
+	"crypt_proto/config"
+	"crypt_proto/domain"
 	"encoding/json"
 	"log"
 	"sync"
@@ -10,7 +12,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+var debug bool
+
 /* =========================  WS SUBSCRIBER  ========================= */
+
+func SetDebug(v bool) {
+	debug = v
+}
 
 func buildTopics(symbols []string, interval string) []string {
 	topics := make([]string, 0, len(symbols))
@@ -20,13 +28,13 @@ func buildTopics(symbols []string, interval string) []string {
 	return topics
 }
 
-func runPublicBookTickerWS(
+func RunPublicBookTickerWS(
 	ctx context.Context,
 	wg *sync.WaitGroup, // <-- обычный WaitGroup
 	connID int,
 	symbols []string,
 	interval string,
-	out chan<- Event,
+	out chan<- domain.Event,
 ) {
 	defer wg.Done()
 
@@ -62,7 +70,7 @@ func runPublicBookTickerWS(
 		var lastPing time.Time
 		conn.SetPongHandler(func(appData string) error {
 			rtt := time.Since(lastPing)
-			dlog("[WS #%d] Pong через %v", connID, rtt)
+			config.Dlog("[WS #%d] Pong через %v", connID, rtt)
 			return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		})
 
@@ -108,7 +116,7 @@ func pingLoop(connID int, conn *websocket.Conn, lastPing *time.Time, stop <-chan
 				[]byte("hb"),
 				time.Now().Add(5*time.Second),
 			); err != nil {
-				dlog("[WS #%d] ping error: %v", connID, err)
+				config.Dlog("[WS #%d] ping error: %v", connID, err)
 				return
 			}
 		case <-stop:
@@ -131,7 +139,7 @@ func sendSubscription(conn *websocket.Conn, topics []string, connID int) error {
 	return nil
 }
 
-func readLoop(ctx context.Context, connID int, conn *websocket.Conn, out chan<- Event) bool {
+func readLoop(ctx context.Context, connID int, conn *websocket.Conn, out chan<- domain.Event) bool {
 	for {
 		mt, raw, err := conn.ReadMessage()
 		if err != nil {
@@ -143,11 +151,11 @@ func readLoop(ctx context.Context, connID int, conn *websocket.Conn, out chan<- 
 		case websocket.TextMessage:
 			handleTextMessage(connID, raw)
 		case websocket.BinaryMessage:
-			sym, q, ok := parsePBQuote(raw)
+			sym, q, ok := ParsePBQuote(raw)
 			if !ok {
 				continue
 			}
-			ev := Event{
+			ev := domain.Event{
 				Symbol: sym,
 				Bid:    q.Bid,
 				Ask:    q.Ask,
@@ -172,8 +180,8 @@ func handleTextMessage(connID int, raw []byte) {
 	var tmp any
 	if err := json.Unmarshal(raw, &tmp); err == nil {
 		j, _ := json.Marshal(tmp)
-		dlog("[WS #%d TEXT] %s", connID, string(j))
+		config.Dlog("[WS #%d TEXT] %s", connID, string(j))
 	} else {
-		dlog("[WS #%d TEXT RAW] %s", connID, string(raw))
+		config.Dlog("[WS #%d TEXT RAW] %s", connID, string(raw))
 	}
 }

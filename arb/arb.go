@@ -1,8 +1,10 @@
-package main
+package arb
 
 import (
 	"bufio"
 	"context"
+	"crypt_proto/domain"
+	"crypt_proto/mexc"
 	"fmt"
 	"io"
 	"log"
@@ -13,7 +15,7 @@ import (
 
 /* =========================  TRIANGLE EVAL + PRINT  ========================= */
 
-func evalTriangle(t Triangle, quotes map[string]Quote, fee float64) (float64, bool) {
+func evalTriangle(t domain.Triangle, quotes map[string]domain.Quote, fee float64) (float64, bool) {
 	amt := 1.0
 
 	for _, leg := range t.Legs {
@@ -37,7 +39,7 @@ func evalTriangle(t Triangle, quotes map[string]Quote, fee float64) (float64, bo
 	return amt - 1.0, true
 }
 
-func printTriangle(w io.Writer, t Triangle, profit float64, quotes map[string]Quote) {
+func printTriangle(w io.Writer, t domain.Triangle, profit float64, quotes map[string]domain.Quote) {
 	ts := time.Now().Format("2006-01-02 15:04:05.000")
 	fmt.Fprintf(w, "%s\n", ts)
 	fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
@@ -69,7 +71,7 @@ func printTriangle(w io.Writer, t Triangle, profit float64, quotes map[string]Qu
 
 /* =========================  ARB LOGGING + PIPELINE  ========================= */
 
-func initArbLogger(path string) (io.Writer, func()) {
+func InitArbLogger(path string) (io.Writer, func()) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		log.Fatalf("open %s: %v", path, err)
@@ -86,12 +88,12 @@ func initArbLogger(path string) (io.Writer, func()) {
 	return out, cleanup
 }
 
-func startWSWorkers(
+func StartWSWorkers(
 	ctx context.Context,
 	wg *sync.WaitGroup,
 	symbols []string,
 	interval string,
-	out chan<- Event,
+	out chan<- domain.Event,
 ) {
 	const maxPerConn = 50
 
@@ -108,19 +110,19 @@ func startWSWorkers(
 
 	for idx, chunk := range chunks {
 		wg.Add(1)
-		go runPublicBookTickerWS(ctx, wg, idx, chunk, interval, out)
+		go mexc.RunPublicBookTickerWS(ctx, wg, idx, chunk, interval, out)
 	}
 }
 
-func consumeEvents(
+func ConsumeEvents(
 	ctx context.Context,
-	events <-chan Event,
-	triangles []Triangle,
+	events <-chan domain.Event,
+	triangles []domain.Triangle,
 	indexBySymbol map[string][]int,
 	feePerLeg, minProfit float64,
 	out io.Writer,
 ) {
-	quotes := make(map[string]Quote)
+	quotes := make(map[string]domain.Quote)
 
 	const minPrintInterval = 5 * time.Millisecond
 	lastPrint := make(map[int]time.Time)
@@ -141,7 +143,7 @@ func consumeEvents(
 				continue
 			}
 
-			quotes[ev.Symbol] = Quote{
+			quotes[ev.Symbol] = domain.Quote{
 				Bid:    ev.Bid,
 				Ask:    ev.Ask,
 				BidQty: ev.BidQty,

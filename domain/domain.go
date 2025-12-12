@@ -1,4 +1,4 @@
-package main
+package domain
 
 import (
 	"bufio"
@@ -119,7 +119,7 @@ func buildTriangleFromPairs(p1, p2, p3 Pair) (Triangle, bool) {
 	return Triangle{}, false
 }
 
-func loadTriangles(path string) ([]Triangle, []string, map[string][]int, error) {
+func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, nil, err

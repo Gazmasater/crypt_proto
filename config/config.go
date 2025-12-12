@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"log"
@@ -32,7 +32,7 @@ func loadEnvFloat(name string, def float64) float64 {
 	return v
 }
 
-func loadConfig() Config {
+func LoadConfig() Config {
 	_ = godotenv.Load(".env")
 
 	tf := os.Getenv("TRIANGLES_FILE")
@@ -70,7 +70,7 @@ func loadConfig() Config {
 
 var debug bool
 
-func dlog(format string, args ...any) {
+func Dlog(format string, args ...any) {
 	if debug {
 		log.Printf(format, args...)
 	}
