@@ -12,10 +12,11 @@ import (
 /* =========================  CONFIG  ========================= */
 
 type Config struct {
+	Exchange      string // "MEXC" или "KUCOIN"
 	TrianglesFile string
 	BookInterval  string
-	FeePerLeg     float64 // комиссия за одну ногу, доля: 0.0004 = 0.04%
-	MinProfit     float64 // минимальная прибыль за круг, доля: 0.005 = 0.5%
+	FeePerLeg     float64 // как доля, 0.001 = 0.1%
+	MinProfit     float64 // как доля, 0.003 = 0.3%
 	Debug         bool
 }
 
@@ -38,34 +39,41 @@ func loadEnvFloat(name string, def float64) float64 {
 	return v
 }
 
-func LoadConfig() Config {
+func Load() Config {
 	_ = godotenv.Load(".env")
+
+	ex := strings.ToUpper(strings.TrimSpace(os.Getenv("EXCHANGE")))
+	if ex == "" {
+		ex = "MEXC"
+	}
 
 	tf := os.Getenv("TRIANGLES_FILE")
 	if tf == "" {
 		tf = "triangles_markets.csv"
 	}
-
 	bi := os.Getenv("BOOK_INTERVAL")
 	if bi == "" {
 		bi = "100ms"
 	}
 
-	feePct := loadEnvFloat("FEE_PCT", 0.04)       // проценты
-	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.5) // проценты
+	// проценты
+	feePct := loadEnvFloat("FEE_PCT", 0.04)
+	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.5)
 
-	debugFlag := strings.EqualFold(os.Getenv("DEBUG"), "true")
+	debug := strings.ToLower(os.Getenv("DEBUG")) == "true"
 
 	cfg := Config{
+		Exchange:      ex,
 		TrianglesFile: tf,
 		BookInterval:  bi,
 		FeePerLeg:     feePct / 100.0,
 		MinProfit:     minPct / 100.0,
-		Debug:         debugFlag,
+		Debug:         debug,
 	}
 
-	log.Printf("Triangles file: %s", cfg.TrianglesFile)
-	log.Printf("Book interval: %s", cfg.BookInterval)
+	log.Printf("Exchange: %s", cfg.Exchange)
+	log.Printf("Triangles file: %s", tf)
+	log.Printf("Book interval: %s", bi)
 	log.Printf("Fee per leg: %.4f %% (rate=%.6f)", feePct, cfg.FeePerLeg)
 	log.Printf("Min profit per cycle: %.4f %% (rate=%.6f)", minPct, cfg.MinProfit)
 

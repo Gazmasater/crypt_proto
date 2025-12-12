@@ -3,15 +3,11 @@ package domain
 import (
 	"bufio"
 	"encoding/csv"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"strings"
 )
-
-/* =========================  DOMAIN TYPES  ========================= */
 
 type Leg struct {
 	From   string
@@ -46,10 +42,8 @@ type Pair struct {
 	Symbol string
 }
 
-/* =========================  TRIANGLES  ========================= */
-
 func buildTriangleFromPairs(p1, p2, p3 Pair) (Triangle, bool) {
-	currencies := map[string]struct{}{
+	set := map[string]struct{}{
 		p1.Base:  {},
 		p1.Quote: {},
 		p2.Base:  {},
@@ -57,18 +51,15 @@ func buildTriangleFromPairs(p1, p2, p3 Pair) (Triangle, bool) {
 		p3.Base:  {},
 		p3.Quote: {},
 	}
-	if len(currencies) != 3 {
+	if len(set) != 3 {
 		return Triangle{}, false
 	}
-
 	currs := make([]string, 0, 3)
-	for c := range currencies {
+	for c := range set {
 		currs = append(currs, c)
 	}
 
-	type edge struct {
-		From, To string
-	}
+	type edge struct{ From, To string }
 
 	pairs := []Pair{p1, p2, p3}
 	perm3 := [][]int{
@@ -119,6 +110,7 @@ func buildTriangleFromPairs(p1, p2, p3 Pair) (Triangle, bool) {
 	return Triangle{}, false
 }
 
+// LoadTriangles читает CSV, строит треугольники и индекс по символам.
 func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -130,15 +122,13 @@ func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) 
 	r.TrimLeadingSpace = true
 	r.Comma = ','
 
-	var (
-		tris      []Triangle
-		symbolSet = make(map[string]struct{})
-	)
+	var tris []Triangle
+	symbolSet := make(map[string]struct{})
 
 	for {
 		rec, err := r.Read()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if err.Error() == "EOF" {
 				break
 			}
 			return nil, nil, nil, err
@@ -193,4 +183,29 @@ func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) 
 	log.Printf("символов в индексе треугольников: %d", len(symbols))
 
 	return tris, symbols, index, nil
+}
+
+// EvalTriangle считает доходность треугольника.
+func EvalTriangle(t Triangle, quotes map[string]Quote, fee float64) (float64, bool) {
+	amt := 1.0
+
+	for _, leg := range t.Legs {
+		q, ok := quotes[leg.Symbol]
+		if !ok || q.Bid <= 0 || q.Ask <= 0 {
+			return 0, false
+		}
+
+		if leg.Dir > 0 {
+			amt *= q.Bid
+		} else {
+			amt /= q.Ask
+		}
+
+		amt *= (1 - fee)
+		if amt <= 0 {
+			return 0, false
+		}
+	}
+
+	return amt - 1.0, true
 }
