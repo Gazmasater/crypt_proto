@@ -5,7 +5,6 @@ import (
 	"crypt_proto/arb"
 	"crypt_proto/config"
 	"crypt_proto/domain"
-	"crypt_proto/mexc"
 	"log"
 	"net/http"
 	"os/signal"
@@ -30,7 +29,7 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	cfg := config.LoadConfig()
-	mexc.SetDebug(cfg.Debug)
+	config.SetDebug(cfg.Debug)
 
 	arbOut, closeArb := arb.InitArbLogger("arbitrage.log")
 	defer closeArb()
