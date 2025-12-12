@@ -1,13 +1,14 @@
-package main
+package mexc
 
 import (
 	"strconv"
 	"strings"
 	"sync"
 
-	"google.golang.org/protobuf/proto"
-
+	"crypt_proto/domain"
 	pb "crypt_proto/pb"
+
+	"google.golang.org/protobuf/proto"
 )
 
 /* =========================  PROTO DECODER  ========================= */
@@ -16,7 +17,7 @@ var wrapperPool = sync.Pool{
 	New: func() any { return new(pb.PushDataV3ApiWrapper) },
 }
 
-func parsePBQuote(raw []byte) (string, Quote, bool) {
+func ParsePBQuote(raw []byte) (string, domain.Quote, bool) {
 	w, _ := wrapperPool.Get().(*pb.PushDataV3ApiWrapper)
 	defer func() {
 		*w = pb.PushDataV3ApiWrapper{}
@@ -24,7 +25,7 @@ func parsePBQuote(raw []byte) (string, Quote, bool) {
 	}()
 
 	if err := proto.Unmarshal(raw, w); err != nil {
-		return "", Quote{}, false
+		return "", domain.Quote{}, false
 	}
 
 	sym := w.GetSymbol()
@@ -35,7 +36,7 @@ func parsePBQuote(raw []byte) (string, Quote, bool) {
 		}
 	}
 	if sym == "" {
-		return "", Quote{}, false
+		return "", domain.Quote{}, false
 	}
 
 	// PublicBookTicker
@@ -56,18 +57,18 @@ func parsePBQuote(raw []byte) (string, Quote, bool) {
 		)
 	}
 
-	return "", Quote{}, false
+	return "", domain.Quote{}, false
 }
 
-func parseQuoteFromStrings(sym, bp, ap, bq, aq string) (string, Quote, bool) {
+func parseQuoteFromStrings(sym, bp, ap, bq, aq string) (string, domain.Quote, bool) {
 	if bp == "" || ap == "" {
-		return "", Quote{}, false
+		return "", domain.Quote{}, false
 	}
 
 	bid, err1 := strconv.ParseFloat(bp, 64)
 	ask, err2 := strconv.ParseFloat(ap, 64)
 	if err1 != nil || err2 != nil || bid <= 0 || ask <= 0 {
-		return "", Quote{}, false
+		return "", domain.Quote{}, false
 	}
 
 	var bidQty, askQty float64
@@ -82,7 +83,7 @@ func parseQuoteFromStrings(sym, bp, ap, bq, aq string) (string, Quote, bool) {
 		}
 	}
 
-	return sym, Quote{
+	return sym, domain.Quote{
 		Bid:    bid,
 		Ask:    ask,
 		BidQty: bidQty,
