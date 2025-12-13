@@ -17,7 +17,12 @@ type Config struct {
 	BookInterval  string
 	FeePerLeg     float64 // как доля, 0.001 = 0.1%
 	MinProfit     float64 // как доля, 0.003 = 0.3%
-	Debug         bool
+
+	// Минимальный стартовый объём (в валюте начала треугольника).
+	// Обычно это USDT; если 0 - фильтр отключен.
+	MinStart float64
+
+	Debug bool
 }
 
 var debug bool
@@ -60,6 +65,13 @@ func Load() Config {
 	feePct := loadEnvFloat("FEE_PCT", 0.04)
 	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.5)
 
+	// Минимальный стартовый объём (обычно USDT). Можно задавать как MIN_START_USDT
+	// (предпочтительно), либо MIN_START. Если не задано - фильтр отключен.
+	minStart := loadEnvFloat("MIN_START_USDT", -1)
+	if minStart < 0 {
+		minStart = loadEnvFloat("MIN_START", 0)
+	}
+
 	debug := strings.ToLower(os.Getenv("DEBUG")) == "true"
 
 	cfg := Config{
@@ -68,6 +80,7 @@ func Load() Config {
 		BookInterval:  bi,
 		FeePerLeg:     feePct / 100.0,
 		MinProfit:     minPct / 100.0,
+		MinStart:      minStart,
 		Debug:         debug,
 	}
 
@@ -76,6 +89,7 @@ func Load() Config {
 	log.Printf("Book interval: %s", bi)
 	log.Printf("Fee per leg: %.4f %% (rate=%.6f)", feePct, cfg.FeePerLeg)
 	log.Printf("Min profit per cycle: %.4f %% (rate=%.6f)", minPct, cfg.MinProfit)
+	log.Printf("Min start amount: %.4f", cfg.MinStart)
 
 	return cfg
 }

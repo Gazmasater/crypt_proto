@@ -270,7 +270,7 @@ func (f *Feed) Start(
 	interval string,
 	out chan<- domain.Event,
 ) {
-	const maxPerConn = 50
+	const maxPerConn = 25
 	chunks := make([][]string, 0)
 	for i := 0; i < len(symbols); i += maxPerConn {
 		j := i + maxPerConn

@@ -16,14 +16,16 @@ import (
 type Consumer struct {
 	FeePerLeg float64
 	MinProfit float64
+	MinStart  float64
 
 	writer io.Writer
 }
 
-func NewConsumer(feePerLeg, minProfit float64, out io.Writer) *Consumer {
+func NewConsumer(feePerLeg, minProfit, minStart float64, out io.Writer) *Consumer {
 	return &Consumer{
 		FeePerLeg: feePerLeg,
 		MinProfit: minProfit,
+		MinStart:  minStart,
 		writer:    out,
 	}
 }
@@ -85,19 +87,33 @@ func (c *Consumer) run(
 
 			for _, id := range trIDs {
 				tr := triangles[id]
+
 				prof, ok := domain.EvalTriangle(tr, quotes, c.FeePerLeg)
 				if !ok {
 					continue
 				}
-				if prof >= c.MinProfit {
-					if last, okLast := lastPrint[id]; okLast {
-						if now.Sub(last) < minPrintInterval {
-							continue
-						}
-					}
-					lastPrint[id] = now
-					c.printTriangle(now, tr, prof, quotes)
+				if prof < c.MinProfit {
+					continue
 				}
+
+				ms, okMS := domain.ComputeMaxStartTopOfBook(tr, quotes, c.FeePerLeg)
+				if okMS && c.MinStart > 0 && ms.MaxStart < c.MinStart {
+					continue
+				}
+
+				if last, okLast := lastPrint[id]; okLast {
+					if now.Sub(last) < minPrintInterval {
+						continue
+					}
+				}
+				lastPrint[id] = now
+
+				var msPtr *domain.MaxStartInfo
+				if okMS {
+					msCopy := ms
+					msPtr = &msCopy
+				}
+				c.printTriangle(now, tr, prof, quotes, msPtr)
 			}
 
 		case <-ctx.Done():
@@ -111,10 +127,24 @@ func (c *Consumer) printTriangle(
 	t domain.Triangle,
 	profit float64,
 	quotes map[string]domain.Quote,
+	ms *domain.MaxStartInfo,
 ) {
 	w := c.writer
 	fmt.Fprintf(w, "%s\n", ts.Format("2006-01-02 15:04:05.000"))
-	fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
+
+	if ms != nil {
+		bneckSym := ""
+		if ms.BottleneckLeg >= 0 && ms.BottleneckLeg < len(t.Legs) {
+			bneckSym = t.Legs[ms.BottleneckLeg].Symbol
+		}
+		fmt.Fprintf(w, "[ARB] %+0.3f%%  %s  maxStart=%.4f %s  bottleneck=%s\n",
+			profit*100, t.Name,
+			ms.MaxStart, ms.StartAsset,
+			bneckSym,
+		)
+	} else {
+		fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
+	}
 
 	for _, leg := range t.Legs {
 		q := quotes[leg.Symbol]
