@@ -81,5 +81,19 @@ Showing top 10 nodes out of 53
 
 
 
+25/12/13 04:03:46.636752 [MEXC WS #7] connected to wss://wbs-api.mexc.com/ws (symbols: 50)
+2025/12/13 04:03:46.636950 [MEXC WS #7] SUB -> 50 topics
+2025/12/13 04:03:46.866113 [MEXC WS #1] read err: websocket: close 1005 (no status) (reconnect)
+2025/12/13 04:03:47.788372 [MEXC WS #5] read err: websocket: close 1005 (no status) (reconnect)
+2025/12/13 04:03:48.095745 [MEXC WS #3] connected to wss://wbs-api.mexc.com/ws (symbols: 50)
+2025/12/13 04:03:48.095925 [MEXC WS #3] SUB -> 50 topics
+2025/12/13 04:03:49.792474 [MEXC WS #1] connected to wss://wbs-api.mexc.com/ws (symbols: 50)
+2025/12/13 04:03:49.792667 [MEXC WS #1] SUB -> 50 topics
+2025/12/13 04:03:50.656911 [MEXC WS #5] connected to wss://wbs-api.mexc.com/ws (symbols: 50)
+2025/12/13 04:03:50.657065 [MEXC WS #5] SUB -> 50 topics
+
+
+
+
 
 
