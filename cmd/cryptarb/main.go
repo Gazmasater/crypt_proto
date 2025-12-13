@@ -70,7 +70,7 @@ func main() {
 	var wg sync.WaitGroup
 
 	// запускаем потребителя
-	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, arbOut)
+	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStart, arbOut)
 	consumer.Start(ctx, events, triangles, indexBySymbol, &wg)
 
 	// запускаем фид биржи
