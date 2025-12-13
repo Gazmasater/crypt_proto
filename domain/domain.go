@@ -209,3 +209,80 @@ func EvalTriangle(t Triangle, quotes map[string]Quote, fee float64) (float64, bo
 
 	return amt - 1.0, true
 }
+
+// MaxStartInfo - диагностическая информация по максимальному стартовому объёму.
+// Все значения рассчитаны по top-of-book (best bid/ask) без учёта округлений stepSize/minQty.
+type MaxStartInfo struct {
+	StartAsset    string
+	MaxStart      float64    // в StartAsset
+	BottleneckLeg int        // индекс ноги [0..2]
+	LimitIn       [3]float64 // лимит на ВХОД каждой ноги (в единицах входного актива ноги)
+	KIn           [3]float64 // сколько входного актива ноги получается из 1 StartAsset
+	MaxStartByLeg [3]float64 // LimitIn / KIn
+}
+
+// ComputeMaxStartTopOfBook возвращает максимальный стартовый объём, который можно протащить через треугольник,
+// не выходя за best bid/ask qty на каждой ноге. Комиссия учитывается как удержание из результата каждой ноги.
+func ComputeMaxStartTopOfBook(t Triangle, quotes map[string]Quote, fee float64) (MaxStartInfo, bool) {
+	var info MaxStartInfo
+	info.StartAsset = t.Legs[0].From
+
+	// kIn - сколько входной валюты текущей ноги получится из 1 единицы стартовой валюты.
+	kIn := 1.0
+	info.MaxStart = 0
+	info.BottleneckLeg = -1
+
+	// Инициализируем maxStart как +Inf, чтобы взять минимум по ногам.
+	maxStart := 1e308
+
+	for i, leg := range t.Legs {
+		q, ok := quotes[leg.Symbol]
+		if !ok || q.Bid <= 0 || q.Ask <= 0 {
+			return MaxStartInfo{}, false
+		}
+
+		info.KIn[i] = kIn
+
+		var limitIn float64
+		var ratio float64 // out/in без комиссии
+
+		if leg.Dir > 0 {
+			// SELL base -> quote по bid, ограничение по количеству base на bid.
+			if q.BidQty <= 0 {
+				return MaxStartInfo{}, false
+			}
+			limitIn = q.BidQty
+			ratio = q.Bid
+		} else {
+			// BUY base <- quote по ask, ограничение по объёму quote, который можно потратить: askQty*ask.
+			if q.AskQty <= 0 {
+				return MaxStartInfo{}, false
+			}
+			limitIn = q.AskQty * q.Ask
+			ratio = 1.0 / q.Ask
+		}
+
+		info.LimitIn[i] = limitIn
+		if kIn <= 0 {
+			return MaxStartInfo{}, false
+		}
+		maxByThis := limitIn / kIn
+		info.MaxStartByLeg[i] = maxByThis
+		if maxByThis < maxStart {
+			maxStart = maxByThis
+			info.BottleneckLeg = i
+		}
+
+		// переход к следующей ноге
+		kIn = kIn * ratio * (1 - fee)
+		if kIn <= 0 {
+			return MaxStartInfo{}, false
+		}
+	}
+
+	if info.BottleneckLeg < 0 || maxStart <= 0 || maxStart > 1e307 {
+		return MaxStartInfo{}, false
+	}
+	info.MaxStart = maxStart
+	return info, true
+}
