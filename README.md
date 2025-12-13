@@ -54,32 +54,60 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-2025/12/13 04:20:30.360320 [MEXC WS #11] SUB -> 25 topics
-2025/12/13 04:20:30.360393 [MEXC WS #18] SUB -> 25 topics
-2025/12/13 04:21:00.569501 [MEXC WS #2] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:01.695879 [MEXC WS #12] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:01.695967 [MEXC WS #0] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:02.003072 [MEXC WS #6] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:02.003120 [MEXC WS #3] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:02.572929 [MEXC WS #18] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:02.641517 [MEXC WS #4] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:02.644114 [MEXC WS #5] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:02.646554 [MEXC WS #23] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:02.647483 [MEXC WS #13] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:02.797679 [MEXC WS #14] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:02.798834 [MEXC WS #20] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:02.801092 [MEXC WS #19] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:03.232189 [MEXC WS #10] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:03.242565 [MEXC WS #16] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:03.242810 [MEXC WS #17] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:03.335019 [MEXC WS #8] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:03.339309 [MEXC WS #9] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:03.340366 [MEXC WS #15] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:03.464412 [MEXC WS #2] connected to wss://wbs-api.mexc.com/ws (symbols: 25)
-2025/12/13 04:21:03.464591 [MEXC WS #2] SUB -> 25 topics
-2025/12/13 04:21:03.469277 [MEXC WS #11] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:03.469405 [MEXC WS #1] read err: websocket: close 1005 (no status) (reconnect)
-2025/12/13 04:21:03.641408 [MEXC WS #21] read err: websocket: close 1005 (no status) (reconnect)
+1) Проверь формат топиков для bookTicker (он должен быть именно такой)
+
+Для “Individual Symbol Book Ticker Streams” правильный параметр:
+
+spot@public.aggre.bookTicker.v3.api.pb@100ms@BTCUSDT
+или @10ms@ вместо @100ms@. 
+MEXC
+
+То есть генератор топиков должен быть примерно так:
+
+topic := fmt.Sprintf("spot@public.aggre.bookTicker.v3.api.pb@100ms@%s", symbol) // symbol в UPPERCASE
+
+
+Если ты сейчас подписываешься на старые/другие строки (например от wbs.mexc.com/ws), сервер их не признаёт → и через 30 сек режет.
+
+Критично: символы должны быть UPPERCASE. 
+MEXC
+
+2) Логируй ACK подписки (это моментально покажет “валидна или нет”)
+
+MEXC на успешную подписку отвечает JSON’ом вида:
+
+{"id":0,"code":0,"msg":"<topic>"}
+``` :contentReference[oaicite:3]{index=3}
+
+Сделай так: после `WriteJSON(SUB)` в течение 2–3 секунд жди хотя бы один ACK и логируй `code/msg`.
+- если ACK нет или `code != 0` → topic неправильный (или запрещён), это твой кейс.
+
+---
+
+## 3) Добавь keepalive по их протоколу (PING JSON), иначе будут отваливаться “тихие” пары
+У них ping/pong именно в виде сообщения:
+
+- запрос: `{"method":"PING"}`
+- ответ: `{"id":0,"code":0,"msg":"PONG"}` :contentReference[oaicite:4]{index=4}
+
+Иначе для пар, где минуту нет апдейтов, сервер может отключать через 1 минуту. :contentReference[oaicite:5]{index=5}
+
+---
+
+## 4) Лимит подписок ты уже учёл, но напомню
+Один WS коннект поддерживает **максимум 30 подписок**. Ты уже сделал 25 — это ок. :contentReference[oaicite:6]{index=6}
+
+---
+
+### Что сделать прямо сейчас (быстрый чеклист)
+1) Убедись, что **все 25 topics** в точности вида  
+`spot@public.aggre.bookTicker.v3.api.pb@100ms@SYMBOL` :contentReference[oaicite:7]{index=7}  
+2) После SUB дождись и залогируй **ACK** (`code==0`). :contentReference[oaicite:8]{index=8}  
+3) Запусти goroutine с `{"method":"PING"}` раз в 15–20 секунд. :contentReference[oaicite:9]{index=9}  
+
+Если хочешь — вставь сюда 5–10 строк кода, где ты **формируешь `params` (topics)** для подписки на bookTicker. По ним я сразу скажу, что именно у тебя не так (обычно там одна “лишняя/не та” часть строки).
+::contentReference[oaicite:10]{index=10}
+
 
 
 
