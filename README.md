@@ -54,29 +54,30 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-
-
-
-
-
-2025-12-13 03:14:25.954
-[ARB] +0.641%  IP→ETH→USDT→IP
-  IPETH (IP/ETH): bid=0.0006055000 ask=0.0006081000  spread=0.0000026000 (0.42848%)  bidQty=21.9400 askQty=35.6800
-  ETHUSDT (ETH/USDT): bid=3091.5200000000 ask=3091.6300000000  spread=0.1100000000 (0.00356%)  bidQty=8.5979 askQty=22.5668
-  IPUSDT (IP/USDT): bid=1.8560000000 ask=1.8600000000  spread=0.0040000000 (0.21529%)  bidQty=788.5600 askQty=2448.0900
-
-2025-12-13 03:14:53.474
-[ARB] +0.308%  USDT→IP→BTC→USDT
-  IPUSDT (IP/USDT): bid=1.8580000000 ask=1.8600000000  spread=0.0020000000 (0.10758%)  bidQty=14.5500 askQty=2249.5600
-  IPBTC (IP/BTC): bid=0.0000206500 ask=0.0000207400  spread=0.0000000900 (0.43489%)  bidQty=24.5300 askQty=17.3400
-  BTCUSDT (BTC/USDT): bid=90349.9500000000 ask=90350.0600000000  spread=0.1100000000 (0.00012%)  bidQty=2.7695 askQty=5.4706
-
-2025-12-13 03:14:53.474
-[ARB] +0.316%  IP→ETH→USDT→IP
-  IPETH (IP/ETH): bid=0.0006039000 ask=0.0006065000  spread=0.0000026000 (0.42961%)  bidQty=29.4300 askQty=20.8100
-  ETHUSDT (ETH/USDT): bid=3089.7000000000 ask=3089.8100000000  spread=0.1100000000 (0.00356%)  bidQty=53.6745 askQty=2.6791
-  IPUSDT (IP/USDT): bid=1.8580000000 ask=1.8600000000  spread=0.0020000000 (0.10758%)  bidQty=14.5500 askQty=2249.5600
-
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.cryptarb.samples.cpu.022.pb.gz
+File: cryptarb
+Build ID: ec57481fe3c993ad5c0ecc311bfddcb4dc62557e
+Type: cpu
+Time: 2025-12-13 04:00:23 MSK
+Duration: 30s, Total samples = 70ms ( 0.23%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 70ms, 100% of 70ms total
+Showing top 10 nodes out of 53
+      flat  flat%   sum%        cum   cum%
+      10ms 14.29% 14.29%       10ms 14.29%  crypto/internal/fips140/bigmod.addMulVVW2048
+      10ms 14.29% 28.57%       10ms 14.29%  crypto/internal/fips140/mlkem.inverseNTT
+      10ms 14.29% 42.86%       10ms 14.29%  crypto/internal/fips140/mlkem.polyByteEncode[go.shape.[256]crypto/internal/fips140/mlkem.fieldElement]
+      10ms 14.29% 57.14%       10ms 14.29%  runtime.futex
+      10ms 14.29% 71.43%       10ms 14.29%  runtime.memclrNoHeapPointers
+      10ms 14.29% 85.71%       10ms 14.29%  vendor/golang.org/x/crypto/cryptobyte.(*Builder).addLengthPrefixed
+      10ms 14.29%   100%       10ms 14.29%  vendor/golang.org/x/net/dns/dnsmessage.(*Parser).AnswerHeader
+         0     0%   100%       50ms 71.43%  crypt_proto/mexc.(*Feed).runPublicBookTickerWS
+         0     0%   100%       10ms 14.29%  crypto/internal/fips140/bigmod.(*Nat).ExpShortVarTime
+         0     0%   100%       10ms 14.29%  crypto/internal/fips140/bigmod.(*Nat).montgomeryMul
+(pprof) 
 
 
 
