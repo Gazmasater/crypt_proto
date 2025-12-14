@@ -92,7 +92,6 @@ func NewConsumer(feePerLeg, minProfit, minStart float64, out io.Writer) *Consume
 	}
 }
 
-// Start запускает горутину-потребителя.
 func (c *Consumer) Start(
 	ctx context.Context,
 	events <-chan domain.Event,
@@ -130,7 +129,6 @@ func (c *Consumer) run(
 				return
 			}
 
-			// если книга не изменилась — пропускаем
 			if prev, okPrev := quotes[ev.Symbol]; okPrev &&
 				prev.Bid == ev.Bid &&
 				prev.Ask == ev.Ask &&
@@ -156,28 +154,24 @@ func (c *Consumer) run(
 			for _, id := range trIDs {
 				tr := triangles[id]
 
-				// 1) прибыль (уже с учётом комиссии)
 				prof, ok := domain.EvalTriangle(tr, quotes, c.FeePerLeg)
 				if !ok || prof < c.MinProfit {
 					continue
 				}
 
-				// 2) maxStart по top-of-book
 				ms, okMS := domain.ComputeMaxStartTopOfBook(tr, quotes, c.FeePerLeg)
 				if okMS {
 					safeStart := ms.MaxStart * sf
 
-					// 3) ФИЛЬТР MIN_START_USDT — сравниваем safeStart В USDT
+					// MIN_START_USDT фильтруем в USDT
 					if c.MinStart > 0 {
 						safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, quotes)
-						// если конвертацию сделать нельзя — пропускаем, раз порог задан в USDT
 						if !okConv || safeUSDT < c.MinStart {
 							continue
 						}
 					}
 				}
 
-				// анти-спам
 				if last, okLast := lastPrint[id]; okLast && now.Sub(last) < minPrintInterval {
 					continue
 				}
@@ -217,7 +211,6 @@ func (c *Consumer) printTriangle(
 
 		safeStart := ms.MaxStart * startFraction
 
-		// конвертация maxStart/safeStart в USDT для вывода
 		maxUSDT, okMax := convertToUSDT(ms.MaxStart, ms.StartAsset, quotes)
 		safeUSDT, okSafe := convertToUSDT(safeStart, ms.StartAsset, quotes)
 
@@ -239,10 +232,9 @@ func (c *Consumer) printTriangle(
 			bneckSym,
 		)
 
-		// ====== ДОП: объёмы всех ног в USDT (для safeStart) ======
+		// объёмы всех ног для safeStart
 		flows, okF := calcTriangleFlow(t, quotes, c.FeePerLeg, safeStart)
 		if okF {
-			// Покажем детально по каждой ноге
 			for i := 0; i < 3; i++ {
 				inUSDT, okIn := convertToUSDT(flows[i].InAmt, flows[i].InAsset, quotes)
 				outUSDT, okOut := convertToUSDT(flows[i].OutAmt, flows[i].OutAsset, quotes)
@@ -261,21 +253,6 @@ func (c *Consumer) printTriangle(
 					flows[i].InAmt, flows[i].InAsset, inStr,
 					flows[i].OutAmt, flows[i].OutAsset, outStr,
 				)
-			}
-
-			// И короткой строкой “только USDT”
-			in1, okIn1 := convertToUSDT(flows[0].InAmt, flows[0].InAsset, quotes)
-			out1, okOut1 := convertToUSDT(flows[0].OutAmt, flows[0].OutAsset, quotes)
-			in2, okIn2 := convertToUSDT(flows[1].InAmt, flows[1].InAsset, quotes)
-			out2, okOut2 := convertToUSDT(flows[1].OutAmt, flows[1].OutAsset, quotes)
-			in3, okIn3 := convertToUSDT(flows[2].InAmt, flows[2].InAsset, quotes)
-			out3, okOut3 := convertToUSDT(flows[2].OutAmt, flows[2].OutAsset, quotes)
-
-			if okIn1 && okOut1 && okIn2 && okOut2 && okIn3 && okOut3 {
-				fmt.Fprintf(w, "  legsUSDT: in1=%.6f out1=%.6f | in2=%.6f out2=%.6f | in3=%.6f out3=%.6f\n",
-					in1, out1, in2, out2, in3, out3)
-			} else {
-				fmt.Fprintf(w, "  legsUSDT: (some legs can't convert to USDT with current subscribed books)\n")
 			}
 		}
 	} else {
@@ -318,9 +295,7 @@ func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
 	return f, buf, out
 }
 
-// ==============================
-// Конвертация в USDT (для логов/фильтра)
-// ==============================
+// ===== USDT convert =====
 
 func convertToUSDT(amount float64, asset string, quotes map[string]domain.Quote) (float64, bool) {
 	if amount <= 0 {
@@ -330,17 +305,13 @@ func convertToUSDT(amount float64, asset string, quotes map[string]domain.Quote)
 		return amount, true
 	}
 
-	// 1) ASSETUSDT: продаём ASSET за USDT по bid
 	if q, ok := quotes[asset+"USDT"]; ok && q.Bid > 0 && q.BidQty > 0 {
 		return amount * q.Bid, true
 	}
-
-	// 2) USDTASSET: покупаем USDT за ASSET по ask (ask = ASSET per USDT)
 	if q, ok := quotes["USDT"+asset]; ok && q.Ask > 0 && q.AskQty > 0 {
 		return amount / q.Ask, true
 	}
 
-	// 3) Через USDC
 	amtUSDC, ok1 := convertViaQuote(amount, asset, "USDC", quotes)
 	if ok1 {
 		amtUSDT, ok2 := convertViaQuote(amtUSDC, "USDC", "USDT", quotes)
@@ -360,12 +331,9 @@ func convertViaQuote(amount float64, assetFrom, assetTo string, quotes map[strin
 		return amount, true
 	}
 
-	// FROMTO: sell FROM -> TO
 	if q, ok := quotes[assetFrom+assetTo]; ok && q.Bid > 0 && q.BidQty > 0 {
 		return amount * q.Bid, true
 	}
-
-	// TOFROM: buy TO using FROM (ask = FROM per TO)
 	if q, ok := quotes[assetTo+assetFrom]; ok && q.Ask > 0 && q.AskQty > 0 {
 		return amount / q.Ask, true
 	}
@@ -373,9 +341,7 @@ func convertViaQuote(amount float64, assetFrom, assetTo string, quotes map[strin
 	return 0, false
 }
 
-// ==============================
-// Расчёт потока по ногам (для safeStart)
-// ==============================
+// ===== flow per legs =====
 
 type legFlow struct {
 	InAmt    float64
@@ -384,8 +350,6 @@ type legFlow struct {
 	OutAsset string
 }
 
-// calcTriangleFlow считает реальные вход/выход каждой ноги для заданного старта (start в стартовой валюте треугольника).
-// Комиссию считаем как удержание из результата ноги (out *= 1-fee).
 func calcTriangleFlow(t domain.Triangle, quotes map[string]domain.Quote, fee float64, start float64) ([3]legFlow, bool) {
 	var flows [3]legFlow
 	amt := start
@@ -399,14 +363,12 @@ func calcTriangleFlow(t domain.Triangle, quotes map[string]domain.Quote, fee flo
 		inAmt := amt
 		outAmt := 0.0
 
-		// Dir>0: From(base) -> To(quote) SELL по bid
 		if leg.Dir > 0 {
 			if q.BidQty <= 0 {
 				return flows, false
 			}
 			outAmt = inAmt * q.Bid
 		} else {
-			// Dir<0: From(quote) -> To(base) BUY по ask
 			if q.AskQty <= 0 {
 				return flows, false
 			}
@@ -430,18 +392,4 @@ func calcTriangleFlow(t domain.Triangle, quotes map[string]domain.Quote, fee flo
 
 	return flows, true
 }
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/arb/arb.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"severity": 8,
-	"message": "expected 'package', found in2",
-	"source": "syntax",
-	"startLineNumber": 2,
-	"startColumn": 4,
-	"endLineNumber": 2,
-	"endColumn": 4,
-	"origin": "extHost1"
-}]
 
