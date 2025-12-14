@@ -9,27 +9,26 @@ import (
 	"github.com/joho/godotenv"
 )
 
-/* =========================  CONFIG  ========================= */
-
 type Config struct {
-	Exchange      string // "MEXC" или "KUCOIN"
+	Exchange      string
 	TrianglesFile string
 	BookInterval  string
-	FeePerLeg     float64 // как доля, 0.001 = 0.1%
-	MinProfit     float64 // как доля, 0.003 = 0.3%
 
-	// Минимальный стартовый объём (в валюте начала треугольника).
-	// Обычно это USDT; если 0 - фильтр отключен.
+	FeePerLeg float64 // доля, 0.0004 = 0.04%
+	MinProfit float64 // доля
+
+	// Минимальный старт (обычно USDT). 0 = фильтр выключен.
 	MinStart float64
+
+	// Доля от maxStart, которую считаем безопасной (0..1). Например 0.5.
+	StartFraction float64
 
 	Debug bool
 }
 
 var debug bool
 
-func SetDebug(v bool) {
-	debug = v
-}
+func SetDebug(v bool) { debug = v }
 
 func loadEnvFloat(name string, def float64) float64 {
 	raw := strings.TrimSpace(os.Getenv(name))
@@ -39,6 +38,13 @@ func loadEnvFloat(name string, def float64) float64 {
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
 		log.Printf("bad %s=%q: %v, using default %f", name, raw, err, def)
+		return def
+	}
+	return v
+}
+
+func clamp01(v, def float64) float64 {
+	if v <= 0 || v > 1 {
 		return def
 	}
 	return v
@@ -56,21 +62,22 @@ func Load() Config {
 	if tf == "" {
 		tf = "triangles_markets.csv"
 	}
+
 	bi := os.Getenv("BOOK_INTERVAL")
 	if bi == "" {
 		bi = "100ms"
 	}
 
-	// проценты
 	feePct := loadEnvFloat("FEE_PCT", 0.04)
 	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.5)
 
-	// Минимальный стартовый объём (обычно USDT). Можно задавать как MIN_START_USDT
-	// (предпочтительно), либо MIN_START. Если не задано - фильтр отключен.
+	// MIN_START_USDT (предпочтительно) или MIN_START
 	minStart := loadEnvFloat("MIN_START_USDT", -1)
 	if minStart < 0 {
 		minStart = loadEnvFloat("MIN_START", 0)
 	}
+
+	startFraction := clamp01(loadEnvFloat("START_FRACTION", 0.5), 0.5)
 
 	debug := strings.ToLower(os.Getenv("DEBUG")) == "true"
 
@@ -81,20 +88,20 @@ func Load() Config {
 		FeePerLeg:     feePct / 100.0,
 		MinProfit:     minPct / 100.0,
 		MinStart:      minStart,
+		StartFraction: startFraction,
 		Debug:         debug,
 	}
 
 	log.Printf("Exchange: %s", cfg.Exchange)
-	log.Printf("Triangles file: %s", tf)
-	log.Printf("Book interval: %s", bi)
+	log.Printf("Triangles file: %s", cfg.TrianglesFile)
+	log.Printf("Book interval: %s", cfg.BookInterval)
 	log.Printf("Fee per leg: %.4f %% (rate=%.6f)", feePct, cfg.FeePerLeg)
 	log.Printf("Min profit per cycle: %.4f %% (rate=%.6f)", minPct, cfg.MinProfit)
 	log.Printf("Min start amount: %.4f", cfg.MinStart)
+	log.Printf("Start fraction: %.4f", cfg.StartFraction)
 
 	return cfg
 }
-
-/* =========================  LOGGING  ========================= */
 
 func Dlog(format string, args ...any) {
 	if debug {
