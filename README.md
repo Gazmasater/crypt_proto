@@ -432,5 +432,16 @@ func calcTriangleFlow(t domain.Triangle, quotes map[string]domain.Quote, fee flo
 }
 
 
-
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/arb/arb.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"severity": 8,
+	"message": "expected 'package', found in2",
+	"source": "syntax",
+	"startLineNumber": 2,
+	"startColumn": 4,
+	"endLineNumber": 2,
+	"endColumn": 4,
+	"origin": "extHost1"
+}]
 
