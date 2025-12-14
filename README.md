@@ -58,12 +58,10 @@ package arb
 
 import (
 	"bufio"
-	"container/heap"
 	"context"
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"os"
 	"sync"
 	"time"
@@ -75,14 +73,23 @@ type Consumer struct {
 	FeePerLeg float64
 	MinProfit float64
 
+	// MinStart — минимальный допустимый старт (обычно в USDT, но по факту это валюта старта треугольника).
+	// ВАЖНО: фильтр применяется к safeStart (= maxStart * StartFraction).
+	MinStart float64
+
+	// StartFraction — доля от maxStart, которую считаем безопасной для исполнения (обычно 0.5).
+	StartFraction float64
+
 	writer io.Writer
 }
 
-func NewConsumer(feePerLeg, minProfit float64, out io.Writer) *Consumer {
+func NewConsumer(feePerLeg, minProfit, minStart float64, out io.Writer) *Consumer {
 	return &Consumer{
-		FeePerLeg: feePerLeg,
-		MinProfit: minProfit,
-		writer:    out,
+		FeePerLeg:     feePerLeg,
+		MinProfit:     minProfit,
+		MinStart:      minStart,
+		StartFraction: 0.5, // дефолт: половина от maxStart
+		writer:        out,
 	}
 }
 
@@ -109,11 +116,14 @@ func (c *Consumer) run(
 ) {
 	quotes := make(map[string]domain.Quote)
 
-	// граф конвертации (для maxStart -> USDT, если USDT нет в самом треугольнике)
-	adj := buildAdjFromTriangles(triangles)
-
+	// анти-спам: один и тот же треугольник не печатаем чаще этого интервала
 	const minPrintInterval = 5 * time.Millisecond
 	lastPrint := make(map[int]time.Time)
+
+	sf := c.StartFraction
+	if sf <= 0 || sf > 1 {
+		sf = 0.5
+	}
 
 	for {
 		select {
@@ -122,7 +132,7 @@ func (c *Consumer) run(
 				return
 			}
 
-			// дедуп по одинаковому стакану
+			// если книга не изменилась — пропускаем
 			if prev, okPrev := quotes[ev.Symbol]; okPrev &&
 				prev.Bid == ev.Bid &&
 				prev.Ask == ev.Ask &&
@@ -148,30 +158,36 @@ func (c *Consumer) run(
 			for _, id := range trIDs {
 				tr := triangles[id]
 
+				// 1) прибыль (уже с учётом комиссии)
 				prof, ok := domain.EvalTriangle(tr, quotes, c.FeePerLeg)
-				if !ok {
-					continue
-				}
-				if prof < c.MinProfit {
+				if !ok || prof < c.MinProfit {
 					continue
 				}
 
-				if last, okLast := lastPrint[id]; okLast {
-					if now.Sub(last) < minPrintInterval {
+				// 2) maxStart по top-of-book
+				ms, okMS := domain.ComputeMaxStartTopOfBook(tr, quotes, c.FeePerLeg)
+				if okMS {
+					safeStart := ms.MaxStart * sf
+
+					// фильтр применяем к safeStart (половина maxStart)
+					if c.MinStart > 0 && safeStart < c.MinStart {
 						continue
 					}
 				}
+
+				// анти-спам
+				if last, okLast := lastPrint[id]; okLast && now.Sub(last) < minPrintInterval {
+					continue
+				}
 				lastPrint[id] = now
 
-				maxStart, bottleneck, okMS := calcMaxStart(tr, quotes, c.FeePerLeg)
-				var maxStartUSDT float64
+				var msPtr *domain.MaxStartInfo
 				if okMS {
-					maxStartUSDT = calcMaxStartUSDTAlways(tr, maxStart, quotes, c.FeePerLeg, adj)
-				} else {
-					maxStartUSDT = math.NaN()
+					msCopy := ms
+					msPtr = &msCopy
 				}
 
-				c.printTriangle(now, tr, prof, maxStart, maxStartUSDT, bottleneck, quotes)
+				c.printTriangle(now, tr, prof, quotes, msPtr, sf)
 			}
 
 		case <-ctx.Done():
@@ -184,36 +200,45 @@ func (c *Consumer) printTriangle(
 	ts time.Time,
 	t domain.Triangle,
 	profit float64,
-	maxStart float64,
-	maxStartUSDT float64,
-	bottleneck string,
 	quotes map[string]domain.Quote,
+	ms *domain.MaxStartInfo,
+	startFraction float64,
 ) {
 	w := c.writer
-
-	startAsset := t.Legs[0].From
-	if bottleneck == "" {
-		bottleneck = "-"
-	}
-
 	fmt.Fprintf(w, "%s\n", ts.Format("2006-01-02 15:04:05.000"))
 
-	// ВСЕГДА печатаем "(... USDT)"
-	if maxStart > 0 {
+	if ms != nil {
+		bneckSym := ""
+		if ms.BottleneckLeg >= 0 && ms.BottleneckLeg < len(t.Legs) {
+			bneckSym = t.Legs[ms.BottleneckLeg].Symbol
+		}
+
+		// safeStart = половина от maxStart (или другой startFraction)
+		safeStart := ms.MaxStart * startFraction
+
+		// конвертация maxStart/safeStart в USDT для вывода
+		maxUSDT, okMax := convertToUSDT(ms.MaxStart, ms.StartAsset, quotes)
+		safeUSDT, okSafe := convertToUSDT(safeStart, ms.StartAsset, quotes)
+
+		maxUSDTStr := "?"
+		safeUSDTStr := "?"
+		if okMax {
+			maxUSDTStr = fmt.Sprintf("%.4f", maxUSDT)
+		}
+		if okSafe {
+			safeUSDTStr = fmt.Sprintf("%.4f", safeUSDT)
+		}
+
 		fmt.Fprintf(w,
-			"[ARB] %+0.3f%%  %s  maxStart=%.4f %s (%.2f USDT)  bottleneck=%s\n",
+			"[ARB] %+0.3f%%  %s  maxStart=%.4f %s (%s USDT)  safeStart=%.4f %s (%s USDT) (x%.2f)  bottleneck=%s\n",
 			profit*100, t.Name,
-			maxStart, startAsset, maxStartUSDT,
-			bottleneck,
+			ms.MaxStart, ms.StartAsset, maxUSDTStr,
+			safeStart, ms.StartAsset, safeUSDTStr,
+			startFraction,
+			bneckSym,
 		)
 	} else {
-		// даже если maxStart не посчитался/0 — скобки остаются
-		fmt.Fprintf(w,
-			"[ARB] %+0.3f%%  %s  maxStart=%.4f %s (%.2f USDT)  bottleneck=%s\n",
-			profit*100, t.Name,
-			0.0, startAsset, maxStartUSDT,
-			bottleneck,
-		)
+		fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
 	}
 
 	for _, leg := range t.Legs {
@@ -232,8 +257,7 @@ func (c *Consumer) printTriangle(
 			side = fmt.Sprintf("%s/%s", leg.To, leg.From)
 		}
 
-		fmt.Fprintf(w,
-			"  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
+		fmt.Fprintf(w, "  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
 			leg.Symbol, side,
 			q.Bid, q.Ask,
 			spreadAbs, spreadPct,
@@ -253,253 +277,180 @@ func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
 	return f, buf, out
 }
 
-// -------------------- maxStart --------------------
+// ==============================
+// Конвертация для вывода maxStart в USDT
+// ==============================
 
-// calcMaxStart оценивает максимальный стартовый объём в валюте t.Legs[0].From,
-// исходя из ограничений ликвидности (bidQty/askQty) по каждой ноге.
-func calcMaxStart(t domain.Triangle, quotes map[string]domain.Quote, fee float64) (maxStart float64, bottleneck string, ok bool) {
-	start := t.Legs[0].From
-	_ = start
-
-	prod := 1.0                    // сколько валюты текущей ноги.From получится из 1 единицы старта (после предыдущих ног)
-	maxStart = math.Inf(1)         // минимизируем
-	bottleneck = ""
-
-	for i := 0; i < 3; i++ {
-		leg := t.Legs[i]
-		q, okQ := quotes[leg.Symbol]
-		if !okQ || q.Bid <= 0 || q.Ask <= 0 {
-			return 0, "", false
-		}
-
-		// лимит в валюте leg.From (до комиссии на этой ноге)
-		var capFrom float64
-		var k float64 // мультипликатор перехода From->To (с комиссией)
-
-		if leg.Dir > 0 {
-			// base->quote: продаём base, ограничение bidQty (в base)
-			capFrom = q.BidQty
-			k = q.Bid * (1 - fee)
-		} else {
-			// quote->base: покупаем base за quote
-			// askQty в base => максимум quote, который можно потратить: askQty * ask
-			capFrom = q.AskQty * q.Ask
-			k = (1.0 / q.Ask) * (1 - fee)
-		}
-
-		if capFrom <= 0 || k <= 0 || prod <= 0 {
-			return 0, "", false
-		}
-
-		limitStart := capFrom / prod
-		if limitStart < maxStart {
-			maxStart = limitStart
-			bottleneck = leg.Symbol
-		}
-
-		prod *= k
-	}
-
-	if !math.IsInf(maxStart, 1) && maxStart > 0 {
-		return maxStart, bottleneck, true
-	}
-	return 0, bottleneck, false
-}
-
-// calcMaxStartUSDTAlways ВСЕГДА возвращает число для печати в скобках "(... USDT)".
-// 1) если USDT встречается по пути треугольника — конвертим по ногам треугольника;
-// 2) иначе — пытаемся найти путь через общий граф по всем парам;
-// 3) если не нашли — NaN.
-func calcMaxStartUSDTAlways(
-	t domain.Triangle,
-	maxStart float64,
-	quotes map[string]domain.Quote,
-	fee float64,
-	adj map[string][]convEdge,
-) float64 {
-	if maxStart <= 0 {
-		return math.NaN()
-	}
-
-	startAsset := t.Legs[0].From
-	if startAsset == "USDT" {
-		return maxStart
-	}
-
-	// (1) пробуем по ногам этого треугольника до первого USDT
-	cur := startAsset
-	amt := maxStart
-
-	for i := 0; i < 3; i++ {
-		leg := t.Legs[i]
-		if leg.From != cur {
-			break
-		}
-
-		q, ok := quotes[leg.Symbol]
-		if !ok || q.Bid <= 0 || q.Ask <= 0 {
-			break
-		}
-
-		if leg.Dir > 0 {
-			amt *= q.Bid
-		} else {
-			amt /= q.Ask
-		}
-		amt *= (1 - fee)
-
-		cur = leg.To
-		if cur == "USDT" {
-			return amt
-		}
-	}
-
-	// (2) общий граф
-	if v, ok := convertByGraph(startAsset, "USDT", maxStart, quotes, adj, fee, 6); ok {
-		return v
-	}
-
-	// (3) не нашли
-	return math.NaN()
-}
-
-// -------------------- граф конвертации --------------------
-
-type convEdge struct {
-	to     string
-	symbol string
-	mode   int8 // +1: base->quote (sell base at bid), -1: quote->base (buy base at ask)
-}
-
-func buildAdjFromTriangles(tris []domain.Triangle) map[string][]convEdge {
-	adj := make(map[string][]convEdge)
-	seen := make(map[string]struct{})
-
-	add := func(from string, e convEdge) {
-		key := from + "|" + e.to + "|" + e.symbol + fmt.Sprintf("|%d", e.mode)
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		adj[from] = append(adj[from], e)
-	}
-
-	for _, t := range tris {
-		for _, leg := range t.Legs {
-			// base/quote для symbol
-			var base, quote string
-			if leg.Dir > 0 {
-				base, quote = leg.From, leg.To
-			} else {
-				base, quote = leg.To, leg.From
-			}
-
-			add(base, convEdge{to: quote, symbol: leg.Symbol, mode: +1})
-			add(quote, convEdge{to: base, symbol: leg.Symbol, mode: -1})
-		}
-	}
-	return adj
-}
-
-func convertByGraph(
-	fromAsset, toAsset string,
-	amount float64,
-	quotes map[string]domain.Quote,
-	adj map[string][]convEdge,
-	fee float64,
-	maxHops int,
-) (float64, bool) {
+func convertToUSDT(amount float64, asset string, quotes map[string]domain.Quote) (float64, bool) {
 	if amount <= 0 {
 		return 0, false
 	}
-	if fromAsset == toAsset {
+	if asset == "USDT" {
 		return amount, true
 	}
-	if maxHops <= 0 {
-		return 0, false
+
+	// 1) Прямая пара: ASSETUSDT (продаём ASSET за USDT по bid)
+	if q, ok := quotes[asset+"USDT"]; ok && q.Bid > 0 && q.BidQty > 0 {
+		return amount * q.Bid, true
 	}
 
-	// best[asset][hops] = лучший мультипликатор
-	best := make(map[stateKey]float64)
+	// 2) Прямая пара: USDTASSET (покупаем USDT за ASSET по ask)
+	if q, ok := quotes["USDT"+asset]; ok && q.Ask > 0 && q.AskQty > 0 {
+		// ask = ASSET per USDT => USDT = ASSET / ask
+		return amount / q.Ask, true
+	}
 
-	pq := &maxPQ{}
-	heap.Init(pq)
-
-	k0 := stateKey{asset: fromAsset, hops: 0}
-	best[k0] = 1.0
-	heap.Push(pq, pqState{asset: fromAsset, hops: 0, mult: 1.0})
-
-	for pq.Len() > 0 {
-		cur := heap.Pop(pq).(pqState)
-
-		key := stateKey{asset: cur.asset, hops: cur.hops}
-		if b, ok := best[key]; ok && cur.mult < b {
-			continue
-		}
-
-		if cur.asset == toAsset {
-			return amount * cur.mult, true
-		}
-		if cur.hops >= maxHops {
-			continue
-		}
-
-		for _, e := range adj[cur.asset] {
-			q, ok := quotes[e.symbol]
-			if !ok || q.Bid <= 0 || q.Ask <= 0 {
-				continue
-			}
-
-			var em float64
-			if e.mode > 0 {
-				em = q.Bid * (1 - fee)
-			} else {
-				em = (1.0 / q.Ask) * (1 - fee)
-			}
-			if em <= 0 || math.IsNaN(em) || math.IsInf(em, 0) {
-				continue
-			}
-
-			nmult := cur.mult * em
-			nhops := cur.hops + 1
-			nkey := stateKey{asset: e.to, hops: nhops}
-
-			if prev, ok := best[nkey]; !ok || nmult > prev {
-				best[nkey] = nmult
-				heap.Push(pq, pqState{asset: e.to, hops: nhops, mult: nmult})
-			}
+	// 3) Через USDC: ASSET -> USDC -> USDT
+	amtUSDC, ok1 := convertViaQuote(amount, asset, "USDC", quotes)
+	if ok1 {
+		amtUSDT, ok2 := convertViaQuote(amtUSDC, "USDC", "USDT", quotes)
+		if ok2 {
+			return amtUSDT, true
 		}
 	}
 
 	return 0, false
 }
 
-type stateKey struct {
-	asset string
-	hops  int
+// convertViaQuote конвертирует amount из assetFrom в assetTo, используя только прямые пары.
+// Правила:
+// - FROMTO: продаём FROM за TO по bid => out = amount * bid
+// - TOFROM: покупаем TO за FROM по ask => out = amount / ask
+func convertViaQuote(amount float64, assetFrom, assetTo string, quotes map[string]domain.Quote) (float64, bool) {
+	if amount <= 0 {
+		return 0, false
+	}
+	if assetFrom == assetTo {
+		return amount, true
+	}
+
+	// FROMTO: sell FROM -> TO
+	if q, ok := quotes[assetFrom+assetTo]; ok && q.Bid > 0 && q.BidQty > 0 {
+		return amount * q.Bid, true
+	}
+
+	// TOFROM: buy TO using FROM
+	if q, ok := quotes[assetTo+assetFrom]; ok && q.Ask > 0 && q.AskQty > 0 {
+		return amount / q.Ask, true
+	}
+
+	return 0, false
 }
 
-type pqState struct {
-	asset string
-	hops  int
-	mult  float64
+
+
+
+
+package config
+
+import (
+	"log"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/joho/godotenv"
+)
+
+type Config struct {
+	Exchange      string
+	TrianglesFile string
+	BookInterval  string
+
+	FeePerLeg float64 // доля, 0.0004 = 0.04%
+	MinProfit float64 // доля
+
+	// Минимальный старт (обычно USDT). 0 = фильтр выключен.
+	MinStart float64
+
+	// Доля от maxStart, которую считаем безопасной (0..1). Например 0.5.
+	StartFraction float64
+
+	Debug bool
 }
 
-type maxPQ []pqState
+var debug bool
 
-func (h maxPQ) Len() int            { return len(h) }
-func (h maxPQ) Less(i, j int) bool  { return h[i].mult > h[j].mult } // max-heap
-func (h maxPQ) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *maxPQ) Push(x interface{}) { *h = append(*h, x.(pqState)) }
-func (h *maxPQ) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[:n-1]
-	return x
+func SetDebug(v bool) { debug = v }
+
+func loadEnvFloat(name string, def float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		log.Printf("bad %s=%q: %v, using default %f", name, raw, err, def)
+		return def
+	}
+	return v
 }
 
+func clamp01(v, def float64) float64 {
+	if v <= 0 || v > 1 {
+		return def
+	}
+	return v
+}
 
+func Load() Config {
+	_ = godotenv.Load(".env")
+
+	ex := strings.ToUpper(strings.TrimSpace(os.Getenv("EXCHANGE")))
+	if ex == "" {
+		ex = "MEXC"
+	}
+
+	tf := os.Getenv("TRIANGLES_FILE")
+	if tf == "" {
+		tf = "triangles_markets.csv"
+	}
+
+	bi := os.Getenv("BOOK_INTERVAL")
+	if bi == "" {
+		bi = "100ms"
+	}
+
+	feePct := loadEnvFloat("FEE_PCT", 0.04)
+	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.5)
+
+	// MIN_START_USDT (предпочтительно) или MIN_START
+	minStart := loadEnvFloat("MIN_START_USDT", -1)
+	if minStart < 0 {
+		minStart = loadEnvFloat("MIN_START", 0)
+	}
+
+	startFraction := clamp01(loadEnvFloat("START_FRACTION", 0.5), 0.5)
+
+	debug := strings.ToLower(os.Getenv("DEBUG")) == "true"
+
+	cfg := Config{
+		Exchange:       ex,
+		TrianglesFile:  tf,
+		BookInterval:   bi,
+		FeePerLeg:      feePct / 100.0,
+		MinProfit:      minPct / 100.0,
+		MinStart:       minStart,
+		StartFraction:  startFraction,
+		Debug:          debug,
+	}
+
+	log.Printf("Exchange: %s", cfg.Exchange)
+	log.Printf("Triangles file: %s", cfg.TrianglesFile)
+	log.Printf("Book interval: %s", cfg.BookInterval)
+	log.Printf("Fee per leg: %.4f %% (rate=%.6f)", feePct, cfg.FeePerLeg)
+	log.Printf("Min profit per cycle: %.4f %% (rate=%.6f)", minPct, cfg.MinProfit)
+	log.Printf("Min start amount: %.4f", cfg.MinStart)
+	log.Printf("Start fraction: %.4f", cfg.StartFraction)
+
+	return cfg
+}
+
+func Dlog(format string, args ...any) {
+	if debug {
+		log.Printf(format, args...)
+	}
+}
 
 
 
