@@ -54,15 +54,18 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-EXCHANGE=MEXC
-TRIANGLES_FILE=triangles_markets.csv
-BOOK_INTERVAL=10ms
-FEE_PCT=0.04
-MIN_PROFIT_PCT=0.1
-MIN_START_USDT=2
-START_FRACTION=0.5  # Добавлена эта строка
-DEBUG=false
+ms, okMS := domain.ComputeMaxStartTopOfBook(tr, quotes, c.FeePerLeg)
+if okMS {
+    safeStart := ms.MaxStart * sf
 
+    if c.MinStart > 0 {
+        safeUSDT, ok := convertToUSDT(safeStart, ms.StartAsset, quotes)
+        // если не смогли перевести в USDT — лучше пропускать, раз порог в USDT
+        if !ok || safeUSDT < c.MinStart {
+            continue
+        }
+    }
+}
 
 
 
