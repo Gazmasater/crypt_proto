@@ -73,10 +73,10 @@ type Consumer struct {
 	FeePerLeg float64
 	MinProfit float64
 
-	// MinStart — минимальный старт в USDT (MIN_START_USDT). 0 = фильтр выключен.
+	// MinStart — минимальный допустимый старт в USDT (MIN_START_USDT). 0 = фильтр выключен.
 	MinStart float64
 
-	// StartFraction — доля от maxStart, которую считаем безопасной (0..1). Например 0.5.
+	// StartFraction — доля от maxStart, которую считаем безопасной (обычно 0.5).
 	StartFraction float64
 
 	writer io.Writer
@@ -115,7 +115,6 @@ func (c *Consumer) run(
 ) {
 	quotes := make(map[string]domain.Quote)
 
-	// анти-спам: один и тот же треугольник не печатаем чаще этого интервала
 	const minPrintInterval = 5 * time.Millisecond
 	lastPrint := make(map[int]time.Time)
 
@@ -157,7 +156,7 @@ func (c *Consumer) run(
 			for _, id := range trIDs {
 				tr := triangles[id]
 
-				// 1) прибыль (уже с учетом комиссии)
+				// 1) прибыль (уже с учётом комиссии)
 				prof, ok := domain.EvalTriangle(tr, quotes, c.FeePerLeg)
 				if !ok || prof < c.MinProfit {
 					continue
@@ -165,14 +164,16 @@ func (c *Consumer) run(
 
 				// 2) maxStart по top-of-book
 				ms, okMS := domain.ComputeMaxStartTopOfBook(tr, quotes, c.FeePerLeg)
-
-				// 3) фильтр MIN_START_USDT применяем к safeStart, но в USDT
-				if okMS && c.MinStart > 0 {
+				if okMS {
 					safeStart := ms.MaxStart * sf
-					safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, quotes)
-					// если не можем конвертировать в USDT — лучше пропустить, раз порог в USDT
-					if !okConv || safeUSDT < c.MinStart {
-						continue
+
+					// 3) ФИЛЬТР MIN_START_USDT — сравниваем safeStart В USDT
+					if c.MinStart > 0 {
+						safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, quotes)
+						// если конвертацию сделать нельзя — пропускаем, раз порог задан в USDT
+						if !okConv || safeUSDT < c.MinStart {
+							continue
+						}
 					}
 				}
 
@@ -238,16 +239,44 @@ func (c *Consumer) printTriangle(
 			bneckSym,
 		)
 
-		// ====== ДОП: объёмы 1-й и 2-й ноги для safeStart ======
-		if flows, okF := calcTriangleFlow(t, quotes, c.FeePerLeg, safeStart); okF {
-			fmt.Fprintf(w, "  leg1: %s -> %s\n",
-				fmtAmtWithUSDT(flows[0].InAmt, flows[0].InAsset, quotes),
-				fmtAmtWithUSDT(flows[0].OutAmt, flows[0].OutAsset, quotes),
-			)
-			fmt.Fprintf(w, "  leg2: %s -> %s\n",
-				fmtAmtWithUSDT(flows[1].InAmt, flows[1].InAsset, quotes),
-				fmtAmtWithUSDT(flows[1].OutAmt, flows[1].OutAsset, quotes),
-			)
+		// ====== ДОП: объёмы всех ног в USDT (для safeStart) ======
+		flows, okF := calcTriangleFlow(t, quotes, c.FeePerLeg, safeStart)
+		if okF {
+			// Покажем детально по каждой ноге
+			for i := 0; i < 3; i++ {
+				inUSDT, okIn := convertToUSDT(flows[i].InAmt, flows[i].InAsset, quotes)
+				outUSDT, okOut := convertToUSDT(flows[i].OutAmt, flows[i].OutAsset, quotes)
+
+				inStr := "?"
+				outStr := "?"
+				if okIn {
+					inStr = fmt.Sprintf("%.6f", inUSDT)
+				}
+				if okOut {
+					outStr = fmt.Sprintf("%.6f", outUSDT)
+				}
+
+				fmt.Fprintf(w, "  leg%d: %.6f %s (~%s USDT) -> %.6f %s (~%s USDT)\n",
+					i+1,
+					flows[i].InAmt, flows[i].InAsset, inStr,
+					flows[i].OutAmt, flows[i].OutAsset, outStr,
+				)
+			}
+
+			// И короткой строкой “только USDT”
+			in1, okIn1 := convertToUSDT(flows[0].InAmt, flows[0].InAsset, quotes)
+			out1, okOut1 := convertToUSDT(flows[0].OutAmt, flows[0].OutAsset, quotes)
+			in2, okIn2 := convertToUSDT(flows[1].InAmt, flows[1].InAsset, quotes)
+			out2, okOut2 := convertToUSDT(flows[1].OutAmt, flows[1].OutAsset, quotes)
+			in3, okIn3 := convertToUSDT(flows[2].InAmt, flows[2].InAsset, quotes)
+			out3, okOut3 := convertToUSDT(flows[2].OutAmt, flows[2].OutAsset, quotes)
+
+			if okIn1 && okOut1 && okIn2 && okOut2 && okIn3 && okOut3 {
+				fmt.Fprintf(w, "  legsUSDT: in1=%.6f out1=%.6f | in2=%.6f out2=%.6f | in3=%.6f out3=%.6f\n",
+					in1, out1, in2, out2, in3, out3)
+			} else {
+				fmt.Fprintf(w, "  legsUSDT: (some legs can't convert to USDT with current subscribed books)\n")
+			}
 		}
 	} else {
 		fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
@@ -290,7 +319,7 @@ func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
 }
 
 // ==============================
-// Конвертация для вывода maxStart в USDT
+// Конвертация в USDT (для логов/фильтра)
 // ==============================
 
 func convertToUSDT(amount float64, asset string, quotes map[string]domain.Quote) (float64, bool) {
@@ -301,18 +330,17 @@ func convertToUSDT(amount float64, asset string, quotes map[string]domain.Quote)
 		return amount, true
 	}
 
-	// 1) Прямая пара: ASSETUSDT (продаём ASSET за USDT по bid)
+	// 1) ASSETUSDT: продаём ASSET за USDT по bid
 	if q, ok := quotes[asset+"USDT"]; ok && q.Bid > 0 && q.BidQty > 0 {
 		return amount * q.Bid, true
 	}
 
-	// 2) Прямая пара: USDTASSET (покупаем USDT за ASSET по ask)
+	// 2) USDTASSET: покупаем USDT за ASSET по ask (ask = ASSET per USDT)
 	if q, ok := quotes["USDT"+asset]; ok && q.Ask > 0 && q.AskQty > 0 {
-		// ask = ASSET per USDT => USDT = ASSET / ask
 		return amount / q.Ask, true
 	}
 
-	// 3) Через USDC: ASSET -> USDC -> USDT
+	// 3) Через USDC
 	amtUSDC, ok1 := convertViaQuote(amount, asset, "USDC", quotes)
 	if ok1 {
 		amtUSDT, ok2 := convertViaQuote(amtUSDC, "USDC", "USDT", quotes)
@@ -324,10 +352,6 @@ func convertToUSDT(amount float64, asset string, quotes map[string]domain.Quote)
 	return 0, false
 }
 
-// convertViaQuote конвертирует amount из assetFrom в assetTo, используя только прямые пары.
-// Правила:
-// - FROMTO: продаём FROM за TO по bid => out = amount * bid
-// - TOFROM: покупаем TO за FROM по ask => out = amount / ask
 func convertViaQuote(amount float64, assetFrom, assetTo string, quotes map[string]domain.Quote) (float64, bool) {
 	if amount <= 0 {
 		return 0, false
@@ -341,7 +365,7 @@ func convertViaQuote(amount float64, assetFrom, assetTo string, quotes map[strin
 		return amount * q.Bid, true
 	}
 
-	// TOFROM: buy TO using FROM
+	// TOFROM: buy TO using FROM (ask = FROM per TO)
 	if q, ok := quotes[assetTo+assetFrom]; ok && q.Ask > 0 && q.AskQty > 0 {
 		return amount / q.Ask, true
 	}
@@ -350,7 +374,7 @@ func convertViaQuote(amount float64, assetFrom, assetTo string, quotes map[strin
 }
 
 // ==============================
-// Вывод "реальных" объёмов 1-й и 2-й ноги для safeStart
+// Расчёт потока по ногам (для safeStart)
 // ==============================
 
 type legFlow struct {
@@ -360,6 +384,8 @@ type legFlow struct {
 	OutAsset string
 }
 
+// calcTriangleFlow считает реальные вход/выход каждой ноги для заданного старта (start в стартовой валюте треугольника).
+// Комиссию считаем как удержание из результата ноги (out *= 1-fee).
 func calcTriangleFlow(t domain.Triangle, quotes map[string]domain.Quote, fee float64, start float64) ([3]legFlow, bool) {
 	var flows [3]legFlow
 	amt := start
@@ -373,7 +399,6 @@ func calcTriangleFlow(t domain.Triangle, quotes map[string]domain.Quote, fee flo
 		inAmt := amt
 		outAmt := 0.0
 
-		// ВАЖНО: in/out asset тут берём из leg.From/leg.To — они уже заданы направлением треугольника.
 		// Dir>0: From(base) -> To(quote) SELL по bid
 		if leg.Dir > 0 {
 			if q.BidQty <= 0 {
@@ -388,7 +413,6 @@ func calcTriangleFlow(t domain.Triangle, quotes map[string]domain.Quote, fee flo
 			outAmt = inAmt / q.Ask
 		}
 
-		// комиссия удерживается из результата ноги
 		outAmt *= (1 - fee)
 
 		flows[i] = legFlow{
@@ -406,15 +430,6 @@ func calcTriangleFlow(t domain.Triangle, quotes map[string]domain.Quote, fee flo
 
 	return flows, true
 }
-
-func fmtAmtWithUSDT(amount float64, asset string, quotes map[string]domain.Quote) string {
-	usdt, ok := convertToUSDT(amount, asset, quotes)
-	if ok {
-		return fmt.Sprintf("%.6f %s (%.6f USDT)", amount, asset, usdt)
-	}
-	return fmt.Sprintf("%.6f %s (? USDT)", amount, asset)
-}
-
 
 
 
