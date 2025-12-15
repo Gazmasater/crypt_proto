@@ -676,15 +676,116 @@ func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/arb/arb.go",
-	"owner": "go-staticcheck",
-	"severity": 4,
-	"message": "possible nil pointer dereference (SA5011)\n\tarb.go:181:5: this check suggests that the pointer can be nil",
-	"source": "go-staticcheck",
-	"startLineNumber": 139,
-	"startColumn": 18,
-	"endLineNumber": 139,
-	"endColumn": 42,
-	"origin": "extHost1"
-}]
+
+
+
+
+
+func (c *Consumer) printTriangle(
+	ts time.Time,
+	t domain.Triangle,
+	profit float64,
+	quotes map[string]domain.Quote,
+	ms *domain.MaxStartInfo,
+	startFraction float64,
+) {
+	w := c.writer
+	fmt.Fprintf(w, "%s\n", ts.Format("2006-01-02 15:04:05.000"))
+
+	// Если MaxStartInfo нет (ms == nil) — печатаем "короткий" формат и уходим.
+	if ms == nil {
+		fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
+		for _, leg := range t.Legs {
+			q := quotes[leg.Symbol]
+			mid := (q.Bid + q.Ask) / 2
+			spreadAbs := q.Ask - q.Bid
+			spreadPct := 0.0
+			if mid > 0 {
+				spreadPct = spreadAbs / mid * 100
+			}
+			side := ""
+			if leg.Dir > 0 {
+				side = fmt.Sprintf("%s/%s", leg.From, leg.To)
+			} else {
+				side = fmt.Sprintf("%s/%s", leg.To, leg.From)
+			}
+			fmt.Fprintf(w, "  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
+				leg.Symbol, side,
+				q.Bid, q.Ask,
+				spreadAbs, spreadPct,
+				q.BidQty, q.AskQty,
+			)
+		}
+		fmt.Fprintln(w)
+		return
+	}
+
+	// ----- ниже ms уже гарантированно не nil -----
+
+	bneckSym := ""
+	if ms.BottleneckLeg >= 0 && ms.BottleneckLeg < len(t.Legs) {
+		bneckSym = t.Legs[ms.BottleneckLeg].Symbol
+	}
+
+	safeStart := ms.MaxStart * startFraction
+	maxUSDT, okMax := convertToUSDT(ms.MaxStart, ms.StartAsset, quotes)
+	safeUSDT, okSafe := convertToUSDT(safeStart, ms.StartAsset, quotes)
+
+	maxUSDTStr, safeUSDTStr := "?", "?"
+	if okMax {
+		maxUSDTStr = fmt.Sprintf("%.4f", maxUSDT)
+	}
+	if okSafe {
+		safeUSDTStr = fmt.Sprintf("%.4f", safeUSDT)
+	}
+
+	fmt.Fprintf(w,
+		"[ARB] %+0.3f%%  %s  maxStart=%.4f %s (%s USDT)  safeStart=%.4f %s (%s USDT) (x%.2f)  bottleneck=%s\n",
+		profit*100, t.Name,
+		ms.MaxStart, ms.StartAsset, maxUSDTStr,
+		safeStart, ms.StartAsset, safeUSDTStr,
+		startFraction,
+		bneckSym,
+	)
+
+	for _, leg := range t.Legs {
+		q := quotes[leg.Symbol]
+		mid := (q.Bid + q.Ask) / 2
+		spreadAbs := q.Ask - q.Bid
+		spreadPct := 0.0
+		if mid > 0 {
+			spreadPct = spreadAbs / mid * 100
+		}
+		side := ""
+		if leg.Dir > 0 {
+			side = fmt.Sprintf("%s/%s", leg.From, leg.To)
+		} else {
+			side = fmt.Sprintf("%s/%s", leg.To, leg.From)
+		}
+		fmt.Fprintf(w, "  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
+			leg.Symbol, side,
+			q.Bid, q.Ask,
+			spreadAbs, spreadPct,
+			q.BidQty, q.AskQty,
+		)
+	}
+
+	if c.FeePerLeg > 0 {
+		execs, okExec := simulateTriangleExecution(t, quotes, ms.StartAsset, safeStart, c.FeePerLeg)
+		if okExec {
+			fmt.Fprintln(w, "  Legs execution with fees:")
+			for i, e := range execs {
+				fmt.Fprintf(w,
+					"    leg %d: %s  %.6f %s → %.6f %s  fee=%.8f %s\n",
+					i+1, e.Symbol,
+					e.AmountIn, e.From,
+					e.AmountOut, e.To,
+					e.FeeAmount, e.FeeAsset,
+				)
+			}
+		}
+	}
+
+	fmt.Fprintln(w)
+}
+
