@@ -60,76 +60,60 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-[ARB] +0.108%  USDT→USDC→GIGGLE→USDT  maxStart=14.4766 USDT (14.4766 USDT)  safeStart=14.4766 USDT (14.4766 USDT) (x1.00)  bottleneck=GIGGLEUSDC
-  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=108139.9300 askQty=247174.0100
-  GIGGLEUSDC (GIGGLE/USDC): bid=65.5300000000 ask=65.7700000000  spread=0.2400000000 (0.36558%)  bidQty=5.4500 askQty=0.2200
-  GIGGLEUSDT (GIGGLE/USDT): bid=65.9400000000 ask=66.0200000000  spread=0.0800000000 (0.12125%)  bidQty=1.5900 askQty=3.8000
-  Legs execution with fees:
-    leg 1: USDCUSDT  14.476638 USDT → 14.469400 USDC  fee=0.00723832 USDC
-    leg 2: GIGGLEUSDC  14.469400 USDC → 0.219890 GIGGLE  fee=0.00011000 GIGGLE
-    leg 3: GIGGLEUSDT  0.219890 GIGGLE → 14.492297 USDT  fee=0.00724977 USDT
+1️⃣ Ошибка quantity scale is invalid — формат quantity
 
-  [REAL EXEC] start=2.000000 USDT triangle=USDT→USDC→GIGGLE→USDT
-    [REAL EXEC] leg 1: BUY USDCUSDT qty=2.00000000
-2025-12-16 02:26:07.922
-[ARB] +0.108%  USDT→USDC→GIGGLE→USDT  maxStart=14.4766 USDT (14.4766 USDT)  safeStart=14.4766 USDT (14.4766 USDT) (x1.00)  bottleneck=GIGGLEUSDC
-  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=108139.9300 askQty=247174.0100
-  GIGGLEUSDC (GIGGLE/USDC): bid=65.5300000000 ask=65.7700000000  spread=0.2400000000 (0.36558%)  bidQty=5.4500 askQty=0.2200
-  GIGGLEUSDT (GIGGLE/USDT): bid=65.9400000000 ask=66.0300000000  spread=0.0900000000 (0.13639%)  bidQty=1.5900 askQty=4.6100
-  Legs execution with fees:
-    leg 1: USDCUSDT  14.476638 USDT → 14.469400 USDC  fee=0.00723832 USDC
-    leg 2: GIGGLEUSDC  14.469400 USDC → 0.219890 GIGGLE  fee=0.00011000 GIGGLE
-    leg 3: GIGGLEUSDT  0.219890 GIGGLE → 14.492297 USDT  fee=0.00724977 USDT
+Файл: mexc/trader.go
+Функция: PlaceMarket
 
-  [REAL EXEC] start=2.000000 USDT triangle=USDT→USDC→GIGGLE→USDT
-    [REAL EXEC] leg 1: BUY USDCUSDT qty=2.00000000
-2025-12-16 02:26:07.999
-[ARB] +0.108%  USDT→USDC→GIGGLE→USDT  maxStart=14.4766 USDT (14.4766 USDT)  safeStart=14.4766 USDT (14.4766 USDT) (x1.00)  bottleneck=GIGGLEUSDC
-  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=108139.9300 askQty=247174.0100
-  GIGGLEUSDC (GIGGLE/USDC): bid=65.5300000000 ask=65.7700000000  spread=0.2400000000 (0.36558%)  bidQty=5.4500 askQty=0.2200
-  GIGGLEUSDT (GIGGLE/USDT): bid=65.9400000000 ask=66.0300000000  spread=0.0900000000 (0.13639%)  bidQty=1.5900 askQty=4.7600
-  Legs execution with fees:
-    leg 1: USDCUSDT  14.476638 USDT → 14.469400 USDC  fee=0.00723832 USDC
-    leg 2: GIGGLEUSDC  14.469400 USDC → 0.219890 GIGGLE  fee=0.00011000 GIGGLE
-    leg 3: GIGGLEUSDT  0.219890 GIGGLE → 14.492297 USDT  fee=0.00724977 USDT
+Найди строку с quantity:
 
-  [REAL EXEC] start=2.000000 USDT triangle=USDT→USDC→GIGGLE→USDT
-    [REAL EXEC] leg 1: BUY USDCUSDT qty=2.00000000
-2025-12-16 02:26:08.253
-[ARB] +0.108%  USDT→USDC→GIGGLE→USDT  maxStart=14.4766 USDT (14.4766 USDT)  safeStart=14.4766 USDT (14.4766 USDT) (x1.00)  bottleneck=GIGGLEUSDC
-  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=108139.9300 askQty=247174.0100
-  GIGGLEUSDC (GIGGLE/USDC): bid=65.5300000000 ask=65.7700000000  spread=0.2400000000 (0.36558%)  bidQty=5.4500 askQty=0.2200
-  GIGGLEUSDT (GIGGLE/USDT): bid=65.9400000000 ask=66.0200000000  spread=0.0800000000 (0.12125%)  bidQty=1.5900 askQty=0.7600
-  Legs execution with fees:
-    leg 1: USDCUSDT  14.476638 USDT → 14.469400 USDC  fee=0.00723832 USDC
-    leg 2: GIGGLEUSDC  14.469400 USDC → 0.219890 GIGGLE  fee=0.00011000 GIGGLE
-    leg 3: GIGGLEUSDT  0.219890 GIGGLE → 14.492297 USDT  fee=0.00724977 USDT
-
-  [REAL EXEC] start=2.000000 USDT triangle=USDT→USDC→GIGGLE→USDT
-    [REAL EXEC] leg 1: BUY USDCUSDT qty=2.00000000
-    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"msg":" quantity scale is invalid","code":400}
-    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"msg":" quantity scale is invalid","code":400}
-    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"msg":" quantity scale is invalid","code":400}
-2025-12-16 02:26:08.350
-[ARB] +0.123%  USDT→USDC→GIGGLE→USDT  maxStart=14.4766 USDT (14.4766 USDT)  safeStart=14.4766 USDT (14.4766 USDT) (x1.00)  bottleneck=GIGGLEUSDC
-  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=108139.9300 askQty=247174.0100
-  GIGGLEUSDC (GIGGLE/USDC): bid=65.5300000000 ask=65.7700000000  spread=0.2400000000 (0.36558%)  bidQty=5.4500 askQty=0.2200
-  GIGGLEUSDT (GIGGLE/USDT): bid=65.9500000000 ask=66.0200000000  spread=0.0700000000 (0.10608%)  bidQty=3.0100 askQty=0.7600
-  Legs execution with fees:
-    leg 1: USDCUSDT  14.476638 USDT → 14.469400 USDC  fee=0.00723832 USDC
-    leg 2: GIGGLEUSDC  14.469400 USDC → 0.219890 GIGGLE  fee=0.00011000 GIGGLE
-    leg 3: GIGGLEUSDT  0.219890 GIGGLE → 14.494495 USDT  fee=0.00725087 USDT
-
-  [REAL EXEC] start=2.000000 USDT triangle=USDT→USDC→GIGGLE→USDT
-    [REAL EXEC] leg 1: BUY USDCUSDT qty=2.00000000
-    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"msg":" quantity scale is invalid","code":400}
-    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"msg":" quantity scale is invalid","code":400}
-^C2025/12/16 02:26:18.515957 shutting down...
-panic: send on closed channel
-
-goroutine 34 [running]:
+params.Set("quantity", fmt.Sprintf("%.8f", quantity))
 
 
+Замени на:
+
+qtyStr := strconv.FormatFloat(quantity, 'f', -1, 64)
+params.Set("quantity", qtyStr)
+
+
+И сверху в импорты добавь:
+
+import (
+    // ...
+    "strconv"
+    // ...
+)
+
+
+Это уберёт лишние нули (2.00000000 → 2), и биржа больше не будет ругаться на scale.
+
+2️⃣ panic: send on closed channel — не закрываем канал под писателями
+
+Файл: cmd/cryptarb/main.go
+
+В самом конце main() у тебя сейчас что-то типа:
+
+<-ctx.Done()
+log.Println("shutting down...")
+
+time.Sleep(200 * time.Millisecond)
+close(events)
+wg.Wait()
+log.Println("bye")
+
+
+Сделай так:
+
+<-ctx.Done()
+log.Println("shutting down...")
+
+wg.Wait()
+log.Println("bye")
+
+
+Просто убери time.Sleep и close(events) — канал закрывать не нужно, процесс всё равно завершится, а паника пропадёт.
+
+Сделай эти две правки, пересобери и запусти — дальше посмотрим, что ответит MEXC: если формат ок, ошибка сменится на что-нибудь про баланс/лимиты, а не про quantity scale.
 
 
 
