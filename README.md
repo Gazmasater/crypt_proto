@@ -60,127 +60,74 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package mexc
+[ARB] +0.108%  USDT→USDC→GIGGLE→USDT  maxStart=14.4766 USDT (14.4766 USDT)  safeStart=14.4766 USDT (14.4766 USDT) (x1.00)  bottleneck=GIGGLEUSDC
+  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=108139.9300 askQty=247174.0100
+  GIGGLEUSDC (GIGGLE/USDC): bid=65.5300000000 ask=65.7700000000  spread=0.2400000000 (0.36558%)  bidQty=5.4500 askQty=0.2200
+  GIGGLEUSDT (GIGGLE/USDT): bid=65.9400000000 ask=66.0200000000  spread=0.0800000000 (0.12125%)  bidQty=1.5900 askQty=3.8000
+  Legs execution with fees:
+    leg 1: USDCUSDT  14.476638 USDT → 14.469400 USDC  fee=0.00723832 USDC
+    leg 2: GIGGLEUSDC  14.469400 USDC → 0.219890 GIGGLE  fee=0.00011000 GIGGLE
+    leg 3: GIGGLEUSDT  0.219890 GIGGLE → 14.492297 USDT  fee=0.00724977 USDT
 
-import (
-	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"net/url"
-	"strings"
-	"time"
-)
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→USDC→GIGGLE→USDT
+    [REAL EXEC] leg 1: BUY USDCUSDT qty=2.00000000
+2025-12-16 02:26:07.922
+[ARB] +0.108%  USDT→USDC→GIGGLE→USDT  maxStart=14.4766 USDT (14.4766 USDT)  safeStart=14.4766 USDT (14.4766 USDT) (x1.00)  bottleneck=GIGGLEUSDC
+  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=108139.9300 askQty=247174.0100
+  GIGGLEUSDC (GIGGLE/USDC): bid=65.5300000000 ask=65.7700000000  spread=0.2400000000 (0.36558%)  bidQty=5.4500 askQty=0.2200
+  GIGGLEUSDT (GIGGLE/USDT): bid=65.9400000000 ask=66.0300000000  spread=0.0900000000 (0.13639%)  bidQty=1.5900 askQty=4.6100
+  Legs execution with fees:
+    leg 1: USDCUSDT  14.476638 USDT → 14.469400 USDC  fee=0.00723832 USDC
+    leg 2: GIGGLEUSDC  14.469400 USDC → 0.219890 GIGGLE  fee=0.00011000 GIGGLE
+    leg 3: GIGGLEUSDT  0.219890 GIGGLE → 14.492297 USDT  fee=0.00724977 USDT
 
-type Trader struct {
-	apiKey    string
-	apiSecret string
-	debug     bool
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→USDC→GIGGLE→USDT
+    [REAL EXEC] leg 1: BUY USDCUSDT qty=2.00000000
+2025-12-16 02:26:07.999
+[ARB] +0.108%  USDT→USDC→GIGGLE→USDT  maxStart=14.4766 USDT (14.4766 USDT)  safeStart=14.4766 USDT (14.4766 USDT) (x1.00)  bottleneck=GIGGLEUSDC
+  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=108139.9300 askQty=247174.0100
+  GIGGLEUSDC (GIGGLE/USDC): bid=65.5300000000 ask=65.7700000000  spread=0.2400000000 (0.36558%)  bidQty=5.4500 askQty=0.2200
+  GIGGLEUSDT (GIGGLE/USDT): bid=65.9400000000 ask=66.0300000000  spread=0.0900000000 (0.13639%)  bidQty=1.5900 askQty=4.7600
+  Legs execution with fees:
+    leg 1: USDCUSDT  14.476638 USDT → 14.469400 USDC  fee=0.00723832 USDC
+    leg 2: GIGGLEUSDC  14.469400 USDC → 0.219890 GIGGLE  fee=0.00011000 GIGGLE
+    leg 3: GIGGLEUSDT  0.219890 GIGGLE → 14.492297 USDT  fee=0.00724977 USDT
 
-	client  *http.Client
-	baseURL string
-}
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→USDC→GIGGLE→USDT
+    [REAL EXEC] leg 1: BUY USDCUSDT qty=2.00000000
+2025-12-16 02:26:08.253
+[ARB] +0.108%  USDT→USDC→GIGGLE→USDT  maxStart=14.4766 USDT (14.4766 USDT)  safeStart=14.4766 USDT (14.4766 USDT) (x1.00)  bottleneck=GIGGLEUSDC
+  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=108139.9300 askQty=247174.0100
+  GIGGLEUSDC (GIGGLE/USDC): bid=65.5300000000 ask=65.7700000000  spread=0.2400000000 (0.36558%)  bidQty=5.4500 askQty=0.2200
+  GIGGLEUSDT (GIGGLE/USDT): bid=65.9400000000 ask=66.0200000000  spread=0.0800000000 (0.12125%)  bidQty=1.5900 askQty=0.7600
+  Legs execution with fees:
+    leg 1: USDCUSDT  14.476638 USDT → 14.469400 USDC  fee=0.00723832 USDC
+    leg 2: GIGGLEUSDC  14.469400 USDC → 0.219890 GIGGLE  fee=0.00011000 GIGGLE
+    leg 3: GIGGLEUSDT  0.219890 GIGGLE → 14.492297 USDT  fee=0.00724977 USDT
 
-func NewTrader(apiKey, apiSecret string, debug bool) *Trader {
-	return &Trader{
-		apiKey:    strings.TrimSpace(apiKey),
-		apiSecret: strings.TrimSpace(apiSecret),
-		debug:     debug,
-		client: &http.Client{
-			Timeout: 5 * time.Second,
-		},
-		baseURL: "https://api.mexc.com",
-	}
-}
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→USDC→GIGGLE→USDT
+    [REAL EXEC] leg 1: BUY USDCUSDT qty=2.00000000
+    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"msg":" quantity scale is invalid","code":400}
+    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"msg":" quantity scale is invalid","code":400}
+    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"msg":" quantity scale is invalid","code":400}
+2025-12-16 02:26:08.350
+[ARB] +0.123%  USDT→USDC→GIGGLE→USDT  maxStart=14.4766 USDT (14.4766 USDT)  safeStart=14.4766 USDT (14.4766 USDT) (x1.00)  bottleneck=GIGGLEUSDC
+  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=108139.9300 askQty=247174.0100
+  GIGGLEUSDC (GIGGLE/USDC): bid=65.5300000000 ask=65.7700000000  spread=0.2400000000 (0.36558%)  bidQty=5.4500 askQty=0.2200
+  GIGGLEUSDT (GIGGLE/USDT): bid=65.9500000000 ask=66.0200000000  spread=0.0700000000 (0.10608%)  bidQty=3.0100 askQty=0.7600
+  Legs execution with fees:
+    leg 1: USDCUSDT  14.476638 USDT → 14.469400 USDC  fee=0.00723832 USDC
+    leg 2: GIGGLEUSDC  14.469400 USDC → 0.219890 GIGGLE  fee=0.00011000 GIGGLE
+    leg 3: GIGGLEUSDT  0.219890 GIGGLE → 14.494495 USDT  fee=0.00725087 USDT
 
-func (t *Trader) dlog(format string, args ...any) {
-	if t.debug {
-		log.Printf("[MEXC TRADER] "+format, args...)
-	}
-}
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→USDC→GIGGLE→USDT
+    [REAL EXEC] leg 1: BUY USDCUSDT qty=2.00000000
+    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"msg":" quantity scale is invalid","code":400}
+    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"msg":" quantity scale is invalid","code":400}
+^C2025/12/16 02:26:18.515957 shutting down...
+panic: send on closed channel
 
-// PlaceMarket отправляет MARKET-ордер на MEXC Spot.
-// quantity — в базовой валюте символа.
-// side: "BUY" или "SELL".
-func (t *Trader) PlaceMarket(
-	ctx context.Context,
-	symbol string,
-	side string,
-	quantity float64,
-) error {
-	if quantity <= 0 {
-		return fmt.Errorf("quantity must be > 0, got %f", quantity)
-	}
-	side = strings.ToUpper(strings.TrimSpace(side))
-	if side != "BUY" && side != "SELL" {
-		return fmt.Errorf("invalid side %q", side)
-	}
-
-	endpoint := "/api/v3/order"
-
-	// 1) Собираем параметры
-	params := url.Values{}
-	params.Set("symbol", symbol)
-	params.Set("side", side)
-	params.Set("type", "MARKET")
-	params.Set("quantity", fmt.Sprintf("%.8f", quantity))
-	params.Set("recvWindow", "5000")
-	params.Set("timestamp", fmt.Sprintf("%d", time.Now().UnixMilli()))
-
-	// 2) Подпись по queryString БЕЗ signature
-	queryString := params.Encode()
-	signature := t.sign(queryString)
-
-	// 3) Добавляем signature как параметр
-	params.Set("signature", signature)
-
-	// 4) Формируем полный URL с query
-	fullURL := t.baseURL + endpoint + "?" + params.Encode()
-
-	// 5) POST без тела
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		fullURL,
-		nil,
-	)
-	if err != nil {
-		return fmt.Errorf("new request: %w", err)
-	}
-
-	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
-	// Тело пустое, Content-Type можно не ставить
-	// req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	t.dlog("PlaceMarket %s %s qty=%.8f url=%s", side, symbol, quantity, fullURL)
-
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("http do: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("mexc order error: status=%d body=%s", resp.StatusCode, string(respBody))
-	}
-
-	t.dlog("PlaceMarket OK: %s", string(respBody))
-	return nil
-}
-
-// sign считает HMAC-SHA256(payload) по apiSecret.
-func (t *Trader) sign(payload string) string {
-	mac := hmac.New(sha256.New, []byte(t.apiSecret))
-	mac.Write([]byte(payload))
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
+goroutine 34 [running]:
 
 
 
