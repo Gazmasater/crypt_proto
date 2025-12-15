@@ -79,7 +79,7 @@ import (
 
 const BaseAsset = "USDT"
 
-// Исполнитель треугольника (может быть DryRun или реальный трейдер)
+// Исполнитель треугольника (DRY-RUN или реальный трейдер).
 type TriangleExecutor interface {
 	ExecuteTriangle(
 		ctx context.Context,
@@ -96,7 +96,8 @@ type Consumer struct {
 	MinStart      float64
 	StartFraction float64
 
-	Executor TriangleExecutor // nil — только логи, без торговли
+	// Если nil — только логируем, без попыток торговать.
+	Executor TriangleExecutor
 
 	writer io.Writer
 }
@@ -111,7 +112,6 @@ func NewConsumer(feePerLeg, minProfit, minStart float64, out io.Writer) *Consume
 	}
 }
 
-// Start запускает горутину-потребителя.
 func (c *Consumer) Start(
 	ctx context.Context,
 	events <-chan domain.Event,
@@ -134,7 +134,6 @@ func (c *Consumer) run(
 ) {
 	quotes := make(map[string]domain.Quote)
 	lastPrint := make(map[int]time.Time)
-
 	const minPrintInterval = 5 * time.Millisecond
 
 	sf := c.StartFraction
@@ -150,21 +149,12 @@ func (c *Consumer) run(
 			}
 
 			prev, okPrev := quotes[ev.Symbol]
-			if okPrev &&
-				prev.Bid == ev.Bid &&
-				prev.Ask == ev.Ask &&
-				prev.BidQty == ev.BidQty &&
-				prev.AskQty == ev.AskQty {
+			if okPrev && prev.Bid == ev.Bid && prev.Ask == ev.Ask &&
+				prev.BidQty == ev.BidQty && prev.AskQty == ev.AskQty {
 				continue
 			}
 
-			quotes[ev.Symbol] = domain.Quote{
-				Bid:    ev.Bid,
-				Ask:    ev.Ask,
-				BidQty: ev.BidQty,
-				AskQty: ev.AskQty,
-			}
-
+			quotes[ev.Symbol] = domain.Quote{Bid: ev.Bid, Ask: ev.Ask, BidQty: ev.BidQty, AskQty: ev.AskQty}
 			trIDs := indexBySymbol[ev.Symbol]
 			if len(trIDs) == 0 {
 				continue
@@ -175,7 +165,7 @@ func (c *Consumer) run(
 			for _, id := range trIDs {
 				tr := triangles[id]
 
-				// 1) прибыль по треугольнику (с учётом комиссии feePerLeg)
+				// 1) прибыль по треугольнику (с учётом комиссии FeePerLeg)
 				prof, ok := domain.EvalTriangle(tr, quotes, c.FeePerLeg)
 				if !ok || prof < c.MinProfit {
 					continue
@@ -187,9 +177,10 @@ func (c *Consumer) run(
 					continue
 				}
 
+				// safeStart = maxStart * StartFraction
 				safeStart := ms.MaxStart * sf
 
-				// 3) фильтр по минимальному входу в USDT (safeStart)
+				// 3) фильтр по MIN_START (в USDT по safeStart)
 				if c.MinStart > 0 {
 					safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, quotes)
 					if !okConv || safeUSDT < c.MinStart {
@@ -197,20 +188,22 @@ func (c *Consumer) run(
 					}
 				}
 
-				// 4) анти-спам по треугольнику
+				// 4) анти-спам: не чаще, чем minPrintInterval на один и тот же треугольник
 				if last, okLast := lastPrint[id]; okLast && now.Sub(last) < minPrintInterval {
 					continue
 				}
 				lastPrint[id] = now
 
+				// копируем ms, чтобы не гонять указатель на одну и ту же структуру
 				msCopy := ms
 
-				// 5) Торговый исполнитель (пока DRY-RUN, позже — реальный)
+				// 5) Торговый исполнитель (если задан)
 				if c.Executor != nil {
+					// отдельная горутина, чтобы не тормозить обработку тиков
 					go c.Executor.ExecuteTriangle(ctx, tr, quotes, &msCopy, sf)
 				}
 
-				// 6) Логирование
+				// 6) Лог
 				c.printTriangle(now, tr, prof, quotes, &msCopy, sf)
 			}
 
@@ -231,7 +224,7 @@ func (c *Consumer) printTriangle(
 	w := c.writer
 	fmt.Fprintf(w, "%s\n", ts.Format("2006-01-02 15:04:05.000"))
 
-	// Если MaxStartInfo нет (ms == nil) — печатаем "короткий" формат и выходим.
+	// Если MaxStartInfo нет (ms == nil) — печатаем "короткий" формат и уходим.
 	if ms == nil {
 		fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
 		for _, leg := range t.Legs {
@@ -259,7 +252,8 @@ func (c *Consumer) printTriangle(
 		return
 	}
 
-	// ниже ms уже гарантированно не nil
+	// ----- ниже ms уже гарантированно не nil -----
+
 	bneckSym := ""
 	if ms.BottleneckLeg >= 0 && ms.BottleneckLeg < len(t.Legs) {
 		bneckSym = t.Legs[ms.BottleneckLeg].Symbol
@@ -269,8 +263,7 @@ func (c *Consumer) printTriangle(
 	maxUSDT, okMax := convertToUSDT(ms.MaxStart, ms.StartAsset, quotes)
 	safeUSDT, okSafe := convertToUSDT(safeStart, ms.StartAsset, quotes)
 
-	maxUSDTStr := "?"
-	safeUSDTStr := "?"
+	maxUSDTStr, safeUSDTStr := "?", "?"
 	if okMax {
 		maxUSDTStr = fmt.Sprintf("%.4f", maxUSDT)
 	}
@@ -413,6 +406,7 @@ func simulateTriangleExecution(
 		} else {
 			from, to = leg.To, leg.From
 		}
+
 		if curAsset != from {
 			return nil, false
 		}
@@ -428,7 +422,7 @@ func simulateTriangleExecution(
 
 		switch {
 		case curAsset == base:
-			// продаём base -> получаем quote по bid
+			// продаём base → получаем quote по bid
 			gross := curAmount * q.Bid
 			feeAmount = gross * feePerLeg
 			amountOut = gross - feeAmount
@@ -457,7 +451,6 @@ func simulateTriangleExecution(
 			FeeAsset:  feeAsset,
 		})
 	}
-
 	return res, true
 }
 
@@ -524,110 +517,6 @@ func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
 	buf := bufio.NewWriter(f)
 	out := io.MultiWriter(os.Stdout, buf)
 	return f, buf, out
-}
-
-
-
-
-
-
-package main
-
-import (
-	"context"
-	"log"
-	"net/http"
-	"os/signal"
-	"sync"
-	"syscall"
-	"time"
-
-	"crypt_proto/arb"
-	"crypt_proto/config"
-	"crypt_proto/domain"
-	"crypt_proto/exchange"
-	"crypt_proto/kucoin"
-	"crypt_proto/mexc"
-
-	_ "net/http/pprof"
-)
-
-func main() {
-	// pprof
-	go func() {
-		log.Println("pprof on http://localhost:6060/debug/pprof/")
-		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
-			log.Printf("pprof server error: %v", err)
-		}
-	}()
-
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
-	cfg := config.Load()
-
-	triangles, symbols, indexBySymbol, err := domain.LoadTriangles(cfg.TrianglesFile)
-	if err != nil {
-		log.Fatalf("load triangles: %v", err)
-	}
-	if len(triangles) == 0 {
-		log.Fatal("нет треугольников, нечего мониторить")
-	}
-	if len(symbols) == 0 {
-		log.Fatal("нет символов для подписки")
-	}
-	log.Printf("символов для подписки всего: %d", len(symbols))
-
-	// выбор биржи
-	var feed exchange.MarketDataFeed
-	switch cfg.Exchange {
-	case "MEXC":
-		feed = mexc.NewFeed(cfg.Debug)
-	case "KUCOIN":
-		feed = kucoin.NewFeed(cfg.Debug)
-	default:
-		log.Fatalf("unknown EXCHANGE=%q (expected MEXC or KUCOIN)", cfg.Exchange)
-	}
-	log.Printf("Using exchange: %s", feed.Name())
-
-	// лог-файл для арбитража
-	logFile, logBuf, arbOut := arb.OpenLogWriter("arbitrage.log")
-	defer logFile.Close()
-	defer logBuf.Flush()
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	events := make(chan domain.Event, 8192)
-
-	var wg sync.WaitGroup
-
-	// потребитель арбитража
-	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStart, arbOut)
-	consumer.StartFraction = cfg.StartFraction
-
-	// пока — DRY-RUN исполнитель (торговля не идёт, только симуляция)
-	consumer.Executor = arb.NewDryRunExecutor(arbOut)
-
-	// если нужны реальные торги, сюда потом повесим RealExecutor с трейдером:
-	//
-	// if cfg.APIKey != "" && cfg.APISecret != "" {
-	//     trader := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
-	//     consumer.Executor = arb.NewRealExecutor(trader, cfg.FeePerLeg, cfg.MinStart)
-	// }
-
-	consumer.Start(ctx, events, triangles, indexBySymbol, &wg)
-
-	// фид биржи
-	feed.Start(ctx, &wg, symbols, cfg.BookInterval, events)
-
-	// ждём сигнал остановки
-	<-ctx.Done()
-	log.Println("shutting down...")
-
-	time.Sleep(200 * time.Millisecond)
-	close(events)
-	wg.Wait()
-	log.Println("bye")
 }
 
 
