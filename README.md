@@ -79,174 +79,6 @@ MEXC_API_SECRET=
 
 
 
-package config
-
-import (
-	"log"
-	"os"
-	"strconv"
-	"strings"
-
-	"github.com/joho/godotenv"
-)
-
-type Config struct {
-	Exchange      string // EXCHANGE=MEXC / KUCOIN / OKX ...
-	TrianglesFile string // TRIANGLES_FILE=triangles_markets.csv
-	BookInterval  string // BOOK_INTERVAL=10ms
-
-	// Комиссия и минимальная прибыль (в долях, а не в процентах).
-	// Пример: 0.0004 = 0.04%
-	FeePerLeg float64 // FEE_PCT
-	MinProfit float64 // MIN_PROFIT_PCT
-
-	// Минимальный старт (обычно в USDT). 0 = фильтр выключен.
-	MinStart float64 // MIN_START_USDT / MIN_START
-
-	// Доля от maxStart, которую считаем безопасной (0..1). Например 0.5.
-	StartFraction float64 // START_FRACTION
-
-	// Логика
-	Debug        bool // DEBUG
-	TradeEnabled bool // TRADE_ENABLED
-
-	// API ключи: для текущей биржи и/или глобальные API_KEY / API_SECRET
-	APIKey    string
-	APISecret string
-}
-
-// package-level флаг для Dlog
-var debug bool
-
-func SetDebug(v bool) { debug = v }
-
-func Dlog(format string, args ...any) {
-	if debug {
-		log.Printf(format, args...)
-	}
-}
-
-// loadEnvFloat читает float из ENV с дефолтом.
-func loadEnvFloat(name string, def float64) float64 {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return def
-	}
-	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		log.Printf("bad %s=%q: %v, using default %f", name, raw, err, def)
-		return def
-	}
-	return v
-}
-
-// clamp01 ограничивает значение [0,1], иначе возвращает def.
-func clamp01(v, def float64) float64 {
-	if v <= 0 || v > 1 {
-		return def
-	}
-	return v
-}
-
-func Load() Config {
-	// подхватываем .env, если есть
-	_ = godotenv.Load(".env")
-
-	// Биржа
-	ex := strings.ToUpper(strings.TrimSpace(os.Getenv("EXCHANGE")))
-	if ex == "" {
-		ex = "MEXC"
-	}
-
-	// Файл треугольников
-	tf := strings.TrimSpace(os.Getenv("TRIANGLES_FILE"))
-	if tf == "" {
-		tf = "triangles_markets.csv"
-	}
-
-	// Интервал обновления книги
-	bi := strings.TrimSpace(os.Getenv("BOOK_INTERVAL"))
-	if bi == "" {
-		bi = "10ms"
-	}
-
-	// Проценты из ENV: FEE_PCT, MIN_PROFIT_PCT
-	// Например: FEE_PCT=0.04 => 0.04% => 0.0004
-	feePct := loadEnvFloat("FEE_PCT", 0.04)        // в процентах
-	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.1)  // в процентах
-
-	feePerLeg := feePct / 100.0
-	minProfit := minPct / 100.0
-
-	// MIN_START_USDT (предпочтительно) или MIN_START
-	minStart := loadEnvFloat("MIN_START_USDT", -1)
-	if minStart < 0 {
-		minStart = loadEnvFloat("MIN_START", 0)
-	}
-
-	// START_FRACTION (0..1)
-	startFraction := clamp01(loadEnvFloat("START_FRACTION", 0.5), 0.5)
-
-	// DEBUG
-	debugFlag := strings.ToLower(strings.TrimSpace(os.Getenv("DEBUG"))) == "true"
-	debug = debugFlag // чтобы Dlog() сразу работал
-
-	// TRADE_ENABLED
-	tradeEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("TRADE_ENABLED"))) == "true"
-
-	// API-ключи: сперва EXCHANGE_API_KEY/SECRET, потом API_KEY/SECRET
-	apiKey := strings.TrimSpace(os.Getenv(ex + "_API_KEY"))
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv("API_KEY"))
-	}
-
-	apiSecret := strings.TrimSpace(os.Getenv(ex + "_API_SECRET"))
-	if apiSecret == "" {
-		apiSecret = strings.TrimSpace(os.Getenv("API_SECRET"))
-	}
-
-	cfg := Config{
-		Exchange:      ex,
-		TrianglesFile: tf,
-		BookInterval:  bi,
-		FeePerLeg:     feePerLeg,
-		MinProfit:     minProfit,
-		MinStart:      minStart,
-		StartFraction: startFraction,
-		Debug:         debugFlag,
-		TradeEnabled:  tradeEnabled,
-		APIKey:        apiKey,
-		APISecret:     apiSecret,
-	}
-
-	log.Printf("Exchange: %s", cfg.Exchange)
-	log.Printf("Triangles file: %s", cfg.TrianglesFile)
-	log.Printf("Book interval: %s", cfg.BookInterval)
-	log.Printf("Fee per leg: %.4f %% (rate=%.6f)", feePct, cfg.FeePerLeg)
-	log.Printf("Min profit per cycle: %.4f %% (rate=%.6f)", minPct, cfg.MinProfit)
-	log.Printf("Min start amount: %.4f", cfg.MinStart)
-	log.Printf("Start fraction: %.4f", cfg.StartFraction)
-	log.Printf("Debug: %v", cfg.Debug)
-	log.Printf("Trade enabled: %v", cfg.TradeEnabled)
-
-	if cfg.APIKey == "" || cfg.APISecret == "" {
-		log.Printf("API key/secret: NOT SET (торговля по API невозможна)")
-	} else {
-		log.Printf("API key/secret: loaded for %s", cfg.Exchange)
-	}
-
-	return cfg
-}
-
-
-
-
-
-
-
-
-
-
 package arb
 
 import (
@@ -320,6 +152,7 @@ func (c *Consumer) run(
 ) {
 	quotes := make(map[string]domain.Quote)
 	lastPrint := make(map[int]time.Time)
+
 	const minPrintInterval = 5 * time.Millisecond
 
 	sf := c.StartFraction
@@ -335,12 +168,21 @@ func (c *Consumer) run(
 			}
 
 			prev, okPrev := quotes[ev.Symbol]
-			if okPrev && prev.Bid == ev.Bid && prev.Ask == ev.Ask &&
-				prev.BidQty == ev.BidQty && prev.AskQty == ev.AskQty {
+			if okPrev &&
+				prev.Bid == ev.Bid &&
+				prev.Ask == ev.Ask &&
+				prev.BidQty == ev.BidQty &&
+				prev.AskQty == ev.AskQty {
 				continue
 			}
 
-			quotes[ev.Symbol] = domain.Quote{Bid: ev.Bid, Ask: ev.Ask, BidQty: ev.BidQty, AskQty: ev.AskQty}
+			quotes[ev.Symbol] = domain.Quote{
+				Bid:    ev.Bid,
+				Ask:    ev.Ask,
+				BidQty: ev.BidQty,
+				AskQty: ev.AskQty,
+			}
+
 			trIDs := indexBySymbol[ev.Symbol]
 			if len(trIDs) == 0 {
 				continue
@@ -380,12 +222,11 @@ func (c *Consumer) run(
 				}
 				lastPrint[id] = now
 
-				// копируем ms, чтобы не гонять указатель на одну и ту же структуру
+				// копируем ms, чтобы не гонять один и тот же указатель
 				msCopy := ms
 
 				// 5) Торговый исполнитель (если задан)
 				if c.Executor != nil {
-					// отдельная горутина, чтобы не тормозить обработку тиков
 					go c.Executor.ExecuteTriangle(ctx, tr, quotes, &msCopy, sf)
 				}
 
@@ -410,7 +251,7 @@ func (c *Consumer) printTriangle(
 	w := c.writer
 	fmt.Fprintf(w, "%s\n", ts.Format("2006-01-02 15:04:05.000"))
 
-	// Если MaxStartInfo нет (ms == nil) — печатаем "короткий" формат и уходим.
+	// Если MaxStartInfo нет (ms == nil) — печатаем "короткий" формат и выходим.
 	if ms == nil {
 		fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
 		for _, leg := range t.Legs {
@@ -438,8 +279,7 @@ func (c *Consumer) printTriangle(
 		return
 	}
 
-	// ----- ниже ms уже гарантированно не nil -----
-
+	// ниже ms уже гарантированно не nil
 	bneckSym := ""
 	if ms.BottleneckLeg >= 0 && ms.BottleneckLeg < len(t.Legs) {
 		bneckSym = t.Legs[ms.BottleneckLeg].Symbol
@@ -449,7 +289,8 @@ func (c *Consumer) printTriangle(
 	maxUSDT, okMax := convertToUSDT(ms.MaxStart, ms.StartAsset, quotes)
 	safeUSDT, okSafe := convertToUSDT(safeStart, ms.StartAsset, quotes)
 
-	maxUSDTStr, safeUSDTStr := "?", "?"
+	maxUSDTStr := "?"
+	safeUSDTStr := "?"
 	if okMax {
 		maxUSDTStr = fmt.Sprintf("%.4f", maxUSDT)
 	}
@@ -704,344 +545,5 @@ func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
 	out := io.MultiWriter(os.Stdout, buf)
 	return f, buf, out
 }
-
-
-
-
-
-
-1. mexc/trader.go
-
-Создай файл crypt_proto/mexc/trader.go:
-
-package mexc
-
-import (
-	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"net/url"
-	"strings"
-	"time"
-)
-
-type Trader struct {
-	apiKey    string
-	apiSecret string
-	debug     bool
-
-	client  *http.Client
-	baseURL string
-}
-
-func NewTrader(apiKey, apiSecret string, debug bool) *Trader {
-	return &Trader{
-		apiKey:    strings.TrimSpace(apiKey),
-		apiSecret: strings.TrimSpace(apiSecret),
-		debug:     debug,
-		client: &http.Client{
-			Timeout: 5 * time.Second,
-		},
-		baseURL: "https://api.mexc.com",
-	}
-}
-
-func (t *Trader) dlog(format string, args ...any) {
-	if t.debug {
-		log.Printf("[MEXC TRADER] "+format, args...)
-	}
-}
-
-// PlaceMarket отправляет MARKET-ордер на MEXC Spot.
-// quantity — в БАЗОВОЙ валюте символа (как в Spot API MEXC).
-// side: "BUY" или "SELL".
-func (t *Trader) PlaceMarket(
-	ctx context.Context,
-	symbol string,
-	side string,
-	quantity float64,
-) error {
-	if quantity <= 0 {
-		return fmt.Errorf("quantity must be > 0, got %f", quantity)
-	}
-	side = strings.ToUpper(strings.TrimSpace(side))
-	if side != "BUY" && side != "SELL" {
-		return fmt.Errorf("invalid side %q", side)
-	}
-
-	endpoint := "/api/v3/order"
-
-	params := url.Values{}
-	params.Set("symbol", symbol)
-	params.Set("side", side)
-	params.Set("type", "MARKET")
-	params.Set("quantity", fmt.Sprintf("%.8f", quantity))
-
-	// Рекомендуется ставить recvWindow, чтобы избежать проблем с задержкой.
-	params.Set("recvWindow", "5000")
-	params.Set("timestamp", fmt.Sprintf("%d", time.Now().UnixMilli()))
-
-	// Подпись HMAC SHA256(secret, totalParams)
-	queryString := params.Encode()
-	signature := t.sign(queryString)
-	params.Set("signature", signature)
-
-	body := params.Encode()
-
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		t.baseURL+endpoint,
-		strings.NewReader(body),
-	)
-	if err != nil {
-		return fmt.Errorf("new request: %w", err)
-	}
-
-	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	t.dlog("PlaceMarket %s %s qty=%.8f body=%s", side, symbol, quantity, body)
-
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("http do: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("mexc order error: status=%d body=%s", resp.StatusCode, string(respBody))
-	}
-
-	t.dlog("PlaceMarket OK: %s", string(respBody))
-	return nil
-}
-
-func (t *Trader) sign(payload string) string {
-	mac := hmac.New(sha256.New, []byte(t.apiSecret))
-	mac.Write([]byte(payload))
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
-
-Это уже полноценный клиент под POST /api/v3/order с подписью и MARKET-ордером по количеству в базовой валюте.
-
-2. arb/executor_real.go
-
-Создай файл crypt_proto/arb/executor_real.go:
-
-package arb
-
-import (
-	"context"
-	"fmt"
-	"io"
-	"time"
-
-	"crypt_proto/domain"
-)
-
-// SpotTrader — минимальный интерфейс для трейдера биржи.
-type SpotTrader interface {
-	PlaceMarket(ctx context.Context, symbol, side string, quantity float64) error
-}
-
-// RealExecutor — реальный исполнитель треугольника через SpotTrader.
-type RealExecutor struct {
-	trader SpotTrader
-	out    io.Writer
-}
-
-func NewRealExecutor(trader SpotTrader, out io.Writer) *RealExecutor {
-	return &RealExecutor{
-		trader: trader,
-		out:    out,
-	}
-}
-
-func (e *RealExecutor) log(format string, args ...any) {
-	if e.out == nil {
-		return
-	}
-	fmt.Fprintf(e.out, format+"\n", args...)
-}
-
-// ExecuteTriangle запускает реальную торговлю по треугольнику.
-// ВАЖНО: предполагаем, что StartAsset = USDT (BaseAsset) и что
-// фильтры по MinStart и profitability уже прошли в Consumer.
-func (e *RealExecutor) ExecuteTriangle(
-	ctx context.Context,
-	t domain.Triangle,
-	quotes map[string]domain.Quote,
-	ms *domain.MaxStartInfo,
-	startFraction float64,
-) {
-	if e.trader == nil || ms == nil {
-		return
-	}
-
-	// Сейчас для простоты торгуем только треугольники с USDT-стартом.
-	if ms.StartAsset != BaseAsset {
-		e.log("  [REAL EXEC] skip triangle %s: StartAsset=%s != %s",
-			t.Name, ms.StartAsset, BaseAsset)
-		return
-	}
-
-	safeStart := ms.MaxStart * startFraction
-	if safeStart <= 0 {
-		return
-	}
-
-	// считаем путь исполнения без комиссии (fee=0), чтобы получить объёмы по ногам
-	execs, ok := simulateTriangleExecution(t, quotes, ms.StartAsset, safeStart, 0)
-	if !ok || len(execs) == 0 {
-		e.log("  [REAL EXEC] simulate failed for %s", t.Name)
-		return
-	}
-
-	e.log("  [REAL EXEC] start=%.6f %s triangle=%s", safeStart, ms.StartAsset, t.Name)
-
-	// Локальный таймаут на всю цепочку
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	for i, lg := range execs {
-		// По legExec:
-		//  - AmountIn — сколько у нас ВХОДА на этой ноге (в lg.From)
-		//  - AmountOut — сколько выйдет (в lg.To)
-		// Нужно определить side и quantity в базе символа.
-
-		base, quote, ok := detectBaseQuote(lg.Symbol, lg.From, lg.To)
-		if !ok {
-			e.log("    [REAL EXEC] leg %d: cannot detect base/quote for %s (%s->%s)",
-				i+1, lg.Symbol, lg.From, lg.To)
-			return
-		}
-
-		side := ""
-		var qty float64
-
-		switch {
-		case lg.From == base && lg.To == quote:
-			// Продаём base -> получаем quote
-			side = "SELL"
-			qty = lg.AmountIn // количество base, которое продаём
-		case lg.From == quote && lg.To == base:
-			// Покупаем base за quote
-			side = "BUY"
-			qty = lg.AmountOut // количество base, которое хотим купить
-		default:
-			e.log("    [REAL EXEC] leg %d: inconsistent path %s (%s->%s, base=%s, quote=%s)",
-				i+1, lg.Symbol, lg.From, lg.To, base, quote)
-			return
-		}
-
-		if qty <= 0 {
-			e.log("    [REAL EXEC] leg %d: qty<=0, skip (%s %s)", i+1, side, lg.Symbol)
-			return
-		}
-
-		e.log("    [REAL EXEC] leg %d: %s %s qty=%.8f", i+1, side, lg.Symbol, qty)
-
-		if err := e.trader.PlaceMarket(ctx, lg.Symbol, side, qty); err != nil {
-			e.log("    [REAL EXEC] leg %d ERROR: %v", i+1, err)
-			// На первой же ошибке останавливаем весь треугольник.
-			return
-		}
-	}
-
-	e.log("  [REAL EXEC] done triangle %s", t.Name)
-}
-
-
-⚠️ Тут важно:
-
-Реальный запуск упирается в твой баланс — при нуле будут ошибки insufficient balance.
-
-Мы специально делаем лог и немедленный выход при ошибке любой ноги, чтобы не продолжать сломанную цепочку.
-
-3. Обновление main.go — выбор между DRY-RUN и REAL
-
-Теперь в твоём main.go вот этот кусок:
-
-	// запускаем потребителя
-	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStart, arbOut)
-	consumer.StartFraction = cfg.StartFraction
-
-	// пока только DRY-RUN: считаем, логируем, но не шлём реальные ордера
-	consumer.Executor = arb.NewDryRunExecutor(arbOut)
-
-	// позже сюда можно будет повесить реального исполнителя:
-	// if cfg.TradeEnabled && cfg.APIKey != "" && cfg.APISecret != "" {
-	//     trader := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
-	//     consumer.Executor = arb.NewRealExecutor(trader, cfg.FeePerLeg, cfg.MinStart)
-	// }
-
-
-замени на:
-
-	// запускаем потребителя
-	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStart, arbOut)
-	consumer.StartFraction = cfg.StartFraction
-
-	// Выбор исполнителя
-	hasKeys := cfg.APIKey != "" && cfg.APISecret != ""
-
-	if cfg.TradeEnabled && hasKeys {
-		log.Printf("[EXEC] REAL TRADING ENABLED on %s", cfg.Exchange)
-
-		switch cfg.Exchange {
-		case "MEXC":
-			trader := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
-			consumer.Executor = arb.NewRealExecutor(trader, arbOut)
-		default:
-			log.Printf("[EXEC] Real trading not implemented for %s, fallback to DRY-RUN", cfg.Exchange)
-			consumer.Executor = arb.NewDryRunExecutor(arbOut)
-		}
-	} else {
-		log.Printf("[EXEC] DRY-RUN MODE (TRADE_ENABLED=%v, hasKeys=%v) — реальные ордера отправляться не будут",
-			cfg.TradeEnabled, hasKeys)
-		consumer.Executor = arb.NewDryRunExecutor(arbOut)
-	}
-
-
-Остальная часть main.go остаётся как есть.
-
-4. Напоминание про .env
-
-Чтобы НИЧЕГО не ушло на биржу случайно, оставь пока так:
-
-TRADE_ENABLED=false
-MEXC_API_KEY=
-MEXC_API_SECRET=
-
-
-Когда будешь готов реально торговать:
-
-Задаёшь:
-
-TRADE_ENABLED=true
-MEXC_API_KEY=твой_ключ
-MEXC_API_SECRET=твой_секрет
-
-
-Убедись, что:
-
-баланс на споте есть,
-
-MIN_START_USDT и START_FRACTION разумные.
-
-Если хочешь, следующим шагом можем:
-
-добавить проверку баланса USDT перед сделкой (GET /api/v3/account или аналог),
-
-или сделать режим: log-only реальных ошибок ордеров, чтобы видеть, что отваливается (min notional, step size и т.п.).
 
 
