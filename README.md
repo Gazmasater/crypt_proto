@@ -60,10 +60,7 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-2025/12/15 23:36:46.214678 Using exchange: MEXC
-2025/12/15 23:36:46.215073 [EXEC] DRY-RUN MODE (TRADE_ENABLED=false, hasKeys=true) — реальные ордера отправляться не будут
-
-
+TRADE_ENABLED=false
 
 
 
