@@ -61,241 +61,573 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-1. Добавляем ключи в Config (cmd/cryptarb/config.go)
+package arb
 
-Расширяем структуру:
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
-type Config struct {
-	Exchange      string
-	TrianglesFile string
-	BookInterval  time.Duration
+	"crypt_proto/domain"
+)
 
+const BaseAsset = "USDT"
+
+// Исполнитель треугольника (может быть DryRun или реальный трейдер)
+type TriangleExecutor interface {
+	ExecuteTriangle(
+		ctx context.Context,
+		t domain.Triangle,
+		quotes map[string]domain.Quote,
+		ms *domain.MaxStartInfo,
+		startFraction float64,
+	)
+}
+
+type Consumer struct {
 	FeePerLeg     float64
 	MinProfit     float64
-	MinStartUSDT  float64
+	MinStart      float64
 	StartFraction float64
 
-	Debug bool
+	Executor TriangleExecutor // nil — только логи, без торговли
 
-	// ДОБАВЛЕНО:
-	APIKey    string
-	APISecret string
+	writer io.Writer
 }
 
-
-И в LoadConfig() добавляем чтение ключей.
-
-Я сделаю так:
-
-сначала читаем EXCHANGE (MEXC/OKX/KUCOIN);
-
-пытаемся взять <EXCHANGE>_API_KEY и <EXCHANGE>_API_SECRET;
-
-если их нет — падаем назад на API_KEY / API_SECRET.
-
-func Load() Config {
-	_ = godotenv.Load(".env")
-
-	ex := strings.ToUpper(strings.TrimSpace(os.Getenv("EXCHANGE")))
-	if ex == "" {
-		ex = "MEXC"
-	}
-
-	tf := strings.TrimSpace(os.Getenv("TRIANGLES_FILE"))
-	if tf == "" {
-		tf = "triangles_markets.csv"
-	}
-
-	bi := strings.TrimSpace(os.Getenv("BOOK_INTERVAL"))
-	if bi == "" {
-		bi = "10ms" // раньше было 100ms, под твой конфиг ставлю 10ms
-	}
-
-	feePct := loadEnvFloat("FEE_PCT", 0.04)         // в процентах, 0.04 => 0.04%
-	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.1)   // в процентах, 0.1 => 0.1%
-
-	// MIN_START_USDT (предпочтительно) или MIN_START
-	minStart := loadEnvFloat("MIN_START_USDT", -1)
-	if minStart < 0 {
-		minStart = loadEnvFloat("MIN_START", 0)
-	}
-
-	startFraction := clamp01(loadEnvFloat("START_FRACTION", 0.5), 0.5)
-
-	debug := strings.ToLower(strings.TrimSpace(os.Getenv("DEBUG"))) == "true"
-
-	// --- API-ключи ---
-	// Пытаемся сначала взять <EXCHANGE>_API_KEY/SECRET, потом API_KEY/API_SECRET
-	apiKey := strings.TrimSpace(os.Getenv(ex + "_API_KEY"))
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv("API_KEY"))
-	}
-
-	apiSecret := strings.TrimSpace(os.Getenv(ex + "_API_SECRET"))
-	if apiSecret == "" {
-		apiSecret = strings.TrimSpace(os.Getenv("API_SECRET"))
-	}
-
-	cfg := Config{
-		Exchange:      ex,
-		TrianglesFile: tf,
-		BookInterval:  bi,
-		FeePerLeg:     feePct / 100.0,   // переводим проценты в долю: 0.04% => 0.0004
-		MinProfit:     minPct / 100.0,   // 0.1% => 0.001
+func NewConsumer(feePerLeg, minProfit, minStart float64, out io.Writer) *Consumer {
+	return &Consumer{
+		FeePerLeg:     feePerLeg,
+		MinProfit:     minProfit,
 		MinStart:      minStart,
-		StartFraction: startFraction,
-		Debug:         debug,
-		APIKey:        apiKey,
-		APISecret:     apiSecret,
+		StartFraction: 0.5,
+		writer:        out,
+	}
+}
+
+// Start запускает горутину-потребителя.
+func (c *Consumer) Start(
+	ctx context.Context,
+	events <-chan domain.Event,
+	triangles []domain.Triangle,
+	indexBySymbol map[string][]int,
+	wg *sync.WaitGroup,
+) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		c.run(ctx, events, triangles, indexBySymbol)
+	}()
+}
+
+func (c *Consumer) run(
+	ctx context.Context,
+	events <-chan domain.Event,
+	triangles []domain.Triangle,
+	indexBySymbol map[string][]int,
+) {
+	quotes := make(map[string]domain.Quote)
+	lastPrint := make(map[int]time.Time)
+
+	const minPrintInterval = 5 * time.Millisecond
+
+	sf := c.StartFraction
+	if sf <= 0 || sf > 1 {
+		sf = 0.5
 	}
 
-	log.Printf("Exchange: %s", cfg.Exchange)
-	log.Printf("Triangles file: %s", cfg.TrianglesFile)
-	log.Printf("Book interval: %s", cfg.BookInterval)
-	log.Printf("Fee per leg: %.4f %% (rate=%.6f)", feePct, cfg.FeePerLeg)
-	log.Printf("Min profit per cycle: %.4f %% (rate=%.6f)", minPct, cfg.MinProfit)
-	log.Printf("Min start amount: %.4f", cfg.MinStart)
-	log.Printf("Start fraction: %.4f", cfg.StartFraction)
-	if cfg.APIKey == "" || cfg.APISecret == "" {
-		log.Printf("API key/secret: NOT SET (торговля отключена, только логи)")
-	} else {
-		log.Printf("API key/secret: loaded for %s", cfg.Exchange)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+
+			prev, okPrev := quotes[ev.Symbol]
+			if okPrev &&
+				prev.Bid == ev.Bid &&
+				prev.Ask == ev.Ask &&
+				prev.BidQty == ev.BidQty &&
+				prev.AskQty == ev.AskQty {
+				continue
+			}
+
+			quotes[ev.Symbol] = domain.Quote{
+				Bid:    ev.Bid,
+				Ask:    ev.Ask,
+				BidQty: ev.BidQty,
+				AskQty: ev.AskQty,
+			}
+
+			trIDs := indexBySymbol[ev.Symbol]
+			if len(trIDs) == 0 {
+				continue
+			}
+
+			now := time.Now()
+
+			for _, id := range trIDs {
+				tr := triangles[id]
+
+				// 1) прибыль по треугольнику (с учётом комиссии feePerLeg)
+				prof, ok := domain.EvalTriangle(tr, quotes, c.FeePerLeg)
+				if !ok || prof < c.MinProfit {
+					continue
+				}
+
+				// 2) maxStart по top-of-book
+				ms, okMS := domain.ComputeMaxStartTopOfBook(tr, quotes, c.FeePerLeg)
+				if !okMS {
+					continue
+				}
+
+				safeStart := ms.MaxStart * sf
+
+				// 3) фильтр по минимальному входу в USDT (safeStart)
+				if c.MinStart > 0 {
+					safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, quotes)
+					if !okConv || safeUSDT < c.MinStart {
+						continue
+					}
+				}
+
+				// 4) анти-спам по треугольнику
+				if last, okLast := lastPrint[id]; okLast && now.Sub(last) < minPrintInterval {
+					continue
+				}
+				lastPrint[id] = now
+
+				msCopy := ms
+
+				// 5) Торговый исполнитель (пока DRY-RUN, позже — реальный)
+				if c.Executor != nil {
+					go c.Executor.ExecuteTriangle(ctx, tr, quotes, &msCopy, sf)
+				}
+
+				// 6) Логирование
+				c.printTriangle(now, tr, prof, quotes, &msCopy, sf)
+			}
+
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (c *Consumer) printTriangle(
+	ts time.Time,
+	t domain.Triangle,
+	profit float64,
+	quotes map[string]domain.Quote,
+	ms *domain.MaxStartInfo,
+	startFraction float64,
+) {
+	w := c.writer
+	fmt.Fprintf(w, "%s\n", ts.Format("2006-01-02 15:04:05.000"))
+
+	// Если MaxStartInfo нет (ms == nil) — печатаем "короткий" формат и выходим.
+	if ms == nil {
+		fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
+		for _, leg := range t.Legs {
+			q := quotes[leg.Symbol]
+			mid := (q.Bid + q.Ask) / 2
+			spreadAbs := q.Ask - q.Bid
+			spreadPct := 0.0
+			if mid > 0 {
+				spreadPct = spreadAbs / mid * 100
+			}
+			side := ""
+			if leg.Dir > 0 {
+				side = fmt.Sprintf("%s/%s", leg.From, leg.To)
+			} else {
+				side = fmt.Sprintf("%s/%s", leg.To, leg.From)
+			}
+			fmt.Fprintf(w, "  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
+				leg.Symbol, side,
+				q.Bid, q.Ask,
+				spreadAbs, spreadPct,
+				q.BidQty, q.AskQty,
+			)
+		}
+		fmt.Fprintln(w)
+		return
 	}
 
-	return cfg
+	// ниже ms уже гарантированно не nil
+	bneckSym := ""
+	if ms.BottleneckLeg >= 0 && ms.BottleneckLeg < len(t.Legs) {
+		bneckSym = t.Legs[ms.BottleneckLeg].Symbol
+	}
+
+	safeStart := ms.MaxStart * startFraction
+	maxUSDT, okMax := convertToUSDT(ms.MaxStart, ms.StartAsset, quotes)
+	safeUSDT, okSafe := convertToUSDT(safeStart, ms.StartAsset, quotes)
+
+	maxUSDTStr := "?"
+	safeUSDTStr := "?"
+	if okMax {
+		maxUSDTStr = fmt.Sprintf("%.4f", maxUSDT)
+	}
+	if okSafe {
+		safeUSDTStr = fmt.Sprintf("%.4f", safeUSDT)
+	}
+
+	fmt.Fprintf(w,
+		"[ARB] %+0.3f%%  %s  maxStart=%.4f %s (%s USDT)  safeStart=%.4f %s (%s USDT) (x%.2f)  bottleneck=%s\n",
+		profit*100, t.Name,
+		ms.MaxStart, ms.StartAsset, maxUSDTStr,
+		safeStart, ms.StartAsset, safeUSDTStr,
+		startFraction,
+		bneckSym,
+	)
+
+	for _, leg := range t.Legs {
+		q := quotes[leg.Symbol]
+		mid := (q.Bid + q.Ask) / 2
+		spreadAbs := q.Ask - q.Bid
+		spreadPct := 0.0
+		if mid > 0 {
+			spreadPct = spreadAbs / mid * 100
+		}
+		side := ""
+		if leg.Dir > 0 {
+			side = fmt.Sprintf("%s/%s", leg.From, leg.To)
+		} else {
+			side = fmt.Sprintf("%s/%s", leg.To, leg.From)
+		}
+		fmt.Fprintf(w, "  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
+			leg.Symbol, side,
+			q.Bid, q.Ask,
+			spreadAbs, spreadPct,
+			q.BidQty, q.AskQty,
+		)
+	}
+
+	if c.FeePerLeg > 0 {
+		execs, okExec := simulateTriangleExecution(t, quotes, ms.StartAsset, safeStart, c.FeePerLeg)
+		if okExec {
+			fmt.Fprintln(w, "  Legs execution with fees:")
+			for i, e := range execs {
+				fmt.Fprintf(w,
+					"    leg %d: %s  %.6f %s → %.6f %s  fee=%.8f %s\n",
+					i+1, e.Symbol,
+					e.AmountIn, e.From,
+					e.AmountOut, e.To,
+					e.FeeAmount, e.FeeAsset,
+				)
+			}
+		}
+	}
+
+	fmt.Fprintln(w)
+}
+
+// ==============================
+// DRY-RUN исполнитель треугольника
+// ==============================
+
+type DryRunExecutor struct {
+	out io.Writer
+}
+
+func NewDryRunExecutor(out io.Writer) *DryRunExecutor {
+	return &DryRunExecutor{out: out}
+}
+
+func (e *DryRunExecutor) ExecuteTriangle(
+	ctx context.Context,
+	t domain.Triangle,
+	quotes map[string]domain.Quote,
+	ms *domain.MaxStartInfo,
+	startFraction float64,
+) {
+	if ms == nil {
+		return
+	}
+	safeStart := ms.MaxStart * startFraction
+	if safeStart <= 0 {
+		return
+	}
+
+	execs, ok := simulateTriangleExecution(t, quotes, ms.StartAsset, safeStart, 0)
+	if !ok || len(execs) == 0 {
+		return
+	}
+
+	fmt.Fprintf(e.out, "  [DRY-RUN EXEC] start=%.6f %s (safeStart)\n", safeStart, ms.StartAsset)
+	for i, lg := range execs {
+		fmt.Fprintf(e.out,
+			"    leg %d: %s  %.6f %s -> %.6f %s\n",
+			i+1,
+			lg.Symbol,
+			lg.AmountIn, lg.From,
+			lg.AmountOut, lg.To,
+		)
+	}
+}
+
+// ==============================
+// Симуляция исполнения треугольника
+// ==============================
+
+type legExec struct {
+	Symbol    string
+	From      string
+	To        string
+	AmountIn  float64
+	AmountOut float64
+	FeeAmount float64
+	FeeAsset  string
+}
+
+func simulateTriangleExecution(
+	t domain.Triangle,
+	quotes map[string]domain.Quote,
+	startAsset string,
+	startAmount float64,
+	feePerLeg float64,
+) ([]legExec, bool) {
+	if startAmount <= 0 {
+		return nil, false
+	}
+
+	curAsset := startAsset
+	curAmount := startAmount
+	var res []legExec
+
+	for _, leg := range t.Legs {
+		q, ok := quotes[leg.Symbol]
+		if !ok || q.Bid <= 0 || q.Ask <= 0 {
+			return nil, false
+		}
+
+		var from, to string
+		if leg.Dir > 0 {
+			from, to = leg.From, leg.To
+		} else {
+			from, to = leg.To, leg.From
+		}
+		if curAsset != from {
+			return nil, false
+		}
+
+		base, quote, okPQ := detectBaseQuote(leg.Symbol, from, to)
+		if !okPQ {
+			return nil, false
+		}
+
+		prevAmount := curAmount
+		var amountOut, feeAmount float64
+		var feeAsset string
+
+		switch {
+		case curAsset == base:
+			// продаём base -> получаем quote по bid
+			gross := curAmount * q.Bid
+			feeAmount = gross * feePerLeg
+			amountOut = gross - feeAmount
+			feeAsset = quote
+			curAsset, curAmount = quote, amountOut
+
+		case curAsset == quote:
+			// покупаем base за quote по ask
+			gross := curAmount / q.Ask
+			feeAmount = gross * feePerLeg
+			amountOut = gross - feeAmount
+			feeAsset = base
+			curAsset, curAmount = base, amountOut
+
+		default:
+			return nil, false
+		}
+
+		res = append(res, legExec{
+			Symbol:    leg.Symbol,
+			From:      from,
+			To:        to,
+			AmountIn:  prevAmount,
+			AmountOut: amountOut,
+			FeeAmount: feeAmount,
+			FeeAsset:  feeAsset,
+		})
+	}
+
+	return res, true
+}
+
+func detectBaseQuote(symbol, a, b string) (base, quote string, ok bool) {
+	if strings.HasPrefix(symbol, a) {
+		return a, b, true
+	}
+	if strings.HasPrefix(symbol, b) {
+		return b, a, true
+	}
+	return "", "", false
+}
+
+// ==============================
+// Конвертация для вывода maxStart в USDT
+// ==============================
+
+func convertToUSDT(amount float64, asset string, quotes map[string]domain.Quote) (float64, bool) {
+	if amount <= 0 {
+		return 0, false
+	}
+	if asset == BaseAsset {
+		return amount, true
+	}
+	if q, ok := quotes[asset+"USDT"]; ok && q.Bid > 0 {
+		return amount * q.Bid, true
+	}
+	if q, ok := quotes["USDT"+asset]; ok && q.Ask > 0 {
+		return amount / q.Ask, true
+	}
+	if amtUSDC, ok1 := convertViaQuote(amount, asset, "USDC", quotes); ok1 {
+		if amtUSDT, ok2 := convertViaQuote(amtUSDC, "USDC", "USDT", quotes); ok2 {
+			return amtUSDT, true
+		}
+	}
+	return 0, false
+}
+
+func convertViaQuote(amount float64, from, to string, quotes map[string]domain.Quote) (float64, bool) {
+	if amount <= 0 {
+		return 0, false
+	}
+	if from == to {
+		return amount, true
+	}
+	if q, ok := quotes[from+to]; ok && q.Bid > 0 {
+		return amount * q.Bid, true
+	}
+	if q, ok := quotes[to+from]; ok && q.Ask > 0 {
+		return amount / q.Ask, true
+	}
+	return 0, false
+}
+
+// ==============================
+// Работа с логом
+// ==============================
+
+func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Fatalf("open %s: %v", path, err)
+	}
+	buf := bufio.NewWriter(f)
+	out := io.MultiWriter(os.Stdout, buf)
+	return f, buf, out
 }
 
 
 
-Теперь ты можешь в .env записать, например для MEXC:
-
-EXCHANGE=MEXC
-MEXC_API_KEY=xxx
-MEXC_API_SECRET=yyy
 
 
-или просто:
 
-EXCHANGE=MEXC
-API_KEY=xxx
-API_SECRET=yyy
+package main
 
+import (
+	"context"
+	"log"
+	"net/http"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
-— оба варианта заработают.
+	"crypt_proto/arb"
+	"crypt_proto/config"
+	"crypt_proto/domain"
+	"crypt_proto/exchange"
+	"crypt_proto/kucoin"
+	"crypt_proto/mexc"
 
-2. Подцепляем ключи в main.go
-
-В cmd/cryptarb/main.go после cfg := LoadConfig() добавь проверку и заготовку для трейдера/исполнителя.
-
-Пример:
+	_ "net/http/pprof"
+)
 
 func main() {
-	cfg := LoadConfig()
-	log.Printf("config: %+v", cfg)
+	// pprof
+	go func() {
+		log.Println("pprof on http://localhost:6060/debug/pprof/")
+		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+			log.Printf("pprof server error: %v", err)
+		}
+	}()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	cfg := config.Load()
 
 	triangles, symbols, indexBySymbol, err := domain.LoadTriangles(cfg.TrianglesFile)
 	if err != nil {
 		log.Fatalf("load triangles: %v", err)
 	}
+	if len(triangles) == 0 {
+		log.Fatal("нет треугольников, нечего мониторить")
+	}
+	if len(symbols) == 0 {
+		log.Fatal("нет символов для подписки")
+	}
+	log.Printf("символов для подписки всего: %d", len(symbols))
 
-	logFile, logBuf, out := arb.OpenLogWriter("arbitrage.log")
+	// выбор биржи
+	var feed exchange.MarketDataFeed
+	switch cfg.Exchange {
+	case "MEXC":
+		feed = mexc.NewFeed(cfg.Debug)
+	case "KUCOIN":
+		feed = kucoin.NewFeed(cfg.Debug)
+	default:
+		log.Fatalf("unknown EXCHANGE=%q (expected MEXC or KUCOIN)", cfg.Exchange)
+	}
+	log.Printf("Using exchange: %s", feed.Name())
+
+	// лог-файл для арбитража
+	logFile, logBuf, arbOut := arb.OpenLogWriter("arbitrage.log")
 	defer logFile.Close()
 	defer logBuf.Flush()
 
-	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStartUSDT, out)
-	consumer.StartFraction = cfg.StartFraction
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
-	// === ТУТ УЧЁТ API КЛЮЧЕЙ ===
-
-	if cfg.APIKey == "" || cfg.APISecret == "" {
-		log.Printf("[WARN] API_KEY/API_SECRET не заданы — работаем только в режиме логирования (без реальной торговли)")
-		// consumer.Executor = arb.NewDryRunExecutor(...) // если сделаешь dry-run
-	} else {
-		log.Printf("[INFO] API-ключи для %s загружены, можно подключать торгового исполнителя", cfg.Exchange)
-
-		// здесь, когда напишешь трейдер, будет что-то вроде:
-		//
-		// var exec arb.TriangleExecutor
-		// switch cfg.Exchange {
-		// case "MEXC":
-		//     trader := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
-		//     exec = arb.NewTriangleExecutor(trader, cfg.FeePerLeg, cfg.MinProfit, cfg.MinStartUSDT)
-		// case "OKX":
-		//     ...
-		// }
-		// consumer.Executor = exec
-	}
-
-	events := make(chan domain.Event, 1024)
+	events := make(chan domain.Event, 8192)
 
 	var wg sync.WaitGroup
+
+	// потребитель арбитража
+	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStart, arbOut)
+	consumer.StartFraction = cfg.StartFraction
+
+	// пока — DRY-RUN исполнитель (торговля не идёт, только симуляция)
+	consumer.Executor = arb.NewDryRunExecutor(arbOut)
+
+	// если нужны реальные торги, сюда потом повесим RealExecutor с трейдером:
+	//
+	// if cfg.APIKey != "" && cfg.APISecret != "" {
+	//     trader := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
+	//     consumer.Executor = arb.NewRealExecutor(trader, cfg.FeePerLeg, cfg.MinStart)
+	// }
+
 	consumer.Start(ctx, events, triangles, indexBySymbol, &wg)
 
-	// тут твой фид по стаканам (MEXC/OKX/KuCoin) пишет в events...
+	// фид биржи
+	feed.Start(ctx, &wg, symbols, cfg.BookInterval, events)
 
+	// ждём сигнал остановки
+	<-ctx.Done()
+	log.Println("shutting down...")
+
+	time.Sleep(200 * time.Millisecond)
+	close(events)
 	wg.Wait()
+	log.Println("bye")
 }
 
-
-👉 Ключевая мысль:
-Ключи живут только в Config и дальше передаются в “трейдер” (обертка над API биржи).
-Ни domain, ни arb.Consumer про них знать не должны — они бирже-независимые.
-
-3. Где будут реально использоваться ключи
-
-Сейчас мы только:
-
-читаем ключи из ENV,
-
-прокидываем их до main.go,
-
-показываем, куда их передать.
-
-Реальное использование будет в специфичном адаптере, например mexc:
-
-// pseudo: crypt_proto/exchange/mexc/trader.go
-
-type Trader struct {
-	apiKey    string
-	apiSecret string
-	debug     bool
-	// httpClient и т.п.
-}
-
-func NewTrader(apiKey, apiSecret string, debug bool) *Trader {
-	return &Trader{
-		apiKey:    apiKey,
-		apiSecret: apiSecret,
-		debug:     debug,
-	}
-}
-
-func (t *Trader) PlaceMarket(ctx context.Context, symbol string, side arb.OrderSide, amountBase float64) (arb.OrderResult, error) {
-	// здесь используешь apiKey/apiSecret для подписи запросов к MEXC
-}
-
-
-И этот Trader потом оборачиваешь в твой TriangleExecutor, который уже знает, как идти по трём ногам треугольника.
-
-4. Коротко по сути вопроса
-
-а где апи ключ и секретный ключ добавлен
-
-До этого момента — нигде: мы занимались только аналитикой и логами.
-Сейчас:
-
-в Config добавили APIKey и APISecret;
-
-читаем их из ENV (MEXC_API_KEY / MEXC_API_SECRET или API_KEY / API_SECRET);
-
-в main.go они доступны, и туда подключается твой будущий трейдер.
-
-Если хочешь, следующим шагом могу прямо набросать:
-
-минимальный MexcTrader с подписями запросов (timestamp, sign),
-
-и DryRunTriangleExecutor, чтобы ты мог проверить интеграцию без риска денег.
 
