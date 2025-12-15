@@ -113,9 +113,14 @@ func (c *Consumer) run(
 				if okMS {
 					safeStart := ms.MaxStart * sf
 
-					// фильтр применяем к safeStart (половина maxStart)
-					if c.MinStart > 0 && safeStart < c.MinStart {
-						continue
+					// ФИЛЬТР: MIN_START_USDT сравниваем по safeStart в USDT
+					if c.MinStart > 0 {
+						safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, quotes)
+						// если не смогли перевести в USDT — треугольник отбрасываем,
+						// раз порог задан в USDT
+						if !okConv || safeUSDT < c.MinStart {
+							continue
+						}
 					}
 				}
 
