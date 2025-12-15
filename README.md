@@ -344,3 +344,54 @@ Dir > 0 → продаём USDC за USDT по bid USDCUSDT
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/arb/arb.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "default",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/gopls/internal/analysis/unusedfunc",
+			"scheme": "https",
+			"authority": "pkg.go.dev"
+		}
+	},
+	"severity": 2,
+	"message": "function \"detectBaseQuote\" is unused",
+	"source": "unusedfunc",
+	"startLineNumber": 403,
+	"startColumn": 6,
+	"endLineNumber": 403,
+	"endColumn": 21,
+	"tags": [
+		1
+	],
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "not enough arguments in call to arb.NewRealExecutor\n\thave (*mexc.Trader, io.Writer)\n\twant (arb.SpotTrader, io.Writer, float64)",
+	"source": "compiler",
+	"startLineNumber": 88,
+	"startColumn": 58,
+	"endLineNumber": 88,
+	"endColumn": 58,
+	"origin": "extHost1"
+}]
+
+
+
