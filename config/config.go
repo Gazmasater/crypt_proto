@@ -23,7 +23,9 @@ type Config struct {
 	// Доля от maxStart, которую считаем безопасной (0..1). Например 0.5.
 	StartFraction float64
 
-	Debug bool
+	Debug     bool
+	APIKey    string
+	APISecret string
 }
 
 var debug bool

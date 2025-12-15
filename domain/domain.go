@@ -9,108 +9,114 @@ import (
 	"strings"
 )
 
+const BaseAsset = "USDT"
+
+// ==============================
+// Базовые структуры
+// ==============================
+
 type Leg struct {
 	From   string
 	To     string
 	Symbol string
-	Dir    int8 // +1: From->To = base->quote; -1: From->To = quote->base
+	Dir    int8
 }
 
 type Triangle struct {
 	Legs [3]Leg
-	Name string // A→B→C→A
+	Name string // USDT→A→B→USDT
 }
 
 type Quote struct {
-	Bid    float64
-	Ask    float64
-	BidQty float64
-	AskQty float64
+	Bid, Ask, BidQty, AskQty float64
 }
 
 type Event struct {
-	Symbol string
-	Bid    float64
-	Ask    float64
-	BidQty float64
-	AskQty float64
+	Symbol                   string
+	Bid, Ask, BidQty, AskQty float64
 }
 
 type Pair struct {
-	Base   string
-	Quote  string
-	Symbol string
+	Base, Quote, Symbol string
 }
 
+// ==============================
+// Построение треугольников
+// ==============================
+
 func buildTriangleFromPairs(p1, p2, p3 Pair) (Triangle, bool) {
+	pairs := []Pair{p1, p2, p3}
 	set := map[string]struct{}{
-		p1.Base:  {},
-		p1.Quote: {},
-		p2.Base:  {},
-		p2.Quote: {},
-		p3.Base:  {},
-		p3.Quote: {},
+		p1.Base: {}, p1.Quote: {},
+		p2.Base: {}, p2.Quote: {},
+		p3.Base: {}, p3.Quote: {},
 	}
 	if len(set) != 3 {
 		return Triangle{}, false
 	}
-	currs := make([]string, 0, 3)
-	for c := range set {
-		currs = append(currs, c)
+
+	// Берём все валюты
+	var assets []string
+	for k := range set {
+		assets = append(assets, k)
 	}
 
-	type edge struct{ From, To string }
-
-	pairs := []Pair{p1, p2, p3}
-	perm3 := [][]int{
-		{0, 1, 2},
-		{0, 2, 1},
-		{1, 0, 2},
-		{1, 2, 0},
-		{2, 0, 1},
-		{2, 1, 0},
+	// если в тройке нет USDT — пропускаем
+	if _, ok := set[BaseAsset]; !ok {
+		return Triangle{}, false
 	}
 
-	for _, order := range perm3 {
-		c0, c1, c2 := currs[order[0]], currs[order[1]], currs[order[2]]
-		edges := []edge{
-			{From: c0, To: c1},
-			{From: c1, To: c2},
-			{From: c2, To: c0},
+	// Две прочие валюты
+	var others []string
+	for _, a := range assets {
+		if a != BaseAsset {
+			others = append(others, a)
 		}
+	}
+	if len(others) != 2 {
+		return Triangle{}, false
+	}
+	A, B := others[0], others[1]
 
-		for _, pp := range perm3 {
-			var legs [3]Leg
-			okAll := true
+	// Пробуем два направления: USDT→A→B→USDT и USDT→B→A→USDT
+	orders := [][]string{
+		{BaseAsset, A, B, BaseAsset},
+		{BaseAsset, B, A, BaseAsset},
+	}
 
-			for i := 0; i < 3; i++ {
-				e := edges[i]
-				p := pairs[pp[i]]
-
+	for _, order := range orders {
+		var legs [3]Leg
+		okAll := true
+		for i := 0; i < 3; i++ {
+			from, to := order[i], order[i+1]
+			var found bool
+			for _, p := range pairs {
 				switch {
-				case p.Base == e.From && p.Quote == e.To:
-					legs[i] = Leg{From: e.From, To: e.To, Symbol: p.Symbol, Dir: +1}
-				case p.Base == e.To && p.Quote == e.From:
-					legs[i] = Leg{From: e.From, To: e.To, Symbol: p.Symbol, Dir: -1}
-				default:
-					okAll = false
-				}
-				if !okAll {
-					break
+				case p.Base == from && p.Quote == to:
+					legs[i] = Leg{From: from, To: to, Symbol: p.Symbol, Dir: +1}
+					found = true
+				case p.Base == to && p.Quote == from:
+					legs[i] = Leg{From: from, To: to, Symbol: p.Symbol, Dir: -1}
+					found = true
 				}
 			}
-
-			if okAll {
-				name := fmt.Sprintf("%s→%s→%s→%s", edges[0].From, edges[1].From, edges[2].From, edges[0].From)
-				return Triangle{Legs: legs, Name: name}, true
+			if !found {
+				okAll = false
+				break
 			}
 		}
+		if okAll {
+			name := fmt.Sprintf("%s→%s→%s→%s", order[0], order[1], order[2], order[3])
+			return Triangle{Legs: legs, Name: name}, true
+		}
 	}
-
 	return Triangle{}, false
 }
 
-// LoadTriangles читает CSV, строит треугольники и индекс по символам.
+// ==============================
+// Загрузка из CSV
+// ==============================
+
 func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -128,12 +134,8 @@ func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) 
 	for {
 		rec, err := r.Read()
 		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			return nil, nil, nil, err
+			break
 		}
-
 		var fields []string
 		for _, v := range rec {
 			v = strings.TrimSpace(v)
@@ -141,14 +143,7 @@ func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) 
 				fields = append(fields, v)
 			}
 		}
-		if len(fields) == 0 {
-			continue
-		}
-		if strings.HasPrefix(fields[0], "#") {
-			continue
-		}
-		if len(fields) != 6 {
-			log.Printf("skip line (need 6 fields): %v", fields)
+		if len(fields) != 6 || strings.HasPrefix(fields[0], "#") {
 			continue
 		}
 
@@ -179,89 +174,77 @@ func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) 
 		}
 	}
 
-	log.Printf("треугольников всего: %d", len(tris))
-	log.Printf("символов в индексе треугольников: %d", len(symbols))
-
+	log.Printf("треугольников (USDT→...→USDT): %d", len(tris))
+	log.Printf("уникальных символов: %d", len(symbols))
 	return tris, symbols, index, nil
 }
 
-// EvalTriangle считает доходность треугольника.
+// ==============================
+// Расчёт доходности
+// ==============================
+
 func EvalTriangle(t Triangle, quotes map[string]Quote, fee float64) (float64, bool) {
 	amt := 1.0
-
 	for _, leg := range t.Legs {
 		q, ok := quotes[leg.Symbol]
 		if !ok || q.Bid <= 0 || q.Ask <= 0 {
 			return 0, false
 		}
-
 		if leg.Dir > 0 {
 			amt *= q.Bid
 		} else {
 			amt /= q.Ask
 		}
-
 		amt *= (1 - fee)
 		if amt <= 0 {
 			return 0, false
 		}
 	}
-
-	return amt - 1.0, true
+	return amt - 1, true
 }
 
-// MaxStartInfo - диагностическая информация по максимальному стартовому объёму.
-// Все значения рассчитаны по top-of-book (best bid/ask) без учёта округлений stepSize/minQty.
+// ==============================
+// Диагностика лимитов
+// ==============================
+
 type MaxStartInfo struct {
 	StartAsset    string
-	MaxStart      float64    // в StartAsset
-	BottleneckLeg int        // индекс ноги [0..2]
-	LimitIn       [3]float64 // лимит на ВХОД каждой ноги (в единицах входного актива ноги)
-	KIn           [3]float64 // сколько входного актива ноги получается из 1 StartAsset
-	MaxStartByLeg [3]float64 // LimitIn / KIn
+	MaxStart      float64
+	BottleneckLeg int
+	LimitIn       [3]float64
+	KIn           [3]float64
+	MaxStartByLeg [3]float64
 }
 
-// ComputeMaxStartTopOfBook возвращает максимальный стартовый объём, который можно протащить через треугольник,
-// не выходя за best bid/ask qty на каждой ноге. Комиссия учитывается как удержание из результата каждой ноги.
 func ComputeMaxStartTopOfBook(t Triangle, quotes map[string]Quote, fee float64) (MaxStartInfo, bool) {
 	var info MaxStartInfo
-	info.StartAsset = t.Legs[0].From
+	info.StartAsset = BaseAsset
 
-	// kIn - сколько входной валюты текущей ноги получится из 1 единицы стартовой валюты.
 	kIn := 1.0
-	info.MaxStart = 0
-	info.BottleneckLeg = -1
-
-	// Инициализируем maxStart как +Inf, чтобы взять минимум по ногам.
 	maxStart := 1e308
+	info.BottleneckLeg = -1
 
 	for i, leg := range t.Legs {
 		q, ok := quotes[leg.Symbol]
 		if !ok || q.Bid <= 0 || q.Ask <= 0 {
 			return MaxStartInfo{}, false
 		}
-
 		info.KIn[i] = kIn
 
-		var limitIn float64
-		var ratio float64 // out/in без комиссии
-
+		var limitIn, ratio float64
 		if leg.Dir > 0 {
-			// SELL base -> quote по bid, ограничение по количеству base на bid.
 			if q.BidQty <= 0 {
 				return MaxStartInfo{}, false
 			}
 			limitIn = q.BidQty
 			ratio = q.Bid
 		} else {
-			// BUY base <- quote по ask, ограничение по объёму quote, который можно потратить: askQty*ask.
 			if q.AskQty <= 0 {
 				return MaxStartInfo{}, false
 			}
 			limitIn = q.AskQty * q.Ask
-			ratio = 1.0 / q.Ask
+			ratio = 1 / q.Ask
 		}
-
 		info.LimitIn[i] = limitIn
 		if kIn <= 0 {
 			return MaxStartInfo{}, false
@@ -272,9 +255,7 @@ func ComputeMaxStartTopOfBook(t Triangle, quotes map[string]Quote, fee float64) 
 			maxStart = maxByThis
 			info.BottleneckLeg = i
 		}
-
-		// переход к следующей ноге
-		kIn = kIn * ratio * (1 - fee)
+		kIn *= ratio * (1 - fee)
 		if kIn <= 0 {
 			return MaxStartInfo{}, false
 		}

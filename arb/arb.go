@@ -7,24 +7,21 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"crypt_proto/domain"
 )
 
+const BaseAsset = "USDT"
+
 type Consumer struct {
-	FeePerLeg float64
-	MinProfit float64
-
-	// MinStart — минимальный допустимый старт (обычно в USDT, но по факту это валюта старта треугольника).
-	// ВАЖНО: фильтр применяется к safeStart (= maxStart * StartFraction).
-	MinStart float64
-
-	// StartFraction — доля от maxStart, которую считаем безопасной для исполнения (обычно 0.5).
+	FeePerLeg     float64
+	MinProfit     float64
+	MinStart      float64
 	StartFraction float64
-
-	writer io.Writer
+	writer        io.Writer
 }
 
 func NewConsumer(feePerLeg, minProfit, minStart float64, out io.Writer) *Consumer {
@@ -32,12 +29,11 @@ func NewConsumer(feePerLeg, minProfit, minStart float64, out io.Writer) *Consume
 		FeePerLeg:     feePerLeg,
 		MinProfit:     minProfit,
 		MinStart:      minStart,
-		StartFraction: 0.5, // дефолт: половина от maxStart
+		StartFraction: 0.5,
 		writer:        out,
 	}
 }
 
-// Start запускает горутину-потребителя.
 func (c *Consumer) Start(
 	ctx context.Context,
 	events <-chan domain.Event,
@@ -59,10 +55,8 @@ func (c *Consumer) run(
 	indexBySymbol map[string][]int,
 ) {
 	quotes := make(map[string]domain.Quote)
-
-	// анти-спам: один и тот же треугольник не печатаем чаще этого интервала
-	const minPrintInterval = 5 * time.Millisecond
 	lastPrint := make(map[int]time.Time)
+	const minPrintInterval = 5 * time.Millisecond
 
 	sf := c.StartFraction
 	if sf <= 0 || sf > 1 {
@@ -76,22 +70,13 @@ func (c *Consumer) run(
 				return
 			}
 
-			// если книга не изменилась — пропускаем
-			if prev, okPrev := quotes[ev.Symbol]; okPrev &&
-				prev.Bid == ev.Bid &&
-				prev.Ask == ev.Ask &&
-				prev.BidQty == ev.BidQty &&
-				prev.AskQty == ev.AskQty {
+			prev, okPrev := quotes[ev.Symbol]
+			if okPrev && prev.Bid == ev.Bid && prev.Ask == ev.Ask &&
+				prev.BidQty == ev.BidQty && prev.AskQty == ev.AskQty {
 				continue
 			}
 
-			quotes[ev.Symbol] = domain.Quote{
-				Bid:    ev.Bid,
-				Ask:    ev.Ask,
-				BidQty: ev.BidQty,
-				AskQty: ev.AskQty,
-			}
-
+			quotes[ev.Symbol] = domain.Quote{Bid: ev.Bid, Ask: ev.Ask, BidQty: ev.BidQty, AskQty: ev.AskQty}
 			trIDs := indexBySymbol[ev.Symbol]
 			if len(trIDs) == 0 {
 				continue
@@ -102,41 +87,31 @@ func (c *Consumer) run(
 			for _, id := range trIDs {
 				tr := triangles[id]
 
-				// 1) прибыль (уже с учётом комиссии)
 				prof, ok := domain.EvalTriangle(tr, quotes, c.FeePerLeg)
 				if !ok || prof < c.MinProfit {
 					continue
 				}
 
-				// 2) maxStart по top-of-book
 				ms, okMS := domain.ComputeMaxStartTopOfBook(tr, quotes, c.FeePerLeg)
-				if okMS {
-					safeStart := ms.MaxStart * sf
+				if !okMS {
+					continue
+				}
 
-					// ФИЛЬТР: MIN_START_USDT сравниваем по safeStart в USDT
-					if c.MinStart > 0 {
-						safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, quotes)
-						// если не смогли перевести в USDT — треугольник отбрасываем,
-						// раз порог задан в USDT
-						if !okConv || safeUSDT < c.MinStart {
-							continue
-						}
+				safeStart := ms.MaxStart * sf
+				if c.MinStart > 0 {
+					safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, quotes)
+					if !okConv || safeUSDT < c.MinStart {
+						continue
 					}
 				}
 
-				// анти-спам
 				if last, okLast := lastPrint[id]; okLast && now.Sub(last) < minPrintInterval {
 					continue
 				}
 				lastPrint[id] = now
 
-				var msPtr *domain.MaxStartInfo
-				if okMS {
-					msCopy := ms
-					msPtr = &msCopy
-				}
-
-				c.printTriangle(now, tr, prof, quotes, msPtr, sf)
+				msCopy := ms
+				c.printTriangle(now, tr, prof, quotes, &msCopy, sf)
 			}
 
 		case <-ctx.Done():
@@ -156,39 +131,61 @@ func (c *Consumer) printTriangle(
 	w := c.writer
 	fmt.Fprintf(w, "%s\n", ts.Format("2006-01-02 15:04:05.000"))
 
-	if ms != nil {
-		bneckSym := ""
-		if ms.BottleneckLeg >= 0 && ms.BottleneckLeg < len(t.Legs) {
-			bneckSym = t.Legs[ms.BottleneckLeg].Symbol
-		}
-
-		// safeStart = половина от maxStart (или другой startFraction)
-		safeStart := ms.MaxStart * startFraction
-
-		// конвертация maxStart/safeStart в USDT для вывода
-		maxUSDT, okMax := convertToUSDT(ms.MaxStart, ms.StartAsset, quotes)
-		safeUSDT, okSafe := convertToUSDT(safeStart, ms.StartAsset, quotes)
-
-		maxUSDTStr := "?"
-		safeUSDTStr := "?"
-		if okMax {
-			maxUSDTStr = fmt.Sprintf("%.4f", maxUSDT)
-		}
-		if okSafe {
-			safeUSDTStr = fmt.Sprintf("%.4f", safeUSDT)
-		}
-
-		fmt.Fprintf(w,
-			"[ARB] %+0.3f%%  %s  maxStart=%.4f %s (%s USDT)  safeStart=%.4f %s (%s USDT) (x%.2f)  bottleneck=%s\n",
-			profit*100, t.Name,
-			ms.MaxStart, ms.StartAsset, maxUSDTStr,
-			safeStart, ms.StartAsset, safeUSDTStr,
-			startFraction,
-			bneckSym,
-		)
-	} else {
+	// Если MaxStartInfo нет (ms == nil) — печатаем "короткий" формат и уходим.
+	if ms == nil {
 		fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
+		for _, leg := range t.Legs {
+			q := quotes[leg.Symbol]
+			mid := (q.Bid + q.Ask) / 2
+			spreadAbs := q.Ask - q.Bid
+			spreadPct := 0.0
+			if mid > 0 {
+				spreadPct = spreadAbs / mid * 100
+			}
+			side := ""
+			if leg.Dir > 0 {
+				side = fmt.Sprintf("%s/%s", leg.From, leg.To)
+			} else {
+				side = fmt.Sprintf("%s/%s", leg.To, leg.From)
+			}
+			fmt.Fprintf(w, "  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
+				leg.Symbol, side,
+				q.Bid, q.Ask,
+				spreadAbs, spreadPct,
+				q.BidQty, q.AskQty,
+			)
+		}
+		fmt.Fprintln(w)
+		return
 	}
+
+	// ----- ниже ms уже гарантированно не nil -----
+
+	bneckSym := ""
+	if ms.BottleneckLeg >= 0 && ms.BottleneckLeg < len(t.Legs) {
+		bneckSym = t.Legs[ms.BottleneckLeg].Symbol
+	}
+
+	safeStart := ms.MaxStart * startFraction
+	maxUSDT, okMax := convertToUSDT(ms.MaxStart, ms.StartAsset, quotes)
+	safeUSDT, okSafe := convertToUSDT(safeStart, ms.StartAsset, quotes)
+
+	maxUSDTStr, safeUSDTStr := "?", "?"
+	if okMax {
+		maxUSDTStr = fmt.Sprintf("%.4f", maxUSDT)
+	}
+	if okSafe {
+		safeUSDTStr = fmt.Sprintf("%.4f", safeUSDT)
+	}
+
+	fmt.Fprintf(w,
+		"[ARB] %+0.3f%%  %s  maxStart=%.4f %s (%s USDT)  safeStart=%.4f %s (%s USDT) (x%.2f)  bottleneck=%s\n",
+		profit*100, t.Name,
+		ms.MaxStart, ms.StartAsset, maxUSDTStr,
+		safeStart, ms.StartAsset, safeUSDTStr,
+		startFraction,
+		bneckSym,
+	)
 
 	for _, leg := range t.Legs {
 		q := quotes[leg.Symbol]
@@ -198,14 +195,12 @@ func (c *Consumer) printTriangle(
 		if mid > 0 {
 			spreadPct = spreadAbs / mid * 100
 		}
-
 		side := ""
 		if leg.Dir > 0 {
 			side = fmt.Sprintf("%s/%s", leg.From, leg.To)
 		} else {
 			side = fmt.Sprintf("%s/%s", leg.To, leg.From)
 		}
-
 		fmt.Fprintf(w, "  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
 			leg.Symbol, side,
 			q.Bid, q.Ask,
@@ -213,17 +208,118 @@ func (c *Consumer) printTriangle(
 			q.BidQty, q.AskQty,
 		)
 	}
+
+	if c.FeePerLeg > 0 {
+		execs, okExec := simulateTriangleExecution(t, quotes, ms.StartAsset, safeStart, c.FeePerLeg)
+		if okExec {
+			fmt.Fprintln(w, "  Legs execution with fees:")
+			for i, e := range execs {
+				fmt.Fprintf(w,
+					"    leg %d: %s  %.6f %s → %.6f %s  fee=%.8f %s\n",
+					i+1, e.Symbol,
+					e.AmountIn, e.From,
+					e.AmountOut, e.To,
+					e.FeeAmount, e.FeeAsset,
+				)
+			}
+		}
+	}
+
 	fmt.Fprintln(w)
 }
 
-func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Fatalf("open %s: %v", path, err)
+// ==============================
+// Симуляция исполнения треугольника
+// ==============================
+
+type legExec struct {
+	Symbol    string
+	From      string
+	To        string
+	AmountIn  float64
+	AmountOut float64
+	FeeAmount float64
+	FeeAsset  string
+}
+
+func simulateTriangleExecution(
+	t domain.Triangle,
+	quotes map[string]domain.Quote,
+	startAsset string,
+	startAmount float64,
+	feePerLeg float64,
+) ([]legExec, bool) {
+	if startAmount <= 0 {
+		return nil, false
 	}
-	buf := bufio.NewWriter(f)
-	out := io.MultiWriter(os.Stdout, buf)
-	return f, buf, out
+
+	curAsset := startAsset
+	curAmount := startAmount
+	var res []legExec
+
+	for _, leg := range t.Legs {
+		q, ok := quotes[leg.Symbol]
+		if !ok || q.Bid <= 0 || q.Ask <= 0 {
+			return nil, false
+		}
+
+		var from, to string
+		if leg.Dir > 0 {
+			from, to = leg.From, leg.To
+		} else {
+			from, to = leg.To, leg.From
+		}
+
+		if curAsset != from {
+			return nil, false
+		}
+
+		base, quote, okPQ := detectBaseQuote(leg.Symbol, from, to)
+		if !okPQ {
+			return nil, false
+		}
+
+		var amountOut, feeAmount float64
+		var feeAsset string
+
+		switch {
+		case curAsset == base:
+			gross := curAmount * q.Bid
+			feeAmount = gross * feePerLeg
+			amountOut = gross - feeAmount
+			feeAsset = quote
+			curAsset, curAmount = quote, amountOut
+		case curAsset == quote:
+			gross := curAmount / q.Ask
+			feeAmount = gross * feePerLeg
+			amountOut = gross - feeAmount
+			feeAsset = base
+			curAsset, curAmount = base, amountOut
+		default:
+			return nil, false
+		}
+
+		res = append(res, legExec{
+			Symbol:    leg.Symbol,
+			From:      from,
+			To:        to,
+			AmountIn:  curAmount + feeAmount,
+			AmountOut: amountOut,
+			FeeAmount: feeAmount,
+			FeeAsset:  feeAsset,
+		})
+	}
+	return res, true
+}
+
+func detectBaseQuote(symbol, a, b string) (base, quote string, ok bool) {
+	if strings.HasPrefix(symbol, a) {
+		return a, b, true
+	}
+	if strings.HasPrefix(symbol, b) {
+		return b, a, true
+	}
+	return "", "", false
 }
 
 // ==============================
@@ -234,54 +330,49 @@ func convertToUSDT(amount float64, asset string, quotes map[string]domain.Quote)
 	if amount <= 0 {
 		return 0, false
 	}
-	if asset == "USDT" {
+	if asset == BaseAsset {
 		return amount, true
 	}
-
-	// 1) Прямая пара: ASSETUSDT (продаём ASSET за USDT по bid)
-	if q, ok := quotes[asset+"USDT"]; ok && q.Bid > 0 && q.BidQty > 0 {
+	if q, ok := quotes[asset+"USDT"]; ok && q.Bid > 0 {
 		return amount * q.Bid, true
 	}
-
-	// 2) Прямая пара: USDTASSET (покупаем USDT за ASSET по ask)
-	if q, ok := quotes["USDT"+asset]; ok && q.Ask > 0 && q.AskQty > 0 {
-		// ask = ASSET per USDT => USDT = ASSET / ask
+	if q, ok := quotes["USDT"+asset]; ok && q.Ask > 0 {
 		return amount / q.Ask, true
 	}
-
-	// 3) Через USDC: ASSET -> USDC -> USDT
-	amtUSDC, ok1 := convertViaQuote(amount, asset, "USDC", quotes)
-	if ok1 {
-		amtUSDT, ok2 := convertViaQuote(amtUSDC, "USDC", "USDT", quotes)
-		if ok2 {
+	if amtUSDC, ok1 := convertViaQuote(amount, asset, "USDC", quotes); ok1 {
+		if amtUSDT, ok2 := convertViaQuote(amtUSDC, "USDC", "USDT", quotes); ok2 {
 			return amtUSDT, true
 		}
 	}
-
 	return 0, false
 }
 
-// convertViaQuote конвертирует amount из assetFrom в assetTo, используя только прямые пары.
-// Правила:
-// - FROMTO: продаём FROM за TO по bid => out = amount * bid
-// - TOFROM: покупаем TO за FROM по ask => out = amount / ask
-func convertViaQuote(amount float64, assetFrom, assetTo string, quotes map[string]domain.Quote) (float64, bool) {
+func convertViaQuote(amount float64, from, to string, quotes map[string]domain.Quote) (float64, bool) {
 	if amount <= 0 {
 		return 0, false
 	}
-	if assetFrom == assetTo {
+	if from == to {
 		return amount, true
 	}
-
-	// FROMTO: sell FROM -> TO
-	if q, ok := quotes[assetFrom+assetTo]; ok && q.Bid > 0 && q.BidQty > 0 {
+	if q, ok := quotes[from+to]; ok && q.Bid > 0 {
 		return amount * q.Bid, true
 	}
-
-	// TOFROM: buy TO using FROM
-	if q, ok := quotes[assetTo+assetFrom]; ok && q.Ask > 0 && q.AskQty > 0 {
+	if q, ok := quotes[to+from]; ok && q.Ask > 0 {
 		return amount / q.Ask, true
 	}
-
 	return 0, false
+}
+
+// ==============================
+// Работа с логом
+// ==============================
+
+func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Fatalf("open %s: %v", path, err)
+	}
+	buf := bufio.NewWriter(f)
+	out := io.MultiWriter(os.Stdout, buf)
+	return f, buf, out
 }
