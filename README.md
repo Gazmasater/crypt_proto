@@ -60,28 +60,7 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-
-
-type Config struct {
-	Exchange      string
-	TrianglesFile string
-	BookInterval  string
-
-	FeePerLeg float64 // доля, 0.0004 = 0.04%
-	MinProfit float64 // доля
-
-	// Минимальный старт (обычно USDT). 0 = фильтр выключен.
-	MinStart float64
-
-	// Доля от maxStart, которую считаем безопасной (0..1). Например 0.5.
-	StartFraction float64
-
-	Debug        bool
-	TradeEnabled bool // <<< ДОБАВЛЕНО
-
-	APIKey    string
-	APISecret string
-}
+TRADE_ENABLED=true
 
 
 
