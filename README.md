@@ -93,35 +93,78 @@ type Config struct {
 
 если их нет — падаем назад на API_KEY / API_SECRET.
 
-func LoadConfig() Config {
-	exch := getenvDefault("EXCHANGE", "MEXC")
+func Load() Config {
+	_ = godotenv.Load(".env")
 
-	apiKey := getenvDefault(exch+"_API_KEY", "")
+	ex := strings.ToUpper(strings.TrimSpace(os.Getenv("EXCHANGE")))
+	if ex == "" {
+		ex = "MEXC"
+	}
+
+	tf := strings.TrimSpace(os.Getenv("TRIANGLES_FILE"))
+	if tf == "" {
+		tf = "triangles_markets.csv"
+	}
+
+	bi := strings.TrimSpace(os.Getenv("BOOK_INTERVAL"))
+	if bi == "" {
+		bi = "10ms" // раньше было 100ms, под твой конфиг ставлю 10ms
+	}
+
+	feePct := loadEnvFloat("FEE_PCT", 0.04)         // в процентах, 0.04 => 0.04%
+	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.1)   // в процентах, 0.1 => 0.1%
+
+	// MIN_START_USDT (предпочтительно) или MIN_START
+	minStart := loadEnvFloat("MIN_START_USDT", -1)
+	if minStart < 0 {
+		minStart = loadEnvFloat("MIN_START", 0)
+	}
+
+	startFraction := clamp01(loadEnvFloat("START_FRACTION", 0.5), 0.5)
+
+	debug := strings.ToLower(strings.TrimSpace(os.Getenv("DEBUG"))) == "true"
+
+	// --- API-ключи ---
+	// Пытаемся сначала взять <EXCHANGE>_API_KEY/SECRET, потом API_KEY/API_SECRET
+	apiKey := strings.TrimSpace(os.Getenv(ex + "_API_KEY"))
 	if apiKey == "" {
-		apiKey = getenvDefault("API_KEY", "")
+		apiKey = strings.TrimSpace(os.Getenv("API_KEY"))
 	}
 
-	apiSecret := getenvDefault(exch+"_API_SECRET", "")
+	apiSecret := strings.TrimSpace(os.Getenv(ex + "_API_SECRET"))
 	if apiSecret == "" {
-		apiSecret = getenvDefault("API_SECRET", "")
+		apiSecret = strings.TrimSpace(os.Getenv("API_SECRET"))
 	}
 
-	return Config{
-		Exchange:      exch,
-		TrianglesFile: getenvDefault("TRIANGLES_FILE", "triangles_markets.csv"),
-		BookInterval:  parseDurationEnv("BOOK_INTERVAL", 10*time.Millisecond),
-
-		FeePerLeg:     parseFloatEnvPercent("FEE_PCT", 0.0004),
-		MinProfit:     parseFloatEnvPercent("MIN_PROFIT_PCT", 0.001),
-		MinStartUSDT:  parseFloatEnv("MIN_START_USDT", 2),
-		StartFraction: parseFloatEnv("START_FRACTION", 0.5),
-
-		Debug: parseBoolEnv("DEBUG", false),
-
-		APIKey:    apiKey,
-		APISecret: apiSecret,
+	cfg := Config{
+		Exchange:      ex,
+		TrianglesFile: tf,
+		BookInterval:  bi,
+		FeePerLeg:     feePct / 100.0,   // переводим проценты в долю: 0.04% => 0.0004
+		MinProfit:     minPct / 100.0,   // 0.1% => 0.001
+		MinStart:      minStart,
+		StartFraction: startFraction,
+		Debug:         debug,
+		APIKey:        apiKey,
+		APISecret:     apiSecret,
 	}
+
+	log.Printf("Exchange: %s", cfg.Exchange)
+	log.Printf("Triangles file: %s", cfg.TrianglesFile)
+	log.Printf("Book interval: %s", cfg.BookInterval)
+	log.Printf("Fee per leg: %.4f %% (rate=%.6f)", feePct, cfg.FeePerLeg)
+	log.Printf("Min profit per cycle: %.4f %% (rate=%.6f)", minPct, cfg.MinProfit)
+	log.Printf("Min start amount: %.4f", cfg.MinStart)
+	log.Printf("Start fraction: %.4f", cfg.StartFraction)
+	if cfg.APIKey == "" || cfg.APISecret == "" {
+		log.Printf("API key/secret: NOT SET (торговля отключена, только логи)")
+	} else {
+		log.Printf("API key/secret: loaded for %s", cfg.Exchange)
+	}
+
+	return cfg
 }
+
 
 
 Теперь ты можешь в .env записать, например для MEXC:
