@@ -673,3 +673,18 @@ func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
 	out := io.MultiWriter(os.Stdout, buf)
 	return f, buf, out
 }
+
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/arb/arb.go",
+	"owner": "go-staticcheck",
+	"severity": 4,
+	"message": "possible nil pointer dereference (SA5011)\n\tarb.go:181:5: this check suggests that the pointer can be nil",
+	"source": "go-staticcheck",
+	"startLineNumber": 139,
+	"startColumn": 18,
+	"endLineNumber": 139,
+	"endColumn": 42,
+	"origin": "extHost1"
+}]
