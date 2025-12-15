@@ -60,6 +60,52 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+package mexc
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+type Trader struct {
+	apiKey    string
+	apiSecret string
+	debug     bool
+
+	client  *http.Client
+	baseURL string
+}
+
+func NewTrader(apiKey, apiSecret string, debug bool) *Trader {
+	return &Trader{
+		apiKey:    strings.TrimSpace(apiKey),
+		apiSecret: strings.TrimSpace(apiSecret),
+		debug:     debug,
+		client: &http.Client{
+			Timeout: 5 * time.Second,
+		},
+		baseURL: "https://api.mexc.com",
+	}
+}
+
+func (t *Trader) dlog(format string, args ...any) {
+	if t.debug {
+		log.Printf("[MEXC TRADER] "+format, args...)
+	}
+}
+
+// PlaceMarket отправляет MARKET-ордер на MEXC Spot.
+// quantity — в базовой валюте символа.
+// side: "BUY" или "SELL".
 func (t *Trader) PlaceMarket(
 	ctx context.Context,
 	symbol string,
@@ -107,7 +153,7 @@ func (t *Trader) PlaceMarket(
 	}
 
 	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
-	// тело пустое, Content-Type можно не ставить вообще
+	// Тело пустое, Content-Type можно не ставить
 	// req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	t.dlog("PlaceMarket %s %s qty=%.8f url=%s", side, symbol, quantity, fullURL)
@@ -128,29 +174,15 @@ func (t *Trader) PlaceMarket(
 	return nil
 }
 
+// sign считает HMAC-SHA256(payload) по apiSecret.
+func (t *Trader) sign(payload string) string {
+	mac := hmac.New(sha256.New, []byte(t.apiSecret))
+	mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
+}
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/mexc/trader.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "t.sign undefined (type *Trader has no field or method sign)",
-	"source": "compiler",
-	"startLineNumber": 71,
-	"startColumn": 17,
-	"endLineNumber": 71,
-	"endColumn": 21,
-	"origin": "extHost1"
-}]
+
+
 
 
 
