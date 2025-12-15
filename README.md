@@ -129,6 +129,30 @@ func (t *Trader) PlaceMarket(
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/mexc/trader.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "t.sign undefined (type *Trader has no field or method sign)",
+	"source": "compiler",
+	"startLineNumber": 71,
+	"startColumn": 17,
+	"endLineNumber": 71,
+	"endColumn": 21,
+	"origin": "extHost1"
+}]
+
+
 
 
 
