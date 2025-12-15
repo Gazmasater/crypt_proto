@@ -60,82 +60,33 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-Что сделать в arb/arb.go
+[ARB] +0.130%  USDT→RIO→EUR→USDT  maxStart=57.0318 USDT (57.0318 USDT)  safeStart=17.1095 USDT (17.1095 USDT) (x0.30)  bottleneck=RIOUSDT
+  RIOUSDT (RIO/USDT): bid=0.1474000000 ask=0.1480000000  spread=0.0006000000 (0.40623%)  bidQty=6769.6700 askQty=385.3500
+  RIOEUR (RIO/EUR): bid=0.1263000000 ask=0.1264000000  spread=0.0001000000 (0.07915%)  bidQty=803.0500 askQty=101.2700
+  EURUSDT (EUR/USDT): bid=1.1751000000 ask=1.1752000000  spread=0.0001000000 (0.00851%)  bidQty=38364.0300 askQty=44448.0300
+  Legs execution with fees:
+    leg 1: RIOUSDT  17.109540 USDT → 115.547198 RIO  fee=0.05780250 RIO
+    leg 2: RIOEUR  115.547198 RIO → 14.586314 EUR  fee=0.00729681 EUR
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→RIO→EUR→USDT
+    [REAL EXEC] leg 1: BUY RIOUSDT qty=13.51351351
+    leg 3: EURUSDT  14.586314 EUR → 17.131808 USDT  fee=0.00857019 USDT
 
-Удали саму функцию:
+2025-12-16 00:59:16.215
+[ARB] +0.130%  USDT→RIO→EUR→USDT  maxStart=57.0318 USDT (57.0318 USDT)  safeStart=17.1095 USDT (17.1095 USDT) (x0.30)  bottleneck=RIOUSDT
+  RIOUSDT (RIO/USDT): bid=0.1474000000 ask=0.1480000000  spread=0.0006000000 (0.40623%)  bidQty=6769.6700 askQty=385.3500
+  RIOEUR (RIO/EUR): bid=0.1263000000 ask=0.1264000000  spread=0.0001000000 (0.07915%)  bidQty=517.4400 askQty=101.2700
+  EURUSDT (EUR/USDT): bid=1.1751000000 ask=1.1752000000  spread=0.0001000000 (0.00851%)  bidQty=38364.0300 askQty=44448.0300
+  Legs execution with fees:
+    leg 1: RIOUSDT  17.109540 USDT → 115.547198 RIO  fee=0.05780250 RIO
+    leg 2: RIOEUR  115.547198 RIO → 14.586314 EUR  fee=0.00729681 EUR
+    leg 3: EURUSDT  14.586314 EUR → 17.131808 USDT  fee=0.00857019 USDT
 
-func detectBaseQuote(symbol, a, b string) (base, quote string, ok bool) {
-	if strings.HasPrefix(symbol, a) {
-		return a, b, true
-	}
-	if strings.HasPrefix(symbol, b) {
-		return b, a, true
-	}
-	return "", "", false
-}
-
-
-После этого, скорее всего, будет лишний импорт strings вверху файла.
-В блоке import в arb.go убери "strings" если он больше нигде не нужен:
-
-Было примерно так:
-
-import (
-    "bufio"
-    "context"
-    "fmt"
-    "io"
-    "log"
-    "os"
-    "strings"
-    "sync"
-    "time"
-
-    "crypt_proto/domain"
-)
-
-
-Сделай так:
-
-import (
-    "bufio"
-    "context"
-    "fmt"
-    "io"
-    "log"
-    "os"
-    "sync"
-    "time"
-
-    "crypt_proto/domain"
-)
-
-
-После этого warning про detectBaseQuote исчезнет.
-
-2️⃣ NewRealExecutor — не хватает аргумента
-
-Сообщение:
-
-not enough arguments in call to arb.NewRealExecutor
-have (*mexc.Trader, io.Writer)
-want (arb.SpotTrader, io.Writer, float64)
-
-
-Это потому что мы добавили в RealExecutor третий параметр — fixedStartUSDT (твоя ручная сумма, типа 2 USDT), а в main.go всё ещё вызываем старую сигнатуру.
-
-Что исправить в cmd/cryptarb/main.go
-
-Найди кусок:
-
-trader := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
-consumer.Executor = arb.NewRealExecutor(trader, arbOut)
-
-
-и замени на:
-
-trader := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
-consumer.Executor = arb.NewRealExecutor(trader, arbOut, cfg.TradeAmountUSDT)
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→RIO→EUR→USDT
+    [REAL EXEC] leg 1: BUY RIOUSDT qty=13.51351351
+    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"code":700013,"msg":"Invalid content Type."}
+    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"code":700013,"msg":"Invalid content Type."}
+^C2025/12/16 00:59:25.286374 shutting down...
+2025/12/16 00:59:25.486689 bye
 
 
 
