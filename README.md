@@ -79,6 +79,171 @@ MEXC_API_SECRET=
 
 
 
+package config
+
+import (
+	"log"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/joho/godotenv"
+)
+
+type Config struct {
+	Exchange      string // EXCHANGE=MEXC / KUCOIN / OKX ...
+	TrianglesFile string // TRIANGLES_FILE=triangles_markets.csv
+	BookInterval  string // BOOK_INTERVAL=10ms
+
+	// Комиссия и минимальная прибыль (в долях, а не в процентах).
+	// Пример: 0.0004 = 0.04%
+	FeePerLeg float64 // FEE_PCT
+	MinProfit float64 // MIN_PROFIT_PCT
+
+	// Минимальный старт (обычно в USDT). 0 = фильтр выключен.
+	MinStart float64 // MIN_START_USDT / MIN_START
+
+	// Доля от maxStart, которую считаем безопасной (0..1). Например 0.5.
+	StartFraction float64 // START_FRACTION
+
+	// Логика
+	Debug        bool // DEBUG
+	TradeEnabled bool // TRADE_ENABLED
+
+	// API ключи: для текущей биржи и/или глобальные API_KEY / API_SECRET
+	APIKey    string
+	APISecret string
+}
+
+// package-level флаг для Dlog
+var debug bool
+
+func SetDebug(v bool) { debug = v }
+
+func Dlog(format string, args ...any) {
+	if debug {
+		log.Printf(format, args...)
+	}
+}
+
+// loadEnvFloat читает float из ENV с дефолтом.
+func loadEnvFloat(name string, def float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		log.Printf("bad %s=%q: %v, using default %f", name, raw, err, def)
+		return def
+	}
+	return v
+}
+
+// clamp01 ограничивает значение [0,1], иначе возвращает def.
+func clamp01(v, def float64) float64 {
+	if v <= 0 || v > 1 {
+		return def
+	}
+	return v
+}
+
+func Load() Config {
+	// подхватываем .env, если есть
+	_ = godotenv.Load(".env")
+
+	// Биржа
+	ex := strings.ToUpper(strings.TrimSpace(os.Getenv("EXCHANGE")))
+	if ex == "" {
+		ex = "MEXC"
+	}
+
+	// Файл треугольников
+	tf := strings.TrimSpace(os.Getenv("TRIANGLES_FILE"))
+	if tf == "" {
+		tf = "triangles_markets.csv"
+	}
+
+	// Интервал обновления книги
+	bi := strings.TrimSpace(os.Getenv("BOOK_INTERVAL"))
+	if bi == "" {
+		bi = "10ms"
+	}
+
+	// Проценты из ENV: FEE_PCT, MIN_PROFIT_PCT
+	// Например: FEE_PCT=0.04 => 0.04% => 0.0004
+	feePct := loadEnvFloat("FEE_PCT", 0.04)        // в процентах
+	minPct := loadEnvFloat("MIN_PROFIT_PCT", 0.1)  // в процентах
+
+	feePerLeg := feePct / 100.0
+	minProfit := minPct / 100.0
+
+	// MIN_START_USDT (предпочтительно) или MIN_START
+	minStart := loadEnvFloat("MIN_START_USDT", -1)
+	if minStart < 0 {
+		minStart = loadEnvFloat("MIN_START", 0)
+	}
+
+	// START_FRACTION (0..1)
+	startFraction := clamp01(loadEnvFloat("START_FRACTION", 0.5), 0.5)
+
+	// DEBUG
+	debugFlag := strings.ToLower(strings.TrimSpace(os.Getenv("DEBUG"))) == "true"
+	debug = debugFlag // чтобы Dlog() сразу работал
+
+	// TRADE_ENABLED
+	tradeEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("TRADE_ENABLED"))) == "true"
+
+	// API-ключи: сперва EXCHANGE_API_KEY/SECRET, потом API_KEY/SECRET
+	apiKey := strings.TrimSpace(os.Getenv(ex + "_API_KEY"))
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("API_KEY"))
+	}
+
+	apiSecret := strings.TrimSpace(os.Getenv(ex + "_API_SECRET"))
+	if apiSecret == "" {
+		apiSecret = strings.TrimSpace(os.Getenv("API_SECRET"))
+	}
+
+	cfg := Config{
+		Exchange:      ex,
+		TrianglesFile: tf,
+		BookInterval:  bi,
+		FeePerLeg:     feePerLeg,
+		MinProfit:     minProfit,
+		MinStart:      minStart,
+		StartFraction: startFraction,
+		Debug:         debugFlag,
+		TradeEnabled:  tradeEnabled,
+		APIKey:        apiKey,
+		APISecret:     apiSecret,
+	}
+
+	log.Printf("Exchange: %s", cfg.Exchange)
+	log.Printf("Triangles file: %s", cfg.TrianglesFile)
+	log.Printf("Book interval: %s", cfg.BookInterval)
+	log.Printf("Fee per leg: %.4f %% (rate=%.6f)", feePct, cfg.FeePerLeg)
+	log.Printf("Min profit per cycle: %.4f %% (rate=%.6f)", minPct, cfg.MinProfit)
+	log.Printf("Min start amount: %.4f", cfg.MinStart)
+	log.Printf("Start fraction: %.4f", cfg.StartFraction)
+	log.Printf("Debug: %v", cfg.Debug)
+	log.Printf("Trade enabled: %v", cfg.TradeEnabled)
+
+	if cfg.APIKey == "" || cfg.APISecret == "" {
+		log.Printf("API key/secret: NOT SET (торговля по API невозможна)")
+	} else {
+		log.Printf("API key/secret: loaded for %s", cfg.Exchange)
+	}
+
+	return cfg
+}
+
+
+
+
+
+
+
 
 
 
