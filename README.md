@@ -53,20 +53,11 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 (pprof) quit
 
 
-ms, okMS := domain.ComputeMaxStartTopOfBook(tr, quotes, c.FeePerLeg)
-if okMS {
-    safeStart := ms.MaxStart * sf
-
-    // ФИЛЬТР: MIN_START_USDT сравниваем по safeStart в USDT
-    if c.MinStart > 0 {
-        safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, quotes)
-        // если не смогли перевести в USDT — треугольник отбрасываем,
-        // раз порог задан в USDT
-        if !okConv || safeUSDT < c.MinStart {
-            continue
-        }
-    }
-}
+2025-12-15 10:36:38.319
+[ARB] +3.262%  BTC→USDT→BDX→BTC  maxStart=0.0002 BTC (21.6884 USDT)  safeStart=0.0001 BTC (10.8442 USDT) (x0.50)  bottleneck=BDXBTC
+  BTCUSDT (BTC/USDT): bid=89728.6900000000 ask=89728.7900000000  spread=0.1000000000 (0.00011%)  bidQty=2.3168 askQty=0.0056
+  BDXUSDT (BDX/USDT): bid=0.0895000000 ask=0.0895500000  spread=0.0000500000 (0.05585%)  bidQty=10409.0500 askQty=8363.8500
+  BDXBTC (BDX/BTC): bid=0.0000010318 ask=0.0000010322  spread=0.0000000004 (0.03876%)  bidQty=242.0000 askQty=8292.0000
 
 
 
