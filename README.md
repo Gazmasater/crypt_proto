@@ -58,6 +58,27 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 (pprof) quit
 
 
+# --- Основное ---
+EXCHANGE=MEXC
+TRIANGLES_FILE=triangles_markets.csv
+BOOK_INTERVAL=10ms
+
+# --- Арбитраж ---
+FEE_PCT=0.04
+MIN_PROFIT_PCT=0.1
+MIN_START_USDT=2
+START_FRACTION=0.5
+DEBUG=false
+
+# --- Торговля ---
+TRADE_ENABLED=false   # <<< ГЛАВНЫЙ ФЛАГ
+
+# --- API ---
+MEXC_API_KEY=
+MEXC_API_SECRET=
+
+
+
 
 
 
