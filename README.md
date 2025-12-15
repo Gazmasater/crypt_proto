@@ -60,81 +60,32 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (t *Trader) PlaceMarket(
-	ctx context.Context,
-	symbol string,
-	side string,
-	quantity float64,
-) error {
-	if quantity <= 0 {
-		return fmt.Errorf("quantity must be > 0, got %f", quantity)
-	}
-	side = strings.ToUpper(strings.TrimSpace(side))
-	if side != "BUY" && side != "SELL" {
-		return fmt.Errorf("invalid side %q", side)
-	}
+[ARB] +0.189%  USDT→ULTIMA→EUR→USDT  maxStart=2.2651 USDT (2.2651 USDT)  safeStart=2.2651 USDT (2.2651 USDT) (x1.00)  bottleneck=ULTIMAEUR
+  ULTIMAUSDT (ULTIMA/USDT): bid=5645.1400000000 ask=5659.9100000000  spread=14.7700000000 (0.26130%)  bidQty=0.0055 askQty=0.0005
+  ULTIMAEUR (ULTIMA/EUR): bid=4834.1300000000 ask=4858.7700000000  spread=24.6400000000 (0.50841%)  bidQty=0.0004 askQty=0.0048
+  EURUSDT (EUR/USDT): bid=1.1748000000 ask=1.1749000000  spread=0.0001000000 (0.00851%)  bidQty=48228.6200 askQty=51617.4300
+  Legs execution with fees:
+    leg 1: ULTIMAUSDT  2.265097 USDT → 0.000400 ULTIMA  fee=0.00000020 ULTIMA
+    leg 2: ULTIMAEUR  0.000400 ULTIMA → 1.932685 EUR  fee=0.00096683 EUR
+    leg 3: EURUSDT  1.932685 EUR → 2.269383 USDT  fee=0.00113526 USDT
 
-	endpoint := "/api/v3/order"
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→ULTIMA→EUR→USDT
+    [REAL EXEC] leg 1: BUY ULTIMAUSDT qty=0.00035336
+2025-12-16 01:44:07.389
+[ARB] +0.189%  USDT→ULTIMA→EUR→USDT  maxStart=2.2651 USDT (2.2651 USDT)  safeStart=2.2651 USDT (2.2651 USDT) (x1.00)  bottleneck=ULTIMAEUR
+  ULTIMAUSDT (ULTIMA/USDT): bid=5652.1400000000 ask=5659.9100000000  spread=7.7700000000 (0.13738%)  bidQty=0.0052 askQty=0.0005
+  ULTIMAEUR (ULTIMA/EUR): bid=4834.1300000000 ask=4858.7700000000  spread=24.6400000000 (0.50841%)  bidQty=0.0004 askQty=0.0048
+  EURUSDT (EUR/USDT): bid=1.1748000000 ask=1.1749000000  spread=0.0001000000 (0.00851%)  bidQty=48228.6200 askQty=51617.4300
+  Legs execution with fees:
+    leg 1: ULTIMAUSDT  2.265097 USDT → 0.000400 ULTIMA  fee=0.00000020 ULTIMA
+    leg 2: ULTIMAEUR  0.000400 ULTIMA → 1.932685 EUR  fee=0.00096683 EUR
+    leg 3: EURUSDT  1.932685 EUR → 2.269383 USDT  fee=0.00113526 USDT
 
-	// Базовые параметры
-	params := url.Values{}
-	params.Set("symbol", symbol)
-	params.Set("side", side)
-	params.Set("type", "MARKET")
-	params.Set("quantity", fmt.Sprintf("%.8f", quantity))
-	params.Set("recvWindow", "5000")
-	params.Set("timestamp", fmt.Sprintf("%d", time.Now().UnixMilli()))
-
-	// Подпись на основе queryString
-	queryString := params.Encode()
-	signature := t.sign(queryString)
-
-	// Формируем JSON-тело
-	bodyMap := map[string]string{
-		"symbol":     symbol,
-		"side":       side,
-		"type":       "MARKET",
-		"quantity":   fmt.Sprintf("%.8f", quantity),
-		"recvWindow": "5000",
-		"timestamp":  params.Get("timestamp"),
-		"signature":  signature,
-	}
-	jsonBody, err := json.Marshal(bodyMap)
-	if err != nil {
-		return fmt.Errorf("marshal json: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		t.baseURL+endpoint,
-		strings.NewReader(string(jsonBody)),
-	)
-	if err != nil {
-		return fmt.Errorf("new request: %w", err)
-	}
-
-	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	t.dlog("PlaceMarket %s %s qty=%.8f body=%s", side, symbol, quantity, string(jsonBody))
-
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("http do: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("mexc order error: status=%d body=%s", resp.StatusCode, string(respBody))
-	}
-
-	t.dlog("PlaceMarket OK: %s", string(respBody))
-	return nil
-}
-
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→ULTIMA→EUR→USDT
+    [REAL EXEC] leg 1: BUY ULTIMAUSDT qty=0.00035336
+    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"code":700004,"msg":"Mandatory parameter 'signature' was not sent, was empty/null, or malformed."}
+    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"code":700004,"msg":"Mandatory parameter 'signature' was not sent, was empty/null, or malformed."}
+^C2025/12/16 01:44:13.321650 shutting down...
 
 
 
