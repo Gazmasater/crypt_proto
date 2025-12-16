@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"crypt_proto/arb"
 	"crypt_proto/config"
@@ -20,17 +19,21 @@ import (
 )
 
 func main() {
+	// pprof
 	go func() {
 		log.Println("pprof on http://localhost:6060/debug/pprof/")
 		_ = http.ListenAndServe("localhost:6060", nil)
 	}()
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
 	cfg := config.Load()
 
+	// Context / signals
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Triangles
 	triangles, symbols, indexBySymbol, err := domain.LoadTriangles(cfg.TrianglesFile)
 	if err != nil {
 		log.Fatalf("load triangles: %v", err)
@@ -44,6 +47,7 @@ func main() {
 	log.Printf("треугольников: %d", len(triangles))
 	log.Printf("символов для подписки: %d", len(symbols))
 
+	// Exchange feed
 	var feed exchange.MarketDataFeed
 	switch cfg.Exchange {
 	case "MEXC":
@@ -53,47 +57,55 @@ func main() {
 	default:
 		log.Fatalf("unknown EXCHANGE=%q (expected MEXC or KUCOIN)", cfg.Exchange)
 	}
+	log.Printf("Using exchange: %s", feed.Name())
 
+	// Log output
 	logFile, logBuf, arbOut := arb.OpenLogWriter("arbitrage.log")
 	defer logFile.Close()
 	defer logBuf.Flush()
 
+	// Events channel
 	events := make(chan domain.Event, 8192)
+
 	var wg sync.WaitGroup
 
+	// Consumer
 	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStart, arbOut)
 	consumer.StartFraction = cfg.StartFraction
 
+	// Trading toggles (если в твоём Config этих полей нет — добавь их в config.go)
 	consumer.TradeEnabled = cfg.TradeEnabled
 	consumer.TradeAmountUSDT = cfg.TradeAmountUSDT
-	consumer.TradeCooldown = time.Duration(cfg.TradeCooldownMs) * time.Millisecond
+	consumer.TradeCooldown = cfg.TradeCooldown
 
-	// executor
+	// Executor
 	if cfg.Exchange == "MEXC" && cfg.TradeEnabled && cfg.APIKey != "" && cfg.APISecret != "" {
-		caps, err := mexc.FetchSymbolCapsMEXC(ctx)
-		if err != nil {
-			log.Printf("WARN: cannot fetch exchangeInfo filters: %v", err)
-		}
-		filters := make(map[string]arb.SymbolFilter)
-		for sym, c := range caps {
-			filters[sym] = arb.SymbolFilter{StepSize: c.StepSize, MinQty: c.MinQty}
+		tr := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
+
+		// startUSDT — фиксированная сумма на сделку (например 2)
+		startUSDT := cfg.TradeAmountUSDT
+		if startUSDT <= 0 {
+			startUSDT = 2.0
 		}
 
-		tr := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
-		consumer.Executor = arb.NewRealExecutor(tr, arbOut, filters)
-		log.Printf("Executor: REAL")
+		consumer.Executor = arb.NewRealExecutor(tr, arbOut, startUSDT)
+		log.Printf("Executor: REAL (startUSDT=%.6f)", startUSDT)
 	} else {
-		consumer.Executor = arb.NewDryRunExecutor(arbOut)
-		log.Printf("Executor: DRY-RUN")
+		consumer.Executor = arb.NewNoopExecutor() // безопаснее, чем несуществующий DryRun
+		log.Printf("Executor: NOOP (trade disabled or missing keys)")
 	}
 
+	// Start consumer
 	consumer.Start(ctx, events, triangles, indexBySymbol, &wg)
+
+	// Start feed
 	feed.Start(ctx, &wg, symbols, cfg.BookInterval, events)
 
+	// Wait stop
 	<-ctx.Done()
 	log.Println("shutting down...")
 
-	// НЕ закрываем events (иначе WS горутины могут паниковать)
+	// ВАЖНО: events не закрываем — WS-горутин(ы) могут ещё писать и словить panic
 	wg.Wait()
 	log.Println("bye")
 }
