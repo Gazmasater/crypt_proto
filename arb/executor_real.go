@@ -11,6 +11,12 @@ import (
 	"crypt_proto/domain"
 )
 
+// SpotTrader должен УМЕТЬ внутри себя:
+//   - SmartMarketBuyUSDT: корректно сформировать MARKET BUY за фиксированный USDT
+//     (на MEXC это часто либо quoteOrderQty, либо quantity — зависит от пары/правил;
+//     нормализацию/точность делай внутри mexc.Trader)
+//   - SmartMarketSellQty: корректно SELL по quantity (нормализация/точность внутри)
+//   - GetBalance: читать free баланс (или доступный)
 type SpotTrader interface {
 	SmartMarketBuyUSDT(ctx context.Context, symbol string, usdt float64, ask float64) (string, error)
 	SmartMarketSellQty(ctx context.Context, symbol string, qty float64) (string, error)
@@ -27,7 +33,7 @@ type RealExecutor struct {
 	// safety чтобы не словить Oversold на SELL
 	SellSafety float64
 
-	// анти-спам, чтобы один и тот же треугольник не пытался исполняться 50 раз/сек
+	// анти-спам: один и тот же треугольник не исполняем чаще Cooldown
 	Cooldown time.Duration
 	lastExec map[string]time.Time
 }
@@ -45,6 +51,12 @@ func NewRealExecutor(tr SpotTrader, out io.Writer, startUSDT float64) *RealExecu
 
 func (e *RealExecutor) Name() string { return "REAL" }
 
+// Execute исполняет ТОЛЬКО безопасный класс треугольников:
+// USDT -> A -> B -> USDT,
+// где:
+// leg1: BUY A за USDT
+// leg2: SELL A в B
+// leg3: SELL B в USDT
 func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes map[string]domain.Quote, startUSDT float64) error {
 	start := e.StartUSDT
 	if startUSDT > 0 {
@@ -54,7 +66,7 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 		return fmt.Errorf("start<=0")
 	}
 
-	// cooldown по имени треугольника
+	// cooldown
 	if e.Cooldown > 0 {
 		if last, ok := e.lastExec[t.Name]; ok && time.Since(last) < e.Cooldown {
 			return nil
@@ -64,112 +76,136 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 
 	fmt.Fprintf(e.out, "  [REAL EXEC] start=%.6f USDT triangle=%s\n", start, t.Name)
 
-	// ожидаем, что стартовая валюта реально USDT
-	curAsset := "USDT"
-	curAmount := start
+	// Требуем строго USDT старт
+	if !strings.EqualFold(t.Legs[0].From, "USDT") {
+		return fmt.Errorf("unsupported triangle start asset: leg1.From=%s (expected USDT)", t.Legs[0].From)
+	}
 
-	// LEG 1: BUY (USDT -> A)
+	// -----------------------------------
+	// LEG 1: BUY A за USDT
+	// -----------------------------------
 	leg1 := t.Legs[0]
+
+	// Должно быть направление USDT -> A
+	if !strings.EqualFold(leg1.From, "USDT") {
+		return fmt.Errorf("leg1 must start from USDT, got %s", leg1.From)
+	}
+	assetA := leg1.To
+	if strings.EqualFold(assetA, "USDT") {
+		return fmt.Errorf("leg1 invalid: To=USDT")
+	}
+
 	q1, ok := quotes[leg1.Symbol]
 	if !ok || q1.Ask <= 0 {
 		return fmt.Errorf("no quote/ask for %s", leg1.Symbol)
 	}
 
-	if !legMatchesFlow(leg1, curAsset) {
-		return fmt.Errorf("leg1 flow mismatch: have=%s leg=%s", curAsset, leg1.Symbol)
+	// Баланс A до покупки
+	aBefore, err := e.trader.GetBalance(ctx, assetA)
+	if err != nil {
+		return fmt.Errorf("leg1 balance(before) error: %w", err)
 	}
 
-	// покупаем на 2 USDT
-	fmt.Fprintf(e.out, "    [REAL EXEC] leg 1: BUY %s by USDT=%.6f\n", leg1.Symbol, curAmount)
-	_, err := e.trader.SmartMarketBuyUSDT(ctx, leg1.Symbol, curAmount, q1.Ask)
-	if err != nil {
+	fmt.Fprintf(e.out, "    [REAL EXEC] leg 1: BUY %s by USDT=%.6f (ask=%.10f)\n", leg1.Symbol, start, q1.Ask)
+	if _, err := e.trader.SmartMarketBuyUSDT(ctx, leg1.Symbol, start, q1.Ask); err != nil {
 		return fmt.Errorf("leg1 error: %w", err)
 	}
 
-	// после покупки: узнаём что реально купили (баланс base актива leg1)
-	nextAsset1 := leg1.To // USDT->A по идее
-	if nextAsset1 == "USDT" {
-		nextAsset1 = leg1.From
-	}
-	bal1, err := e.trader.GetBalance(ctx, nextAsset1)
+	// Баланс A после покупки, берём дельту
+	aAfter, err := e.trader.GetBalance(ctx, assetA)
 	if err != nil {
-		return fmt.Errorf("leg1 balance error: %w", err)
+		return fmt.Errorf("leg1 balance(after) error: %w", err)
 	}
-	curAsset = nextAsset1
-	curAmount = bal1
-	if curAmount <= 0 {
-		return fmt.Errorf("leg1 result balance=0 asset=%s", curAsset)
+	aDelta := aAfter - aBefore
+	if aDelta <= 0 {
+		return fmt.Errorf("leg1 bought delta<=0: before=%.12f after=%.12f delta=%.12f %s", aBefore, aAfter, aDelta, assetA)
 	}
 
-	// LEG 2: SELL/BUY в зависимости от Dir, но мы делаем проще:
-	// Мы всегда хотим перейти curAsset -> nextAsset по leg.Dir.
+	// -----------------------------------
+	// LEG 2: SELL A -> B
+	// -----------------------------------
 	leg2 := t.Legs[1]
-	if !legMatchesFlow(leg2, curAsset) {
-		return fmt.Errorf("leg2 flow mismatch: have=%s leg=%s", curAsset, leg2.Symbol)
+
+	// Требуем: leg2.From == A (мы должны иметь A)
+	if !strings.EqualFold(leg2.From, assetA) {
+		return fmt.Errorf("unsupported leg2 flow: have=%s need leg2.From=%s (triangle=%s)", assetA, leg2.From, t.Name)
+	}
+	assetB := leg2.To
+	if strings.EqualFold(assetB, assetA) {
+		return fmt.Errorf("leg2 invalid: To == From (%s)", assetB)
 	}
 
-	// если leg.Dir>0: From->To это SELL base->quote
-	// если leg.Dir<0: From->To это BUY base<-quote (то есть curAsset=quote), мы должны BUY base за quote qty
-	// У нас в SpotTrader только:
-	// - SmartMarketSellQty(symbol, qty)
-	// - SmartMarketBuyUSDT(symbol, usdt, ask) (это только когда quote=USDT)
-	//
-	// Поэтому для универсальности:
-	// - Если мы на leg2 должны ПРОДАТЬ текущий актив -> используем SELL qty.
-	// - Если должны КУПИТЬ base за quote и quote != USDT — пока НЕ делаем “BUY quantity” в Executor,
-	//   а делаем SELL на другом направлении через правильный symbol (в домене Dir уже отражает направление).
-	//
-	// Практически для твоих треугольников USDT→X→USDC→USDT:
-	// leg2 обычно SELL XUSDC, т.е. SELL qty — подходит.
-
-	fmt.Fprintf(e.out, "    [REAL EXEC] leg 2: SELL %s qty=%.12f\n", leg2.Symbol, curAmount)
-	sell2 := curAmount * e.SellSafety
-	if sell2 <= 0 {
-		return fmt.Errorf("leg2 qty<=0 after safety")
+	// Для текущего executor — leg2 должен быть SELL (Dir>0), чтобы можно было продать quantity
+	// Если Dir<0 — это BUY base за quote (а у нас нет универсального buy для B!=USDT)
+	if leg2.Dir <= 0 {
+		return fmt.Errorf("leg2 requires BUY (Dir<0) which is not supported safely yet: %s", leg2.Symbol)
 	}
-	_, err = e.trader.SmartMarketSellQty(ctx, leg2.Symbol, sell2)
+
+	// Баланс B до
+	bBefore, err := e.trader.GetBalance(ctx, assetB)
 	if err != nil {
+		return fmt.Errorf("leg2 balance(before) error: %w", err)
+	}
+
+	sellA := aDelta * e.SellSafety
+	if sellA <= 0 {
+		return fmt.Errorf("leg2 qty<=0 after safety (aDelta=%.12f)", aDelta)
+	}
+
+	fmt.Fprintf(e.out, "    [REAL EXEC] leg 2: SELL %s qty=%.12f (raw=%.12f)\n", leg2.Symbol, sellA, aDelta)
+	if _, err := e.trader.SmartMarketSellQty(ctx, leg2.Symbol, sellA); err != nil {
 		return fmt.Errorf("leg2 error: %w", err)
 	}
 
-	// после продажи: баланс следующего актива
-	nextAsset2 := leg2.To
-	if strings.ToUpper(nextAsset2) == strings.ToUpper(curAsset) {
-		nextAsset2 = leg2.From
-	}
-	bal2, err := e.trader.GetBalance(ctx, nextAsset2)
+	// Дельта B
+	bAfter, err := e.trader.GetBalance(ctx, assetB)
 	if err != nil {
-		return fmt.Errorf("leg2 balance error: %w", err)
+		return fmt.Errorf("leg2 balance(after) error: %w", err)
 	}
-	curAsset = nextAsset2
-	curAmount = bal2
-	if curAmount <= 0 {
-		return fmt.Errorf("leg2 result balance=0 asset=%s", curAsset)
+	bDelta := bAfter - bBefore
+	if bDelta <= 0 {
+		return fmt.Errorf("leg2 got delta<=0: before=%.12f after=%.12f delta=%.12f %s", bBefore, bAfter, bDelta, assetB)
 	}
 
-	// LEG 3: обычно SELL USDCUSDT
+	// -----------------------------------
+	// LEG 3: SELL B -> USDT
+	// -----------------------------------
 	leg3 := t.Legs[2]
-	if !legMatchesFlow(leg3, curAsset) {
-		return fmt.Errorf("leg3 flow mismatch: have=%s leg=%s", curAsset, leg3.Symbol)
+
+	// Требуем: leg3.From == B и leg3.To == USDT
+	if !strings.EqualFold(leg3.From, assetB) {
+		return fmt.Errorf("unsupported leg3 flow: have=%s need leg3.From=%s (triangle=%s)", assetB, leg3.From, t.Name)
+	}
+	if !strings.EqualFold(leg3.To, "USDT") {
+		return fmt.Errorf("leg3 must end in USDT, got %s", leg3.To)
+	}
+	if leg3.Dir <= 0 {
+		return fmt.Errorf("leg3 requires BUY (Dir<0) which is not supported safely yet: %s", leg3.Symbol)
 	}
 
-	fmt.Fprintf(e.out, "    [REAL EXEC] leg 3: SELL %s qty=%.12f\n", leg3.Symbol, curAmount)
-	sell3 := curAmount * e.SellSafety
-	if sell3 <= 0 {
-		return fmt.Errorf("leg3 qty<=0 after safety")
+	usdtBefore, _ := e.trader.GetBalance(ctx, "USDT")
+
+	sellB := bDelta * e.SellSafety
+	if sellB <= 0 {
+		return fmt.Errorf("leg3 qty<=0 after safety (bDelta=%.12f)", bDelta)
 	}
-	_, err = e.trader.SmartMarketSellQty(ctx, leg3.Symbol, sell3)
-	if err != nil {
+
+	fmt.Fprintf(e.out, "    [REAL EXEC] leg 3: SELL %s qty=%.12f (raw=%.12f)\n", leg3.Symbol, sellB, bDelta)
+	if _, err := e.trader.SmartMarketSellQty(ctx, leg3.Symbol, sellB); err != nil {
 		return fmt.Errorf("leg3 error: %w", err)
 	}
 
-	// финальный USDT баланс (опционально)
-	usdtBal, _ := e.trader.GetBalance(ctx, "USDT")
-	fmt.Fprintf(e.out, "  [REAL EXEC] done triangle %s  USDT_balance=%.6f\n", t.Name, math.Max(0, usdtBal))
-	return nil
-}
+	usdtAfter, _ := e.trader.GetBalance(ctx, "USDT")
+	usdtDelta := usdtAfter - usdtBefore
 
-func legMatchesFlow(leg domain.Leg, have string) bool {
-	// leg.From/To — это уже “логическая” цепочка в Triangle
-	return strings.EqualFold(leg.From, have) || strings.EqualFold(leg.To, have)
+	fmt.Fprintf(
+		e.out,
+		"  [REAL EXEC] done triangle %s  USDT_before=%.6f USDT_after=%.6f delta=%.6f\n",
+		t.Name,
+		math.Max(0, usdtBefore),
+		math.Max(0, usdtAfter),
+		usdtDelta,
+	)
+
+	return nil
 }
