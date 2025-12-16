@@ -61,17 +61,69 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-[ARB] +0.141%  USDT→BTC→BDX→USDT  maxStart=64.3597 USDT (64.3597 USDT)  safeStart=64.3597 USDT (64.3597 USDT) (x1.00)  bottleneck=BDXUSDT
-  BTCUSDT (BTC/USDT): bid=86213.0000000000 ask=86217.2200000000  spread=4.2200000000 (0.00489%)  bidQty=0.0023 askQty=5.2859
-  BDXBTC (BDX/BTC): bid=0.0000010394 ask=0.0000010413  spread=0.0000000019 (0.18263%)  bidQty=586.0000 askQty=2890.0000
-  BDXUSDT (BDX/USDT): bid=0.0900400000 ask=0.0902600000  spread=0.0002200000 (0.24404%)  bidQty=716.1600 askQty=2629.8400
-  Legs execution with fees:
-    leg 1: BTCUSDT  64.359750 USDT → 0.000746 BTC  fee=0.00000037 BTC
-    leg 2: BDXBTC  0.000746 BTC → 716.160000 BDX  fee=0.35825913 BDX
-    leg 3: BDXUSDT  716.160000 BDX → 64.450805 USDT  fee=0.03224152 USDT
+1.2. Новый normalizeQty
 
-  [REAL EXEC] start=2.000000 USDT triangle=USDT→BTC→BDX→USDT
-    [REAL EXEC] leg 1: qty<=0 after normalize (raw=0.0000231972) (BUY BTCUSDT)
+Где-нибудь рядом с RealExecutor/legExec добавь/замени функцию на такую:
+
+// normalizeQty округляет объём вниз до допустимого количества знаков.
+// Для дорогих активов, например BTC, даём больше знаков, чтобы не уйти в 0.
+// Для остального оставляем более грубую точность, чтобы не ловить "quantity scale is invalid".
+func normalizeQty(symbol string, q float64) float64 {
+	if q <= 0 {
+		return 0
+	}
+
+	// по умолчанию 3 знака (подходит для TON, GIGGLE и т.п.)
+	decimals := 3
+
+	// для BTC-пар даём 6 знаков (BTCUSDT, BTCUSDC и т.п.)
+	if strings.HasPrefix(symbol, "BTC") {
+		decimals = 6
+	}
+
+	factor := math.Pow10(decimals)
+	return math.Floor(q*factor) / factor
+}
+
+2. Используем normalizeQty в ExecuteTriangle
+
+В RealExecutor.ExecuteTriangle у тебя сейчас логика типа:
+
+for i, lg := range execs {
+    leg := t.Legs[i]
+
+    side := ""
+    var qtyRaw float64
+
+    if leg.Dir > 0 {
+        side = "SELL"
+        qtyRaw = lg.AmountIn
+    } else {
+        side = "BUY"
+        qtyRaw = lg.AmountOut
+    }
+
+    qty := normalizeQty(qtyRaw)
+    if qty <= 0 {
+        e.log("    [REAL EXEC] leg %d: qty<=0 after normalize (raw=%.10f) (%s %s)", i+1, qtyRaw, side, lg.Symbol)
+        return
+    }
+
+    e.log("    [REAL EXEC] leg %d: %s %s qty=%.8f (raw=%.10f)", i+1, side, lg.Symbol, qty, qtyRaw)
+
+    if err := e.trader.PlaceMarket(ctx, lg.Symbol, side, qty); err != nil {
+        e.log("    [REAL EXEC] leg %d ERROR: %v", i+1, err)
+        return
+    }
+}
+
+
+Замени вызов normalizeQty на вариант с символом:
+
+    qty := normalizeQty(lg.Symbol, qtyRaw)
+
+
+Остальное можно оставить как есть.
 
 
 
