@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -21,16 +20,36 @@ type Consumer struct {
 	MinProfit     float64
 	MinStart      float64
 	StartFraction float64
-	writer        io.Writer
+
+	TradeEnabled    bool
+	TradeAmountUSDT float64
+	TradeCooldown   time.Duration
+
+	Executor Executor
+
+	writer io.Writer
+
+	// анти-спам/анти-ддос по трейду
+	mu        sync.Mutex
+	inFlight  bool
+	lastTrade map[int]time.Time
+	lastPrint map[int]time.Time
+	minPrint  time.Duration
 }
 
 func NewConsumer(feePerLeg, minProfit, minStart float64, out io.Writer) *Consumer {
 	return &Consumer{
-		FeePerLeg:     feePerLeg,
-		MinProfit:     minProfit,
-		MinStart:      minStart,
-		StartFraction: 0.5,
-		writer:        out,
+		FeePerLeg:       feePerLeg,
+		MinProfit:       minProfit,
+		MinStart:        minStart,
+		StartFraction:   0.5,
+		TradeEnabled:    false,
+		TradeAmountUSDT: 2.0,
+		TradeCooldown:   800 * time.Millisecond,
+		writer:          out,
+		lastTrade:       make(map[int]time.Time),
+		lastPrint:       make(map[int]time.Time),
+		minPrint:        5 * time.Millisecond,
 	}
 }
 
@@ -55,8 +74,6 @@ func (c *Consumer) run(
 	indexBySymbol map[string][]int,
 ) {
 	quotes := make(map[string]domain.Quote)
-	lastPrint := make(map[int]time.Time)
-	const minPrintInterval = 5 * time.Millisecond
 
 	sf := c.StartFraction
 	if sf <= 0 || sf > 1 {
@@ -65,18 +82,23 @@ func (c *Consumer) run(
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
+
 		case ev, ok := <-events:
 			if !ok {
 				return
 			}
 
 			prev, okPrev := quotes[ev.Symbol]
-			if okPrev && prev.Bid == ev.Bid && prev.Ask == ev.Ask &&
+			if okPrev &&
+				prev.Bid == ev.Bid && prev.Ask == ev.Ask &&
 				prev.BidQty == ev.BidQty && prev.AskQty == ev.AskQty {
 				continue
 			}
 
 			quotes[ev.Symbol] = domain.Quote{Bid: ev.Bid, Ask: ev.Ask, BidQty: ev.BidQty, AskQty: ev.AskQty}
+
 			trIDs := indexBySymbol[ev.Symbol]
 			if len(trIDs) == 0 {
 				continue
@@ -98,6 +120,8 @@ func (c *Consumer) run(
 				}
 
 				safeStart := ms.MaxStart * sf
+
+				// фильтр по MIN_START_USDT (по safeStart)
 				if c.MinStart > 0 {
 					safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, quotes)
 					if !okConv || safeUSDT < c.MinStart {
@@ -105,19 +129,50 @@ func (c *Consumer) run(
 					}
 				}
 
-				if last, okLast := lastPrint[id]; okLast && now.Sub(last) < minPrintInterval {
-					continue
+				// анти-спам печати
+				if last, okLast := c.lastPrint[id]; okLast && now.Sub(last) < c.minPrint {
+					// но торговлю можем всё равно запускать (ниже), печать — отдельно
+				} else {
+					c.lastPrint[id] = now
+					msCopy := ms
+					c.printTriangle(now, tr, prof, quotes, &msCopy, sf)
 				}
-				lastPrint[id] = now
 
-				msCopy := ms
-				c.printTriangle(now, tr, prof, quotes, &msCopy, sf)
+				// торговля
+				c.tryTrade(ctx, now, id, tr, quotes)
 			}
-
-		case <-ctx.Done():
-			return
 		}
 	}
+}
+
+func (c *Consumer) tryTrade(ctx context.Context, now time.Time, id int, tr domain.Triangle, quotes map[string]domain.Quote) {
+	if !c.TradeEnabled || c.Executor == nil {
+		return
+	}
+
+	// cooldown per triangle
+	c.mu.Lock()
+	if last, ok := c.lastTrade[id]; ok && now.Sub(last) < c.TradeCooldown {
+		c.mu.Unlock()
+		return
+	}
+	if c.inFlight {
+		c.mu.Unlock()
+		return
+	}
+	c.inFlight = true
+	c.lastTrade[id] = now
+	c.mu.Unlock()
+
+	go func() {
+		defer func() {
+			c.mu.Lock()
+			c.inFlight = false
+			c.mu.Unlock()
+		}()
+
+		_ = c.Executor.Execute(ctx, tr, quotes, c.TradeAmountUSDT)
+	}()
 }
 
 func (c *Consumer) printTriangle(
@@ -131,35 +186,11 @@ func (c *Consumer) printTriangle(
 	w := c.writer
 	fmt.Fprintf(w, "%s\n", ts.Format("2006-01-02 15:04:05.000"))
 
-	// Если MaxStartInfo нет (ms == nil) — печатаем "короткий" формат и уходим.
 	if ms == nil {
 		fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
-		for _, leg := range t.Legs {
-			q := quotes[leg.Symbol]
-			mid := (q.Bid + q.Ask) / 2
-			spreadAbs := q.Ask - q.Bid
-			spreadPct := 0.0
-			if mid > 0 {
-				spreadPct = spreadAbs / mid * 100
-			}
-			side := ""
-			if leg.Dir > 0 {
-				side = fmt.Sprintf("%s/%s", leg.From, leg.To)
-			} else {
-				side = fmt.Sprintf("%s/%s", leg.To, leg.From)
-			}
-			fmt.Fprintf(w, "  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
-				leg.Symbol, side,
-				q.Bid, q.Ask,
-				spreadAbs, spreadPct,
-				q.BidQty, q.AskQty,
-			)
-		}
 		fmt.Fprintln(w)
 		return
 	}
-
-	// ----- ниже ms уже гарантированно не nil -----
 
 	bneckSym := ""
 	if ms.BottleneckLeg >= 0 && ms.BottleneckLeg < len(t.Legs) {
@@ -208,123 +239,20 @@ func (c *Consumer) printTriangle(
 			q.BidQty, q.AskQty,
 		)
 	}
-
-	if c.FeePerLeg > 0 {
-		execs, okExec := simulateTriangleExecution(t, quotes, ms.StartAsset, safeStart, c.FeePerLeg)
-		if okExec {
-			fmt.Fprintln(w, "  Legs execution with fees:")
-			for i, e := range execs {
-				fmt.Fprintf(w,
-					"    leg %d: %s  %.6f %s → %.6f %s  fee=%.8f %s\n",
-					i+1, e.Symbol,
-					e.AmountIn, e.From,
-					e.AmountOut, e.To,
-					e.FeeAmount, e.FeeAsset,
-				)
-			}
-		}
-	}
-
 	fmt.Fprintln(w)
 }
 
-// ==============================
-// Симуляция исполнения треугольника
-// ==============================
+// ===== utils =====
 
-type legExec struct {
-	Symbol    string
-	From      string
-	To        string
-	AmountIn  float64
-	AmountOut float64
-	FeeAmount float64
-	FeeAsset  string
+func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Fatalf("open %s: %v", path, err)
+	}
+	buf := bufio.NewWriter(f)
+	out := io.MultiWriter(os.Stdout, buf)
+	return f, buf, out
 }
-
-func simulateTriangleExecution(
-	t domain.Triangle,
-	quotes map[string]domain.Quote,
-	startAsset string,
-	startAmount float64,
-	feePerLeg float64,
-) ([]legExec, bool) {
-	if startAmount <= 0 {
-		return nil, false
-	}
-
-	curAsset := startAsset
-	curAmount := startAmount
-	var res []legExec
-
-	for _, leg := range t.Legs {
-		q, ok := quotes[leg.Symbol]
-		if !ok || q.Bid <= 0 || q.Ask <= 0 {
-			return nil, false
-		}
-
-		var from, to string
-		if leg.Dir > 0 {
-			from, to = leg.From, leg.To
-		} else {
-			from, to = leg.To, leg.From
-		}
-
-		if curAsset != from {
-			return nil, false
-		}
-
-		base, quote, okPQ := detectBaseQuote(leg.Symbol, from, to)
-		if !okPQ {
-			return nil, false
-		}
-
-		var amountOut, feeAmount float64
-		var feeAsset string
-
-		switch {
-		case curAsset == base:
-			gross := curAmount * q.Bid
-			feeAmount = gross * feePerLeg
-			amountOut = gross - feeAmount
-			feeAsset = quote
-			curAsset, curAmount = quote, amountOut
-		case curAsset == quote:
-			gross := curAmount / q.Ask
-			feeAmount = gross * feePerLeg
-			amountOut = gross - feeAmount
-			feeAsset = base
-			curAsset, curAmount = base, amountOut
-		default:
-			return nil, false
-		}
-
-		res = append(res, legExec{
-			Symbol:    leg.Symbol,
-			From:      from,
-			To:        to,
-			AmountIn:  curAmount + feeAmount,
-			AmountOut: amountOut,
-			FeeAmount: feeAmount,
-			FeeAsset:  feeAsset,
-		})
-	}
-	return res, true
-}
-
-func detectBaseQuote(symbol, a, b string) (base, quote string, ok bool) {
-	if strings.HasPrefix(symbol, a) {
-		return a, b, true
-	}
-	if strings.HasPrefix(symbol, b) {
-		return b, a, true
-	}
-	return "", "", false
-}
-
-// ==============================
-// Конвертация для вывода maxStart в USDT
-// ==============================
 
 func convertToUSDT(amount float64, asset string, quotes map[string]domain.Quote) (float64, bool) {
 	if amount <= 0 {
@@ -361,18 +289,4 @@ func convertViaQuote(amount float64, from, to string, quotes map[string]domain.Q
 		return amount / q.Ask, true
 	}
 	return 0, false
-}
-
-// ==============================
-// Работа с логом
-// ==============================
-
-func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Fatalf("open %s: %v", path, err)
-	}
-	buf := bufio.NewWriter(f)
-	out := io.MultiWriter(os.Stdout, buf)
-	return f, buf, out
 }
