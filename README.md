@@ -60,89 +60,129 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-1) Исправление main.go (чтобы компилилось при любой сигнатуре)
-Заменяешь создание real executor вот так:
-exec := arb.NewRealExecutor(tr, arbOut, cfg.TradeAmountUSDT) // <-- 3-й аргумент float64 (как у тебя сейчас)
-exec.Filters = filters                               // <-- filters кладём в поле
-exec.Cooldown = time.Duration(cfg.TradeCooldownMs) * time.Millisecond
-consumer.Executor = exec
+package main
 
-То есть filters больше не передаём в NewRealExecutor, а задаём после создания.
+import (
+	"context"
+	"log"
+	"net/http"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
-2) Тогда executor_real.go должен иметь поле Filters
-В твоём executor_real.go должно быть:
-type RealExecutor struct {
-    trader SpotTrader
-    out    io.Writer
+	"crypt_proto/arb"
+	"crypt_proto/config"
+	"crypt_proto/domain"
+	"crypt_proto/exchange"
+	"crypt_proto/kucoin"
+	"crypt_proto/mexc"
 
-    Filters map[string]SymbolFilter // <-- сюда кладём filters из main.go
-    ...
+	_ "net/http/pprof"
+)
+
+func main() {
+	go func() {
+		log.Println("pprof on http://localhost:6060/debug/pprof/")
+		_ = http.ListenAndServe("localhost:6060", nil)
+	}()
+
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	cfg := config.Load()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	triangles, symbols, indexBySymbol, err := domain.LoadTriangles(cfg.TrianglesFile)
+	if err != nil {
+		log.Fatalf("load triangles: %v", err)
+	}
+	if len(triangles) == 0 {
+		log.Fatal("нет треугольников, нечего мониторить")
+	}
+	if len(symbols) == 0 {
+		log.Fatal("нет символов для подписки")
+	}
+	log.Printf("треугольников: %d", len(triangles))
+	log.Printf("символов для подписки: %d", len(symbols))
+
+	var feed exchange.MarketDataFeed
+	switch cfg.Exchange {
+	case "MEXC":
+		feed = mexc.NewFeed(cfg.Debug)
+	case "KUCOIN":
+		feed = kucoin.NewFeed(cfg.Debug)
+	default:
+		log.Fatalf("unknown EXCHANGE=%q (expected MEXC or KUCOIN)", cfg.Exchange)
+	}
+
+	logFile, logBuf, arbOut := arb.OpenLogWriter("arbitrage.log")
+	defer logFile.Close()
+	defer logBuf.Flush()
+
+	events := make(chan domain.Event, 8192)
+	var wg sync.WaitGroup
+
+	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStart, arbOut)
+	consumer.StartFraction = cfg.StartFraction
+
+	consumer.TradeEnabled = cfg.TradeEnabled
+	consumer.TradeAmountUSDT = cfg.TradeAmountUSDT
+	consumer.TradeCooldown = time.Duration(cfg.TradeCooldownMs) * time.Millisecond
+
+	// ---------------------------
+	// Executor selection
+	// ---------------------------
+	useReal := cfg.Exchange == "MEXC" && cfg.TradeEnabled && cfg.APIKey != "" && cfg.APISecret != ""
+	if useReal {
+		tr := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
+
+		// ВАЖНО: сигнатура NewRealExecutor(tr,out,startUSDT float64)
+		exec := arb.NewRealExecutor(tr, arbOut, cfg.TradeAmountUSDT)
+
+		// Подхватываем cooldown из конфига (если поле есть в executor'е)
+		// Если у тебя RealExecutor.Cooldown already есть — ок.
+		exec.Cooldown = time.Duration(cfg.TradeCooldownMs) * time.Millisecond
+
+		// Попробуем подтянуть filters (step/minQty/apiEnabled) и закинуть в exec.Filters
+		// Это нужно для нормализации qty и чтобы заранее отсекать "symbol not support api" (10007).
+		caps, err := mexc.FetchSymbolCapsMEXC(ctx)
+		if err != nil {
+			log.Printf("WARN: cannot fetch exchangeInfo caps: %v", err)
+		} else {
+			filters := make(map[string]arb.SymbolFilter, len(caps))
+			for sym, c := range caps {
+				filters[sym] = arb.SymbolFilter{
+					StepSize:   c.StepSize,
+					MinQty:     c.MinQty,
+					APIEnabled: c.APIEnabled,
+				}
+			}
+			// !!! ВАЖНО !!!
+			// Чтобы эта строка компилилась, в RealExecutor должно быть поле:
+			// Filters map[string]arb.SymbolFilter
+			exec.Filters = filters
+
+			log.Printf("[MEXC] loaded caps: symbols=%d", len(filters))
+		}
+
+		consumer.Executor = exec
+		log.Printf("Executor: REAL (amount=%.6f USDT, cooldown=%v)", cfg.TradeAmountUSDT, consumer.TradeCooldown)
+	} else {
+		consumer.Executor = arb.NewDryRunExecutor(arbOut)
+		log.Printf("Executor: DRY-RUN (trade disabled or no keys)")
+	}
+
+	consumer.Start(ctx, events, triangles, indexBySymbol, &wg)
+	feed.Start(ctx, &wg, symbols, cfg.BookInterval, events)
+
+	<-ctx.Done()
+	log.Println("shutting down...")
+
+	// НЕ закрываем events: WS горутины могут ещё писать
+	wg.Wait()
+	log.Println("bye")
 }
-
-А конструктор обязательно такой (3-й аргумент float64):
-func NewRealExecutor(tr SpotTrader, out io.Writer, startUSDT float64) *RealExecutor {
-    ...
-}
-
-⚠️ Это прямо соответствует твоей ошибке: компилятор хочет float64 третьим параметром.
-
-3) Staticcheck SA6005 (EqualFold)
-Это не ошибка компиляции, но поправь быстро:
-Было:
-if strings.ToUpper(a) != strings.ToUpper(b) { ... }
-
-Стало:
-if !strings.EqualFold(a, b) { ... }
-
-
-Полный патч executor_real.go (только ключевые куски)
-Вот минимально-правильные изменения, чтобы и компилилось, и filters работали:
-// constructor: third arg is float64 (startUSDT)
-func NewRealExecutor(tr SpotTrader, out io.Writer, startUSDT float64) *RealExecutor {
-    if startUSDT <= 0 {
-        startUSDT = 2
-    }
-    return &RealExecutor{
-        trader:    tr,
-        out:       out,
-        StartUSDT: startUSDT,
-        Cooldown:  300 * time.Millisecond,
-        safety:    0.995,
-        lastExec:  make(map[string]time.Time),
-        Filters:   make(map[string]SymbolFilter),
-    }
-}
-
-И в местах проверок:
-if !strings.EqualFold(leg1.From, "USDT") { ... }
-...
-if !strings.EqualFold(leg3.To, "USDT") { ... }
-
-
-Что сделать прямо сейчас (коротко по шагам)
-
-
-В cmd/cryptarb/main.go перепиши строку, где ты вызываешь arb.NewRealExecutor(...), чтобы третьим параметром был float64, а filters присваивались после.
-
-
-В arb/executor_real.go убедись, что:
-
-
-NewRealExecutor(tr, out, startUSDT float64) именно так
-
-
-есть поле Filters map[string]SymbolFilter
-
-
-
-
-SA6005 — поменяй сравнения на strings.EqualFold.
-
-
-
-Если ты скинешь текущую сигнатуру из твоего arb/executor_real.go (строку func NewRealExecutor(...)), я дам тебе ровно один готовый кусок main.go под неё без вариантов.
-
-
 
 
 
