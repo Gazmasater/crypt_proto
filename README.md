@@ -59,6 +59,17 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+[ARB] +0.149%  USDT→NAKA→USDC→USDT  maxStart=6.8235 USDT (6.8235 USDT)  safeStart=6.8235 USDT (6.8235 USDT) (x1.00)  bottleneck=NAKAUSDC
+  NAKAUSDT (NAKA/USDT): bid=0.0787800000 ask=0.0788800000  spread=0.0001000000 (0.12686%)  bidQty=73.2300 askQty=822.5200
+  NAKAUSDC (NAKA/USDC): bid=0.0791000000 ask=0.0792000000  spread=0.0001000000 (0.12634%)  bidQty=86.4700 askQty=36.6700
+  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=1992412.8000 askQty=69169.1500
+
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→NAKA→USDC→USDT
+    [REAL EXEC] leg 1: BUY NAKAUSDT quoteOrderQty=2.000000
+    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"msg":" amount scale is invalid","code":400}
+^C2025/12/16 07:18:37.206853 shutting down...
+2025/12/16 07:18:37.216017 bye
+
 
 
 
