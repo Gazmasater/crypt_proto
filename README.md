@@ -174,5 +174,52 @@ func main() {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "cfg.TradeCooldown undefined (type config.Config has no field or method TradeCooldown)",
+	"source": "compiler",
+	"startLineNumber": 79,
+	"startColumn": 31,
+	"endLineNumber": 79,
+	"endColumn": 44,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredImportedName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredImportedName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: arb.NewNoopExecutor",
+	"source": "compiler",
+	"startLineNumber": 94,
+	"startColumn": 27,
+	"endLineNumber": 94,
+	"endColumn": 42,
+	"origin": "extHost1"
+}]
+
+
 
 
