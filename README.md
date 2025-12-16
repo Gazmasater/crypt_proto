@@ -95,53 +95,72 @@ func NewTrader(apiKey, apiSecret string, debug bool) *Trader {
 }
 
 // PlaceMarketOrder:
-// - BUY: отправляем quoteOrderQty (потратить ровно USDT)
-// - SELL: отправляем quantity (сколько base продаём)
+// ВАЖНО для MEXC: параметры отправляем В QUERY STRING, тело запроса пустое.
+// Пример из доков/практики: POST /api/v3/order?symbol=...&...&signature=...
 //
-// ВАЖНО: MEXC private POST лучше делать с form-urlencoded BODY,
-// иначе можно ловить 700013 Invalid content Type.
+// - BUY: передавай quoteOrderQty (сколько QUOTE потратить, например USDT)
+// - SELL: передавай quantity (сколько BASE продаём)
 func (t *Trader) PlaceMarketOrder(ctx context.Context, symbol, side string, quantity, quoteOrderQty float64) (string, error) {
-	side = strings.ToUpper(strings.TrimSpace(side))
 	symbol = strings.TrimSpace(symbol)
-
-	if side != "BUY" && side != "SELL" {
-		return "", fmt.Errorf("bad side=%s", side)
-	}
+	side = strings.ToUpper(strings.TrimSpace(side))
 	if symbol == "" {
 		return "", fmt.Errorf("empty symbol")
 	}
+	if side != "BUY" && side != "SELL" {
+		return "", fmt.Errorf("bad side=%s", side)
+	}
 
+	// собираем params
 	params := url.Values{}
 	params.Set("symbol", symbol)
 	params.Set("side", side)
 	params.Set("type", "MARKET")
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
 
-	// только одно из двух
 	if side == "BUY" {
 		if quoteOrderQty <= 0 {
 			return "", fmt.Errorf("BUY requires quoteOrderQty>0")
 		}
-		// quoteOrderQty = сколько потратить quote-валюты (обычно USDT)
-		params.Set("quoteOrderQty", fmt.Sprintf("%.8f", quoteOrderQty))
+		// Оставь 6-8 знаков — чаще проходит.
+		params.Set("quoteOrderQty", formatFloat(quoteOrderQty, 8))
 	} else {
 		if quantity <= 0 {
 			return "", fmt.Errorf("SELL requires quantity>0")
 		}
-		params.Set("quantity", fmt.Sprintf("%.12f", quantity))
+		// Для quantity обычно нужно меньше знаков, иначе "quantity scale invalid".
+		// Точное число знаков зависит от символа (нужно exchangeInfo), но начнём с 8.
+		params.Set("quantity", formatFloat(quantity, 8))
 	}
 
-	// подписываем и отправляем
-	bodyBytes, code, err := t.doPrivatePOST(ctx, "/api/v3/order", params)
+	// signature считается по query string (без signature), затем signature добавляется
+	queryToSign := params.Encode()
+	params.Set("signature", t.sign(queryToSign))
+
+	reqURL := t.baseURL + "/api/v3/order" + "?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil) // <— BODY NIL!
 	if err != nil {
 		return "", err
 	}
-	if code/100 != 2 {
-		return "", fmt.Errorf("mexc order error: status=%d body=%s", code, string(bodyBytes))
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+	// Content-Type не обязателен, потому что тела нет.
+	// Но можно явно:
+	// req.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("mexc order error: status=%d body=%s", resp.StatusCode, string(b))
 	}
 
-	// orderId достаем максимально мягко
+	// попробуем достать orderId
 	var m map[string]any
-	_ = json.Unmarshal(bodyBytes, &m)
+	_ = json.Unmarshal(b, &m)
 	if v, ok := m["orderId"]; ok {
 		return fmt.Sprintf("%v", v), nil
 	}
@@ -158,21 +177,37 @@ func (t *Trader) GetBalance(ctx context.Context, asset string) (float64, error) 
 	}
 
 	params := url.Values{}
-	bodyBytes, code, err := t.doPrivateGET(ctx, "/api/v3/account", params)
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+
+	queryToSign := params.Encode()
+	params.Set("signature", t.sign(queryToSign))
+
+	reqURL := t.baseURL + "/api/v3/account" + "?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return 0, err
 	}
-	if code/100 != 2 {
-		return 0, fmt.Errorf("mexc account error: status=%d body=%s", code, string(bodyBytes))
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return 0, fmt.Errorf("mexc account error: status=%d body=%s", resp.StatusCode, string(b))
 	}
 
 	var root map[string]any
-	if err := json.Unmarshal(bodyBytes, &root); err != nil {
+	if err := json.Unmarshal(b, &root); err != nil {
 		return 0, err
 	}
 
-	bals, _ := root["balances"].([]any)
-	for _, it := range bals {
+	balAny, _ := root["balances"].([]any)
+	for _, it := range balAny {
 		m, ok := it.(map[string]any)
 		if !ok {
 			continue
@@ -182,75 +217,19 @@ func (t *Trader) GetBalance(ctx context.Context, asset string) (float64, error) 
 			continue
 		}
 
-		switch v := m["free"].(type) {
-		case string:
-			if v == "" {
-				return 0, nil
-			}
-			f, _ := strconv.ParseFloat(v, 64)
-			return f, nil
-		case float64:
+		// free может быть строкой
+		if s, ok := m["free"].(string); ok {
+			v, _ := strconv.ParseFloat(s, 64)
 			return v, nil
-		default:
-			return 0, nil
 		}
+		// или числом
+		if f, ok := m["free"].(float64); ok {
+			return f, nil
+		}
+		return 0, nil
 	}
+
 	return 0, nil
-}
-
-// -------- low-level signed requests --------
-
-func (t *Trader) doPrivateGET(ctx context.Context, path string, params url.Values) ([]byte, int, error) {
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	params.Set("timestamp", ts)
-
-	qs := params.Encode()
-	params.Set("signature", t.sign(qs))
-
-	u := t.baseURL + path + "?" + params.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, 0, err
-	}
-	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
-
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-
-	b, _ := io.ReadAll(resp.Body)
-	return b, resp.StatusCode, nil
-}
-
-func (t *Trader) doPrivatePOST(ctx context.Context, path string, params url.Values) ([]byte, int, error) {
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	params.Set("timestamp", ts)
-
-	qs := params.Encode()
-	params.Set("signature", t.sign(qs))
-
-	// POST: параметры в BODY (form-urlencoded)
-	body := strings.NewReader(params.Encode())
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+path, body)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-
-	b, _ := io.ReadAll(resp.Body)
-	return b, resp.StatusCode, nil
 }
 
 func (t *Trader) sign(query string) string {
@@ -259,16 +238,201 @@ func (t *Trader) sign(query string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+func formatFloat(v float64, decimals int) string {
+	if decimals < 0 {
+		decimals = 0
+	}
+	// FormatFloat с 'f' не даёт экспоненты.
+	return strconv.FormatFloat(v, 'f', decimals, 64)
+}
+package mexc
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type Trader struct {
+	apiKey    string
+	apiSecret string
+	debug     bool
+	baseURL   string
+	client    *http.Client
+}
+
+func NewTrader(apiKey, apiSecret string, debug bool) *Trader {
+	return &Trader{
+		apiKey:    strings.TrimSpace(apiKey),
+		apiSecret: strings.TrimSpace(apiSecret),
+		debug:     debug,
+		baseURL:   "https://api.mexc.com",
+		client:    &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+// PlaceMarketOrder:
+// ВАЖНО для MEXC: параметры отправляем В QUERY STRING, тело запроса пустое.
+// Пример из доков/практики: POST /api/v3/order?symbol=...&...&signature=...
+//
+// - BUY: передавай quoteOrderQty (сколько QUOTE потратить, например USDT)
+// - SELL: передавай quantity (сколько BASE продаём)
+func (t *Trader) PlaceMarketOrder(ctx context.Context, symbol, side string, quantity, quoteOrderQty float64) (string, error) {
+	symbol = strings.TrimSpace(symbol)
+	side = strings.ToUpper(strings.TrimSpace(side))
+	if symbol == "" {
+		return "", fmt.Errorf("empty symbol")
+	}
+	if side != "BUY" && side != "SELL" {
+		return "", fmt.Errorf("bad side=%s", side)
+	}
+
+	// собираем params
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	params.Set("side", side)
+	params.Set("type", "MARKET")
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+
+	if side == "BUY" {
+		if quoteOrderQty <= 0 {
+			return "", fmt.Errorf("BUY requires quoteOrderQty>0")
+		}
+		// Оставь 6-8 знаков — чаще проходит.
+		params.Set("quoteOrderQty", formatFloat(quoteOrderQty, 8))
+	} else {
+		if quantity <= 0 {
+			return "", fmt.Errorf("SELL requires quantity>0")
+		}
+		// Для quantity обычно нужно меньше знаков, иначе "quantity scale invalid".
+		// Точное число знаков зависит от символа (нужно exchangeInfo), но начнём с 8.
+		params.Set("quantity", formatFloat(quantity, 8))
+	}
+
+	// signature считается по query string (без signature), затем signature добавляется
+	queryToSign := params.Encode()
+	params.Set("signature", t.sign(queryToSign))
+
+	reqURL := t.baseURL + "/api/v3/order" + "?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil) // <— BODY NIL!
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+	// Content-Type не обязателен, потому что тела нет.
+	// Но можно явно:
+	// req.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("mexc order error: status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	// попробуем достать orderId
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	if v, ok := m["orderId"]; ok {
+		return fmt.Sprintf("%v", v), nil
+	}
+	if v, ok := m["orderIdStr"]; ok {
+		return fmt.Sprintf("%v", v), nil
+	}
+	return "", nil
+}
+
+func (t *Trader) GetBalance(ctx context.Context, asset string) (float64, error) {
+	asset = strings.ToUpper(strings.TrimSpace(asset))
+	if asset == "" {
+		return 0, fmt.Errorf("empty asset")
+	}
+
+	params := url.Values{}
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+
+	queryToSign := params.Encode()
+	params.Set("signature", t.sign(queryToSign))
+
+	reqURL := t.baseURL + "/api/v3/account" + "?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return 0, fmt.Errorf("mexc account error: status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return 0, err
+	}
+
+	balAny, _ := root["balances"].([]any)
+	for _, it := range balAny {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		a, _ := m["asset"].(string)
+		if strings.ToUpper(strings.TrimSpace(a)) != asset {
+			continue
+		}
+
+		// free может быть строкой
+		if s, ok := m["free"].(string); ok {
+			v, _ := strconv.ParseFloat(s, 64)
+			return v, nil
+		}
+		// или числом
+		if f, ok := m["free"].(float64); ok {
+			return f, nil
+		}
+		return 0, nil
+	}
+
+	return 0, nil
+}
+
+func (t *Trader) sign(query string) string {
+	mac := hmac.New(sha256.New, []byte(t.apiSecret))
+	_, _ = mac.Write([]byte(query))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func formatFloat(v float64, decimals int) string {
+	if decimals < 0 {
+		decimals = 0
+	}
+	// FormatFloat с 'f' не даёт экспоненты.
+	return strconv.FormatFloat(v, 'f', decimals, 64)
+}
 
 
-  NAKAUSDT (NAKA/USDT): bid=0.0787400000 ask=0.0789200000  spread=0.0001800000 (0.22834%)  bidQty=64.9100 askQty=473.8900
-  NAKAUSDC (NAKA/USDC): bid=0.0791000000 ask=0.0792000000  spread=0.0001000000 (0.12634%)  bidQty=64.6800 askQty=36.6700
-  USDCUSDT (USDC/USDT): bid=1.0000000000 ask=1.0001000000  spread=0.0001000000 (0.01000%)  bidQty=54974.8400 askQty=310476.4100
-
-  [REAL EXEC] start=2.000000 USDT triangle=USDT→NAKA→USDC→USDT
-    [REAL EXEC] leg 1: BUY NAKAUSDT quoteOrderQty=2.000000
-    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"code":700013,"msg":"Invalid content Type."}
-^C2025/12/16 07:03:20.213809 shutting down...
 
 
 
