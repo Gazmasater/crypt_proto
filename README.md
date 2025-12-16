@@ -73,10 +73,13 @@ import (
 	"time"
 )
 
+// SymbolCaps — возможности торговли по символу (паре).
+// ВАЖНО: MEXC часто НЕ отдаёт стабильный флаг "api tradable" в exchangeInfo,
+// поэтому мы НЕ фильтруем по APIEnabled на старте.
+// Реальные запреты ловим рантаймом по ошибке 10007 и баним символ.
 type SymbolCaps struct {
 	Symbol      string
 	Status      string
-	APIEnabled  bool
 	HasMarket   bool
 	StepSize    float64
 	MinQty      float64
@@ -84,7 +87,10 @@ type SymbolCaps struct {
 }
 
 // FetchSymbolCapsMEXC читает https://api.mexc.com/api/v3/exchangeInfo и строит карту возможностей по символам.
-// Мы используем это, чтобы заранее выкинуть пары, которые НЕ поддерживают API или MARKET (чтобы не ловить 10007).
+// Мы используем это только для:
+// - Status == ENABLED
+// - наличие MARKET в orderTypes
+// - (опционально) filters: stepSize/minQty/minNotional (для будущего точного округления)
 func FetchSymbolCapsMEXC(ctx context.Context) (map[string]SymbolCaps, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.mexc.com/api/v3/exchangeInfo", nil)
 	if err != nil {
@@ -134,15 +140,6 @@ func FetchSymbolCapsMEXC(ctx context.Context) (map[string]SymbolCaps, error) {
 			}
 		}
 
-		// apiEnabled / isSpotTradingAllowed / apiAllowed — у MEXC встречается по-разному
-		apiEnabled := false
-		for _, key := range []string{"apiEnabled", "isSpotTradingAllowed", "apiAllowed"} {
-			if b, ok := m[key].(bool); ok && b {
-				apiEnabled = true
-				break
-			}
-		}
-
 		// filters: LOT_SIZE(stepSize/minQty), MIN_NOTIONAL
 		stepSize, minQty, minNotional := 0.0, 0.0, 0.0
 		if flt, ok := m["filters"].([]any); ok {
@@ -165,7 +162,6 @@ func FetchSymbolCapsMEXC(ctx context.Context) (map[string]SymbolCaps, error) {
 		out[symbol] = SymbolCaps{
 			Symbol:      symbol,
 			Status:      status,
-			APIEnabled:  apiEnabled,
 			HasMarket:   hasMarket,
 			StepSize:    stepSize,
 			MinQty:      minQty,
@@ -190,7 +186,6 @@ func readFloatAny(v any) float64 {
 
 
 
-
 package main
 
 import (
@@ -201,7 +196,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"crypt_proto/arb"
 	"crypt_proto/config"
@@ -226,7 +220,7 @@ func main() {
 
 	cfg := config.Load()
 
-	// ВАЖНО: ctx создаём сразу, чтобы можно было дергать exchangeInfo ДО запуска фида/консьюмера
+	// ctx создаём сразу, чтобы можно было дергать exchangeInfo ДО запуска фида/консьюмера
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -238,12 +232,11 @@ func main() {
 		log.Fatal("нет треугольников, нечего мониторить")
 	}
 
-	// ===== Вариант A: заранее фильтруем пары по exchangeInfo (чтобы не ловить 10007) =====
-	// Работает сейчас для MEXC.
+	// ===== Вариант A (исправленный): фильтруем только по ENABLED + MARKET =====
 	if cfg.Exchange == "MEXC" {
 		caps, err := mexc.FetchSymbolCapsMEXC(ctx)
 		if err != nil {
-			log.Printf("WARN: cannot fetch MEXC exchangeInfo: %v (будет риск 10007, оставь runtime-ban как страховку)", err)
+			log.Printf("WARN: cannot fetch MEXC exchangeInfo: %v (будут возможны 10007 -> банятся рантаймом)", err)
 		} else {
 			before := len(triangles)
 			triangles = filterTrianglesByCaps(triangles, caps)
@@ -278,12 +271,11 @@ func main() {
 	events := make(chan domain.Event, 8192)
 	var wg sync.WaitGroup
 
-	// consumer
 	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStart, arbOut)
 	consumer.StartFraction = cfg.StartFraction
 
-	// тут у тебя уже есть executor_real.go
-	// фиксированный старт = 2 USDT (или из env, если ты добавил TRADE_AMOUNT_USDT в конфиг)
+	// Реальный исполнитель (фиксированный старт 2 USDT).
+	// Если у тебя в env другой старт — подставь cfg.TradeAmountUSDT, если ты добавлял.
 	consumer.Executor = arb.NewRealExecutor(
 		mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug),
 		arbOut,
@@ -292,7 +284,6 @@ func main() {
 
 	consumer.Start(ctx, events, triangles, indexBySymbol, &wg)
 
-	// feed
 	feed.Start(ctx, &wg, symbols, cfg.BookInterval, events)
 
 	<-ctx.Done()
@@ -304,9 +295,8 @@ func main() {
 
 // filterTrianglesByCaps оставляет только те треугольники, у которых все 3 ноги:
 // - есть в caps
-// - status ENABLED
-// - APIEnabled=true
-// - MARKET доступен
+// - status == ENABLED
+// - orderTypes содержит MARKET (HasMarket=true)
 func filterTrianglesByCaps(tris []domain.Triangle, caps map[string]mexc.SymbolCaps) []domain.Triangle {
 	out := make([]domain.Triangle, 0, len(tris))
 
@@ -319,10 +309,6 @@ func filterTrianglesByCaps(tris []domain.Triangle, caps map[string]mexc.SymbolCa
 				break
 			}
 			if !strings.EqualFold(c.Status, "ENABLED") {
-				ok = false
-				break
-			}
-			if !c.APIEnabled {
 				ok = false
 				break
 			}
@@ -362,14 +348,6 @@ func rebuildSymbolsAndIndex(tris []domain.Triangle) ([]string, map[string][]int)
 }
 
 
-
-
-2025/12/16 04:35:26.007242 API key/secret: loaded for MEXC
-2025/12/16 04:35:26.009535 треугольников (USDT→...→USDT): 334
-2025/12/16 04:35:26.009564 уникальных символов: 594
-2025/12/16 04:35:26.186597 [MEXC] triangles filtered by exchangeInfo: before=334 after=0
-2025/12/16 04:35:26.186623 нет символов для подписки после фильтрации
-exit status 1
 
 
 
