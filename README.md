@@ -357,4 +357,27 @@ func pct(delta, denom float64) float64 {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/arb/executor_real.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "t.Leg1 undefined (type domain.Triangle has no field or method Leg1)",
+	"source": "compiler",
+	"startLineNumber": 78,
+	"startColumn": 38,
+	"endLineNumber": 78,
+	"endColumn": 42,
+	"origin": "extHost1"
+}]
+
 
