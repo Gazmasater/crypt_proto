@@ -174,6 +174,7 @@ func main() {
 }
 
 
+
 [{
 	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
 	"owner": "_generated_diagnostic_collection_name_#0",
@@ -219,7 +220,6 @@ func main() {
 	"endColumn": 42,
 	"origin": "extHost1"
 }]
-
 
 
 
