@@ -60,52 +60,87 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "IncompatibleAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "IncompatibleAssign"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use filters (variable of type map[string]arb.SymbolFilter) as float64 value in argument to arb.NewRealExecutor",
-	"source": "compiler",
-	"startLineNumber": 83,
-	"startColumn": 55,
-	"endLineNumber": 83,
-	"endColumn": 62,
-	"origin": "extHost1"
-}]
+1) Исправление main.go (чтобы компилилось при любой сигнатуре)
+Заменяешь создание real executor вот так:
+exec := arb.NewRealExecutor(tr, arbOut, cfg.TradeAmountUSDT) // <-- 3-й аргумент float64 (как у тебя сейчас)
+exec.Filters = filters                               // <-- filters кладём в поле
+exec.Cooldown = time.Duration(cfg.TradeCooldownMs) * time.Millisecond
+consumer.Executor = exec
+
+То есть filters больше не передаём в NewRealExecutor, а задаём после создания.
+
+2) Тогда executor_real.go должен иметь поле Filters
+В твоём executor_real.go должно быть:
+type RealExecutor struct {
+    trader SpotTrader
+    out    io.Writer
+
+    Filters map[string]SymbolFilter // <-- сюда кладём filters из main.go
+    ...
+}
+
+А конструктор обязательно такой (3-й аргумент float64):
+func NewRealExecutor(tr SpotTrader, out io.Writer, startUSDT float64) *RealExecutor {
+    ...
+}
+
+⚠️ Это прямо соответствует твоей ошибке: компилятор хочет float64 третьим параметром.
+
+3) Staticcheck SA6005 (EqualFold)
+Это не ошибка компиляции, но поправь быстро:
+Было:
+if strings.ToUpper(a) != strings.ToUpper(b) { ... }
+
+Стало:
+if !strings.EqualFold(a, b) { ... }
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/arb/executor_real.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "default",
-		"target": {
-			"$mid": 1,
-			"path": "/docs/checks/",
-			"scheme": "https",
-			"authority": "staticcheck.dev",
-			"fragment": "SA6005"
-		}
-	},
-	"severity": 4,
-	"message": "should use strings.EqualFold instead",
-	"source": "SA6005",
-	"startLineNumber": 137,
-	"startColumn": 5,
-	"endLineNumber": 137,
-	"endColumn": 61,
-	"origin": "extHost1"
-}]
+Полный патч executor_real.go (только ключевые куски)
+Вот минимально-правильные изменения, чтобы и компилилось, и filters работали:
+// constructor: third arg is float64 (startUSDT)
+func NewRealExecutor(tr SpotTrader, out io.Writer, startUSDT float64) *RealExecutor {
+    if startUSDT <= 0 {
+        startUSDT = 2
+    }
+    return &RealExecutor{
+        trader:    tr,
+        out:       out,
+        StartUSDT: startUSDT,
+        Cooldown:  300 * time.Millisecond,
+        safety:    0.995,
+        lastExec:  make(map[string]time.Time),
+        Filters:   make(map[string]SymbolFilter),
+    }
+}
+
+И в местах проверок:
+if !strings.EqualFold(leg1.From, "USDT") { ... }
+...
+if !strings.EqualFold(leg3.To, "USDT") { ... }
+
+
+Что сделать прямо сейчас (коротко по шагам)
+
+
+В cmd/cryptarb/main.go перепиши строку, где ты вызываешь arb.NewRealExecutor(...), чтобы третьим параметром был float64, а filters присваивались после.
+
+
+В arb/executor_real.go убедись, что:
+
+
+NewRealExecutor(tr, out, startUSDT float64) именно так
+
+
+есть поле Filters map[string]SymbolFilter
+
+
+
+
+SA6005 — поменяй сравнения на strings.EqualFold.
+
+
+
+Если ты скинешь текущую сигнатуру из твоего arb/executor_real.go (строку func NewRealExecutor(...)), я дам тебе ровно один готовый кусок main.go под неё без вариантов.
 
 
 
