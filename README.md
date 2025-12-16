@@ -86,8 +86,8 @@ type Trader struct {
 
 func NewTrader(apiKey, apiSecret string, debug bool) *Trader {
 	return &Trader{
-		apiKey:    apiKey,
-		apiSecret: apiSecret,
+		apiKey:    strings.TrimSpace(apiKey),
+		apiSecret: strings.TrimSpace(apiSecret),
 		debug:     debug,
 		baseURL:   "https://api.mexc.com",
 		client:    &http.Client{Timeout: 10 * time.Second},
@@ -95,25 +95,33 @@ func NewTrader(apiKey, apiSecret string, debug bool) *Trader {
 }
 
 // PlaceMarketOrder:
-// - BUY: лучше передавать quoteOrderQty (потратить ровно USDT)
-// - SELL: передавать quantity (сколько base продаем)
+// - BUY: отправляем quoteOrderQty (потратить ровно USDT)
+// - SELL: отправляем quantity (сколько base продаём)
+//
+// ВАЖНО: MEXC private POST лучше делать с form-urlencoded BODY,
+// иначе можно ловить 700013 Invalid content Type.
 func (t *Trader) PlaceMarketOrder(ctx context.Context, symbol, side string, quantity, quoteOrderQty float64) (string, error) {
 	side = strings.ToUpper(strings.TrimSpace(side))
+	symbol = strings.TrimSpace(symbol)
+
 	if side != "BUY" && side != "SELL" {
 		return "", fmt.Errorf("bad side=%s", side)
+	}
+	if symbol == "" {
+		return "", fmt.Errorf("empty symbol")
 	}
 
 	params := url.Values{}
 	params.Set("symbol", symbol)
 	params.Set("side", side)
 	params.Set("type", "MARKET")
-	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
 
+	// только одно из двух
 	if side == "BUY" {
 		if quoteOrderQty <= 0 {
 			return "", fmt.Errorf("BUY requires quoteOrderQty>0")
 		}
-		// MEXC (часто) принимает quoteOrderQty как Binance-style
+		// quoteOrderQty = сколько потратить quote-валюты (обычно USDT)
 		params.Set("quoteOrderQty", fmt.Sprintf("%.8f", quoteOrderQty))
 	} else {
 		if quantity <= 0 {
@@ -122,36 +130,18 @@ func (t *Trader) PlaceMarketOrder(ctx context.Context, symbol, side string, quan
 		params.Set("quantity", fmt.Sprintf("%.12f", quantity))
 	}
 
-	sig := t.sign(params.Encode())
-	params.Set("signature", sig)
-
-	endpoint := t.baseURL + "/api/v3/order"
-	reqURL := endpoint + "?" + params.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil)
+	// подписываем и отправляем
+	bodyBytes, code, err := t.doPrivatePOST(ctx, "/api/v3/order", params)
 	if err != nil {
 		return "", err
 	}
-
-	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
-	// чтобы не ловить "Invalid content Type." (700013)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	b, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode/100 != 2 {
-		return "", fmt.Errorf("mexc order error: status=%d body=%s", resp.StatusCode, string(b))
+	if code/100 != 2 {
+		return "", fmt.Errorf("mexc order error: status=%d body=%s", code, string(bodyBytes))
 	}
 
-	// ответ может быть разный — попробуем вытащить orderId
+	// orderId достаем максимально мягко
 	var m map[string]any
-	_ = json.Unmarshal(b, &m)
+	_ = json.Unmarshal(bodyBytes, &m)
 	if v, ok := m["orderId"]; ok {
 		return fmt.Sprintf("%v", v), nil
 	}
@@ -162,42 +152,27 @@ func (t *Trader) PlaceMarketOrder(ctx context.Context, symbol, side string, quan
 }
 
 func (t *Trader) GetBalance(ctx context.Context, asset string) (float64, error) {
-	params := url.Values{}
-	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
-	sig := t.sign(params.Encode())
-	params.Set("signature", sig)
-
-	endpoint := t.baseURL + "/api/v3/account"
-	reqURL := endpoint + "?" + params.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return 0, err
-	}
-
-	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
-
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode/100 != 2 {
-		return 0, fmt.Errorf("mexc account error: status=%d body=%s", resp.StatusCode, string(b))
-	}
-
-	// Ответ похож на Binance: balances: [{asset:"USDT", free:"...", locked:"..."}]
-	var root map[string]any
-	if err := json.Unmarshal(b, &root); err != nil {
-		return 0, err
-	}
-
-	balAny, _ := root["balances"].([]any)
 	asset = strings.ToUpper(strings.TrimSpace(asset))
+	if asset == "" {
+		return 0, fmt.Errorf("empty asset")
+	}
 
-	for _, it := range balAny {
+	params := url.Values{}
+	bodyBytes, code, err := t.doPrivateGET(ctx, "/api/v3/account", params)
+	if err != nil {
+		return 0, err
+	}
+	if code/100 != 2 {
+		return 0, fmt.Errorf("mexc account error: status=%d body=%s", code, string(bodyBytes))
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(bodyBytes, &root); err != nil {
+		return 0, err
+	}
+
+	bals, _ := root["balances"].([]any)
+	for _, it := range bals {
 		m, ok := it.(map[string]any)
 		if !ok {
 			continue
@@ -207,20 +182,75 @@ func (t *Trader) GetBalance(ctx context.Context, asset string) (float64, error) 
 			continue
 		}
 
-		freeStr := ""
-		if s, ok := m["free"].(string); ok {
-			freeStr = s
-		} else if f, ok := m["free"].(float64); ok {
+		switch v := m["free"].(type) {
+		case string:
+			if v == "" {
+				return 0, nil
+			}
+			f, _ := strconv.ParseFloat(v, 64)
 			return f, nil
-		}
-		if freeStr == "" {
+		case float64:
+			return v, nil
+		default:
 			return 0, nil
 		}
-		v, _ := strconv.ParseFloat(freeStr, 64)
-		return v, nil
+	}
+	return 0, nil
+}
+
+// -------- low-level signed requests --------
+
+func (t *Trader) doPrivateGET(ctx context.Context, path string, params url.Values) ([]byte, int, error) {
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	params.Set("timestamp", ts)
+
+	qs := params.Encode()
+	params.Set("signature", t.sign(qs))
+
+	u := t.baseURL + path + "?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	return b, resp.StatusCode, nil
+}
+
+func (t *Trader) doPrivatePOST(ctx context.Context, path string, params url.Values) ([]byte, int, error) {
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	params.Set("timestamp", ts)
+
+	qs := params.Encode()
+	params.Set("signature", t.sign(qs))
+
+	// POST: параметры в BODY (form-urlencoded)
+	body := strings.NewReader(params.Encode())
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+path, body)
+	if err != nil {
+		return nil, 0, err
 	}
 
-	return 0, nil
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	return b, resp.StatusCode, nil
 }
 
 func (t *Trader) sign(query string) string {
