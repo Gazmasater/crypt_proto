@@ -1176,8 +1176,77 @@ func main() {
 	wg.Wait()
 	log.Println("bye")
 }
-Обрати внимание: тут нужен time импорт. Если IDE ругнётся — добавь import "time" сверху. (Я
 
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/arb/executor_real.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: simulateTriangleExecution",
+	"source": "compiler",
+	"startLineNumber": 60,
+	"startColumn": 15,
+	"endLineNumber": 60,
+	"endColumn": 40,
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "cfg.TradeCooldownMs undefined (type config.Config has no field or method TradeCooldownMs)",
+	"source": "compiler",
+	"startLineNumber": 70,
+	"startColumn": 45,
+	"endLineNumber": 70,
+	"endColumn": 60,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredImportedName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredImportedName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: arb.NewDryRunExecutor",
+	"source": "compiler",
+	"startLineNumber": 88,
+	"startColumn": 27,
+	"endLineNumber": 88,
+	"endColumn": 44,
+	"origin": "extHost1"
+}]
 
 
 
