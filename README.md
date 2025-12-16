@@ -59,30 +59,37 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredImportedName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredImportedName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: arb.NewDryRunExecutor",
-	"source": "compiler",
-	"startLineNumber": 86,
-	"startColumn": 27,
-	"endLineNumber": 86,
-	"endColumn": 44,
-	"origin": "extHost1"
-}]
+package arb
+
+import (
+	"context"
+	"fmt"
+	"io"
+
+	"crypt_proto/domain"
+)
+
+type DryRunExecutor struct {
+	out io.Writer
+}
+
+func NewDryRunExecutor(out io.Writer) *DryRunExecutor {
+	return &DryRunExecutor{out: out}
+}
+
+func (e *DryRunExecutor) Name() string { return "DRY-RUN" }
+
+func (e *DryRunExecutor) Execute(ctx context.Context, t domain.Triangle, quotes map[string]domain.Quote, startUSDT float64) error {
+	fmt.Fprintf(e.out, "  [DRY RUN] start=%.6f USDT triangle=%s\n", startUSDT, t.Name)
+	return nil
+}
 
 
+
+type Executor interface {
+	Name() string
+	Execute(ctx context.Context, t domain.Triangle, quotes map[string]domain.Quote, startUSDT float64) error
+}
 
 
 
