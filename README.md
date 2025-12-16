@@ -61,159 +61,109 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package main
+func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes map[string]domain.Quote, startUSDT float64) error {
+	e.out.Printf("  [REAL EXEC] start=%.6f USDT triangle=%s", startUSDT, t.String())
 
-import (
-	"context"
-	"log"
-	"net/http"
-	"os/signal"
-	"sync"
-	"syscall"
-	"time"
+	// --- LEG 1: BUY (quote -> base) ---
+	q1 := quotes[t.Leg1.Symbol]
+	e.out.Printf("    [REAL EXEC] leg1 PRE: symbol=%s side=BUY byQuote=%.8f ask=%.10f bid=%.10f",
+		t.Leg1.Symbol, startUSDT, q1.Ask, q1.Bid)
 
-	"crypt_proto/arb"
-	"crypt_proto/config"
-	"crypt_proto/domain"
-	"crypt_proto/exchange"
-	"crypt_proto/kucoin"
-	"crypt_proto/mexc"
+	// Важно: рассчитать “сырой” baseQty и что получится после округления/фильтров
+	rawBase1 := startUSDT / q1.Ask
+	base1, dbg1, ok1 := e.qtyForBuyByQuote(t.Leg1.Symbol, rawBase1, q1.Ask) // см. ниже
+	e.out.Printf("    [REAL EXEC] leg1 QTY: rawBase=%.12f -> adjBase=%.12f ok=%v %s",
+		rawBase1, base1, ok1, dbg1)
+	if !ok1 {
+		return fmt.Errorf("leg1 blocked: %s", dbg1)
+	}
 
-	_ "net/http/pprof"
-)
-
-func main() {
-	// pprof
-	go func() {
-		log.Println("pprof on http://localhost:6060/debug/pprof/")
-		_ = http.ListenAndServe("localhost:6060", nil)
-	}()
-
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
-	cfg := config.Load()
-
-	// Context / signals
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	// Triangles
-	triangles, symbols, indexBySymbol, err := domain.LoadTriangles(cfg.TrianglesFile)
+	o1, err := e.tr.PlaceMarketOrderByQuote(ctx, t.Leg1.Symbol, "BUY", startUSDT)
 	if err != nil {
-		log.Fatalf("load triangles: %v", err)
+		e.out.Printf("    [REAL EXEC] leg1 PLACE ERR: %v", err)
+		return err
 	}
-	if len(triangles) == 0 {
-		log.Fatal("нет треугольников, нечего мониторить")
+	e.out.Printf("    [REAL EXEC] leg1 PLACE OK: orderId=%s status=%s", o1.OrderID, o1.Status)
+
+	f1, err := e.tr.WaitFilled(ctx, t.Leg1.Symbol, o1.OrderID, 3*time.Second)
+	if err != nil {
+		e.out.Printf("    [REAL EXEC] leg1 FILL ERR: %v", err)
+		return err
 	}
-	if len(symbols) == 0 {
-		log.Fatal("нет символов для подписки")
-	}
-	log.Printf("треугольников: %d", len(triangles))
-	log.Printf("символов для подписки: %d", len(symbols))
+	e.out.Printf("    [REAL EXEC] leg1 FILLED: executedBase=%.12f quoteSpent=%.12f fee=%.12f feeAsset=%s avgPrice=%.10f",
+		f1.ExecutedQty, f1.CummulativeQuoteQty, f1.Fee, f1.FeeAsset, f1.AvgPrice)
 
-	// Exchange feed
-	var feed exchange.MarketDataFeed
-	switch cfg.Exchange {
-	case "MEXC":
-		feed = mexc.NewFeed(cfg.Debug)
-	case "KUCOIN":
-		feed = kucoin.NewFeed(cfg.Debug)
-	default:
-		log.Fatalf("unknown EXCHANGE=%q (expected MEXC or KUCOIN)", cfg.Exchange)
-	}
-	log.Printf("Using exchange: %s", feed.Name())
-
-	// Log output
-	logFile, logBuf, arbOut := arb.OpenLogWriter("arbitrage.log")
-	defer logFile.Close()
-	defer logBuf.Flush()
-
-	// Events channel
-	events := make(chan domain.Event, 8192)
-
-	var wg sync.WaitGroup
-
-	// Consumer
-	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStart, arbOut)
-	consumer.StartFraction = cfg.StartFraction
-
-	// Trading toggles (если в твоём Config этих полей нет — добавь их в config.go)
-	consumer.TradeEnabled = cfg.TradeEnabled
-	consumer.TradeAmountUSDT = cfg.TradeAmountUSDT
-	consumer.TradeCooldown = time.Duration(cfg.TradeCooldownMs) * time.Millisecond
-
-	// Executor
-	if cfg.Exchange == "MEXC" && cfg.TradeEnabled && cfg.APIKey != "" && cfg.APISecret != "" {
-		tr := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
-
-		// startUSDT — фиксированная сумма на сделку (например 2)
-		startUSDT := cfg.TradeAmountUSDT
-		if startUSDT <= 0 {
-			startUSDT = 2.0
-		}
-
-		consumer.Executor = arb.NewRealExecutor(tr, arbOut, startUSDT)
-		log.Printf("Executor: REAL (startUSDT=%.6f)", startUSDT)
-	} else {
-		consumer.Executor = arb.NewNoopExecutor() // безопаснее, чем несуществующий DryRun
-		log.Printf("Executor: NOOP (trade disabled or missing keys)")
+	baseGot := f1.ExecutedQty
+	if baseGot <= 0 {
+		return fmt.Errorf("leg1: executedQty=0")
 	}
 
-	// Start consumer
-	consumer.Start(ctx, events, triangles, indexBySymbol, &wg)
+	// --- LEG 2: SELL (base -> quote) ---
+	q2 := quotes[t.Leg2.Symbol]
+	e.out.Printf("    [REAL EXEC] leg2 PRE: symbol=%s side=SELL baseIn=%.12f bid=%.10f ask=%.10f",
+		t.Leg2.Symbol, baseGot, q2.Bid, q2.Ask)
 
-	// Start feed
-	feed.Start(ctx, &wg, symbols, cfg.BookInterval, events)
+	sell2, dbg2, ok2 := e.qtyForSell(t.Leg2.Symbol, baseGot) // округление по stepSize/minQty/minNotional
+	e.out.Printf("    [REAL EXEC] leg2 QTY: rawBase=%.12f -> adjBase=%.12f ok=%v %s",
+		baseGot, sell2, ok2, dbg2)
+	if !ok2 {
+		return fmt.Errorf("leg2 blocked: %s", dbg2)
+	}
 
-	// Wait stop
-	<-ctx.Done()
-	log.Println("shutting down...")
+	o2, err := e.tr.PlaceMarketOrder(ctx, t.Leg2.Symbol, "SELL", sell2)
+	if err != nil {
+		e.out.Printf("    [REAL EXEC] leg2 PLACE ERR: %v", err)
+		return err
+	}
+	e.out.Printf("    [REAL EXEC] leg2 PLACE OK: orderId=%s status=%s", o2.OrderID, o2.Status)
 
-	// ВАЖНО: events не закрываем — WS-горутин(ы) могут ещё писать и словить panic
-	wg.Wait()
-	log.Println("bye")
-}
+	f2, err := e.tr.WaitFilled(ctx, t.Leg2.Symbol, o2.OrderID, 3*time.Second)
+	if err != nil {
+		e.out.Printf("    [REAL EXEC] leg2 FILL ERR: %v", err)
+		return err
+	}
+	e.out.Printf("    [REAL EXEC] leg2 FILLED: executedBase=%.12f quoteOut=%.12f fee=%.12f feeAsset=%s avgPrice=%.10f",
+		f2.ExecutedQty, f2.CummulativeQuoteQty, f2.Fee, f2.FeeAsset, f2.AvgPrice)
 
+	quote2 := f2.CummulativeQuoteQty
+	if quote2 <= 0 {
+		return fmt.Errorf("leg2: quoteOut=0")
+	}
 
+	// --- LEG 3: SELL (USDC -> USDT) ---
+	q3 := quotes[t.Leg3.Symbol]
+	e.out.Printf("    [REAL EXEC] leg3 PRE: symbol=%s side=SELL quoteIn=%.12f bid=%.10f ask=%.10f",
+		t.Leg3.Symbol, quote2, q3.Bid, q3.Ask)
 
-arb/executor_noop.go (новый файл)
-package arb
+	sell3, dbg3, ok3 := e.qtyForSell(t.Leg3.Symbol, quote2)
+	e.out.Printf("    [REAL EXEC] leg3 QTY: raw=%.12f -> adj=%.12f ok=%v %s",
+		quote2, sell3, ok3, dbg3)
+	if !ok3 {
+		return fmt.Errorf("leg3 blocked: %s", dbg3)
+	}
 
-import (
-	"context"
+	o3, err := e.tr.PlaceMarketOrder(ctx, t.Leg3.Symbol, "SELL", sell3)
+	if err != nil {
+		e.out.Printf("    [REAL EXEC] leg3 PLACE ERR: %v", err)
+		return err
+	}
+	e.out.Printf("    [REAL EXEC] leg3 PLACE OK: orderId=%s status=%s", o3.OrderID, o3.Status)
 
-	"crypt_proto/domain"
-)
+	f3, err := e.tr.WaitFilled(ctx, t.Leg3.Symbol, o3.OrderID, 3*time.Second)
+	if err != nil {
+		e.out.Printf("    [REAL EXEC] leg3 FILL ERR: %v", err)
+		return err
+	}
+	e.out.Printf("    [REAL EXEC] leg3 FILLED: executedBase=%.12f quoteOut=%.12f fee=%.12f feeAsset=%s avgPrice=%.10f",
+		f3.ExecutedQty, f3.CummulativeQuoteQty, f3.Fee, f3.FeeAsset, f3.AvgPrice)
 
-// NoopExecutor — безопасный исполнитель "ничего не делаю".
-// Используется когда трейд выключен или нет ключей API.
-type NoopExecutor struct{}
+	finalUSDT := f3.CummulativeQuoteQty
+	pnl := finalUSDT - startUSDT
+	e.out.Printf("    [REAL EXEC] DONE: start=%.6f final=%.6f pnl=%.6f (%.4f%%)",
+		startUSDT, finalUSDT, pnl, (pnl/startUSDT)*100)
 
-func NewNoopExecutor() *NoopExecutor { return &NoopExecutor{} }
-
-func (e *NoopExecutor) Name() string { return "NOOP" }
-
-func (e *NoopExecutor) Execute(ctx context.Context, t domain.Triangle, quotes map[string]domain.Quote, startUSDT float64) error {
-	// намеренно ничего не делаем
-	_ = ctx
-	_ = t
-	_ = quotes
-	_ = startUSDT
 	return nil
 }
-
-
-
-
-[ARB] +0.352%  USDT→FHE→USDC→USDT  maxStart=113.0244 USDT (113.0244 USDT)  safeStart=113.0244 USDT (113.0244 USDT) (x1.00)  bottleneck=FHEUSDC
-  FHEUSDT (FHE/USDT): bid=0.0909800000 ask=0.0910000000  spread=0.0000200000 (0.02198%)  bidQty=3216.5500 askQty=52563.6400
-  FHEUSDC (FHE/USDC): bid=0.0914300000 ask=0.0919100000  spread=0.0004800000 (0.52362%)  bidQty=1241.5300 askQty=67.8200
-  USDCUSDT (USDC/USDT): bid=1.0000000000 ask=1.0001000000  spread=0.0001000000 (0.01000%)  bidQty=73613.4200 askQty=216712.9000
-
-  [REAL EXEC] start=10.000000 USDT triangle=USDT→FHE→USDC→USDT
-    [REAL EXEC] leg 1: BUY FHEUSDT by USDT=10.000000 (ask=0.0910000000)
-
-
 
 
 
