@@ -261,3 +261,14 @@ func (t *Trader) sign(query string) string {
 
 
 
+  NAKAUSDT (NAKA/USDT): bid=0.0787400000 ask=0.0789200000  spread=0.0001800000 (0.22834%)  bidQty=64.9100 askQty=473.8900
+  NAKAUSDC (NAKA/USDC): bid=0.0791000000 ask=0.0792000000  spread=0.0001000000 (0.12634%)  bidQty=64.6800 askQty=36.6700
+  USDCUSDT (USDC/USDT): bid=1.0000000000 ask=1.0001000000  spread=0.0001000000 (0.01000%)  bidQty=54974.8400 askQty=310476.4100
+
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→NAKA→USDC→USDT
+    [REAL EXEC] leg 1: BUY NAKAUSDT quoteOrderQty=2.000000
+    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"code":700013,"msg":"Invalid content Type."}
+^C2025/12/16 07:03:20.213809 shutting down...
+
+
+
