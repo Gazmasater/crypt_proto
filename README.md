@@ -186,6 +186,100 @@ func main() {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingLitField",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingLitField"
+		}
+	},
+	"severity": 8,
+	"message": "unknown field APIEnabled in struct literal of type arb.SymbolFilter",
+	"source": "compiler",
+	"startLineNumber": 96,
+	"startColumn": 6,
+	"endLineNumber": 96,
+	"endColumn": 16,
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "c.APIEnabled undefined (type mexc.SymbolCaps has no field or method APIEnabled)",
+	"source": "compiler",
+	"startLineNumber": 96,
+	"startColumn": 20,
+	"endLineNumber": 96,
+	"endColumn": 30,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "exec.Filters undefined (type *arb.RealExecutor has no field or method Filters)",
+	"source": "compiler",
+	"startLineNumber": 102,
+	"startColumn": 9,
+	"endLineNumber": 102,
+	"endColumn": 16,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/arb/executor_real.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "default",
+		"target": {
+			"$mid": 1,
+			"path": "/docs/checks/",
+			"scheme": "https",
+			"authority": "staticcheck.dev",
+			"fragment": "SA6005"
+		}
+	},
+	"severity": 4,
+	"message": "should use strings.EqualFold instead",
+	"source": "SA6005",
+	"startLineNumber": 137,
+	"startColumn": 5,
+	"endLineNumber": 137,
+	"endColumn": 61,
+	"origin": "extHost1"
+}]
+
+
 
 
 
