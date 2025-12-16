@@ -61,140 +61,18 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-1. Исправить формат quantity в запросах (MEXC)
-Файл: mexc/trader.go
-Функция: PlaceMarket
-Убедись, что вот это:
-params.Set("quantity", fmt.Sprintf("%.8f", quantity))
+[ARB] +0.141%  USDT→BTC→BDX→USDT  maxStart=64.3597 USDT (64.3597 USDT)  safeStart=64.3597 USDT (64.3597 USDT) (x1.00)  bottleneck=BDXUSDT
+  BTCUSDT (BTC/USDT): bid=86213.0000000000 ask=86217.2200000000  spread=4.2200000000 (0.00489%)  bidQty=0.0023 askQty=5.2859
+  BDXBTC (BDX/BTC): bid=0.0000010394 ask=0.0000010413  spread=0.0000000019 (0.18263%)  bidQty=586.0000 askQty=2890.0000
+  BDXUSDT (BDX/USDT): bid=0.0900400000 ask=0.0902600000  spread=0.0002200000 (0.24404%)  bidQty=716.1600 askQty=2629.8400
+  Legs execution with fees:
+    leg 1: BTCUSDT  64.359750 USDT → 0.000746 BTC  fee=0.00000037 BTC
+    leg 2: BDXBTC  0.000746 BTC → 716.160000 BDX  fee=0.35825913 BDX
+    leg 3: BDXUSDT  716.160000 BDX → 64.450805 USDT  fee=0.03224152 USDT
 
-ЗАМЕНЕНО на вот это:
-qtyStr := strconv.FormatFloat(quantity, 'f', -1, 64)
-params.Set("quantity", qtyStr)
+  [REAL EXEC] start=2.000000 USDT triangle=USDT→BTC→BDX→USDT
+    [REAL EXEC] leg 1: qty<=0 after normalize (raw=0.0000231972) (BUY BTCUSDT)
 
-И вверху файла есть импорт:
-import (
-    // ...
-    "strconv"
-    // ...
-)
-
-
-Важно: пересобери проект после правки (go build ./cmd/cryptarb), а не просто сохрани файл.
-
-Это уберёт формат "2.00000000" → "2".
-
-2. Огрубить количество до разумного числа знаков (чтобы не было 1.33511348)
-Для таких монет как TON/GIGGLE биржа не любит 8 знаков после запятой в quantity (скорее всего stepSize = 0.001 или около того).
-Сделаем универсальный костыль: обрезаем до 3 знаков после запятой перед отправкой ордера.
-2.1. Добавь helper в arb/executor_real.go
-Вверху файла добавь импорт:
-import (
-    // ...
-    "math"
-    // ...
-)
-
-Где-нибудь под структурами RealExecutor/legExec добавь функцию:
-// normalizeQty округляет объём вниз до 3 знаков после запятой.
-// Это грубый, но безопасный костыль против "quantity scale is invalid".
-func normalizeQty(q float64) float64 {
-	if q <= 0 {
-		return 0
-	}
-	const decimals = 3
-	factor := math.Pow10(decimals)
-	return math.Floor(q*factor) / factor
-}
-
-2.2. Используй её в ExecuteTriangle
-В func (e *RealExecutor) ExecuteTriangle(...) найди участок, где считаются side и qty:
-Сейчас у тебя примерно так:
-for i, lg := range execs {
-    leg := t.Legs[i]
-
-    side := ""
-    var qty float64
-
-    if leg.Dir > 0 {
-        side = "SELL"
-        qty = lg.AmountIn
-    } else {
-        side = "BUY"
-        qty = lg.AmountOut
-    }
-
-    if qty <= 0 {
-        e.log("    [REAL EXEC] leg %d: qty<=0, skip (%s %s)", i+1, side, lg.Symbol)
-        return
-    }
-
-    e.log("    [REAL EXEC] leg %d: %s %s qty=%.8f", i+1, side, lg.Symbol, qty)
-
-    if err := e.trader.PlaceMarket(ctx, lg.Symbol, side, qty); err != nil {
-        ...
-    }
-}
-
-Замени на:
-for i, lg := range execs {
-    leg := t.Legs[i]
-
-    side := ""
-    var qtyRaw float64
-
-    if leg.Dir > 0 {
-        side = "SELL"
-        qtyRaw = lg.AmountIn
-    } else {
-        side = "BUY"
-        qtyRaw = lg.AmountOut
-    }
-
-    qty := normalizeQty(qtyRaw)
-    if qty <= 0 {
-        e.log("    [REAL EXEC] leg %d: qty<=0 after normalize (raw=%.10f) (%s %s)", i+1, qtyRaw, side, lg.Symbol)
-        return
-    }
-
-    e.log("    [REAL EXEC] leg %d: %s %s qty=%.8f (raw=%.10f)", i+1, side, lg.Symbol, qty, qtyRaw)
-
-    if err := e.trader.PlaceMarket(ctx, lg.Symbol, side, qty); err != nil {
-        e.log("    [REAL EXEC] leg %d ERROR: %v", i+1, err)
-        return
-    }
-}
-
-Теперь:
-
-
-Для USDCUSDT: raw 2.0 → normalizeQty(2.0) = 2 → ок.
-
-
-Для TONUSDC: raw 1.33511348 → 1.335 → scale=3, биржа должна принять.
-
-
-
-3. Дальше (чуть позже)
-Сейчас не трогаем, но запомни:
-
-
-Реальный stepSize/minQty для каждой пары всё равно лучше брать из exchangeInfo (у тебя раньше уже была SymbolFilter и stepSize).
-
-
-Многоразовое [REAL EXEC] leg 1/2 за пару миллисекунд — это отдельная тема (антиспам на исполнение, типа lastExec[triangleID] с интервалом 300–500 ms). Можно добавить после того, как ордера начнут проходить.
-
-
-
-Итого, что сделать прямо сейчас:
-
-
-В mexc/trader.go — убедиться, что quantity формируется через strconv.FormatFloat(..., -1, 64).
-
-
-В arb/executor_real.go — добавить normalizeQty() и использовать его в ExecuteTriangle для qty.
-
-
-После этого пересобрать и снова запустить — в логах уже должна уйти ошибка quantity scale is invalid, либо смениться на более “рыночную” (NO_SUFFICIENT_BALANCE, min notional и т.п.).
 
 
 
