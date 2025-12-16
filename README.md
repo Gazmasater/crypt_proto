@@ -59,77 +59,175 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package arb
+package mexc
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
-
-	"crypt_proto/domain"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
 )
 
-type DryRunExecutor struct {
-	out io.Writer
+type Trader struct {
+	apiKey    string
+	apiSecret string
+	debug     bool
+	baseURL   string
+	client    *http.Client
 }
 
-func NewDryRunExecutor(out io.Writer) *DryRunExecutor {
-	return &DryRunExecutor{out: out}
+func NewTrader(apiKey, apiSecret string, debug bool) *Trader {
+	return &Trader{
+		apiKey:    apiKey,
+		apiSecret: apiSecret,
+		debug:     debug,
+		baseURL:   "https://api.mexc.com",
+		client:    &http.Client{Timeout: 10 * time.Second},
+	}
 }
 
-func (e *DryRunExecutor) Name() string { return "DRY-RUN" }
+// PlaceMarketOrder:
+// - BUY: лучше передавать quoteOrderQty (потратить ровно USDT)
+// - SELL: передавать quantity (сколько base продаем)
+func (t *Trader) PlaceMarketOrder(ctx context.Context, symbol, side string, quantity, quoteOrderQty float64) (string, error) {
+	side = strings.ToUpper(strings.TrimSpace(side))
+	if side != "BUY" && side != "SELL" {
+		return "", fmt.Errorf("bad side=%s", side)
+	}
 
-func (e *DryRunExecutor) Execute(ctx context.Context, t domain.Triangle, quotes map[string]domain.Quote, startUSDT float64) error {
-	fmt.Fprintf(e.out, "  [DRY RUN] start=%.6f USDT triangle=%s\n", startUSDT, t.Name)
-	return nil
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	params.Set("side", side)
+	params.Set("type", "MARKET")
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+
+	if side == "BUY" {
+		if quoteOrderQty <= 0 {
+			return "", fmt.Errorf("BUY requires quoteOrderQty>0")
+		}
+		// MEXC (часто) принимает quoteOrderQty как Binance-style
+		params.Set("quoteOrderQty", fmt.Sprintf("%.8f", quoteOrderQty))
+	} else {
+		if quantity <= 0 {
+			return "", fmt.Errorf("SELL requires quantity>0")
+		}
+		params.Set("quantity", fmt.Sprintf("%.12f", quantity))
+	}
+
+	sig := t.sign(params.Encode())
+	params.Set("signature", sig)
+
+	endpoint := t.baseURL + "/api/v3/order"
+	reqURL := endpoint + "?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil)
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+	// чтобы не ловить "Invalid content Type." (700013)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("mexc order error: status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	// ответ может быть разный — попробуем вытащить orderId
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	if v, ok := m["orderId"]; ok {
+		return fmt.Sprintf("%v", v), nil
+	}
+	if v, ok := m["orderIdStr"]; ok {
+		return fmt.Sprintf("%v", v), nil
+	}
+	return "", nil
 }
 
+func (t *Trader) GetBalance(ctx context.Context, asset string) (float64, error) {
+	params := url.Values{}
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+	sig := t.sign(params.Encode())
+	params.Set("signature", sig)
 
+	endpoint := t.baseURL + "/api/v3/account"
+	reqURL := endpoint + "?" + params.Encode()
 
-type Executor interface {
-	Name() string
-	Execute(ctx context.Context, t domain.Triangle, quotes map[string]domain.Quote, startUSDT float64) error
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return 0, err
+	}
+
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return 0, fmt.Errorf("mexc account error: status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	// Ответ похож на Binance: balances: [{asset:"USDT", free:"...", locked:"..."}]
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return 0, err
+	}
+
+	balAny, _ := root["balances"].([]any)
+	asset = strings.ToUpper(strings.TrimSpace(asset))
+
+	for _, it := range balAny {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		a, _ := m["asset"].(string)
+		if strings.ToUpper(strings.TrimSpace(a)) != asset {
+			continue
+		}
+
+		freeStr := ""
+		if s, ok := m["free"].(string); ok {
+			freeStr = s
+		} else if f, ok := m["free"].(float64); ok {
+			return f, nil
+		}
+		if freeStr == "" {
+			return 0, nil
+		}
+		v, _ := strconv.ParseFloat(freeStr, 64)
+		return v, nil
+	}
+
+	return 0, nil
 }
 
-
-[ARB] +0.114%  USDT→USELESS→USDC→USDT  maxStart=9.9183 USDT (9.9183 USDT)  safeStart=9.9183 USDT (9.9183 USDT) (x1.00)  bottleneck=USELESSUSDT
-  USELESSUSDT (USELESS/USDT): bid=0.0719700000 ask=0.0720810000  spread=0.0001110000 (0.15411%)  bidQty=514.1000 askQty=137.6000
-  USELESSUSDC (USELESS/USDC): bid=0.0722500000 ask=0.0726600000  spread=0.0004100000 (0.56587%)  bidQty=343.2800 askQty=455.3900
-  USDCUSDT (USDC/USDT): bid=1.0000000000 ask=1.0001000000  spread=0.0001000000 (0.01000%)  bidQty=164179.1900 askQty=262862.7200
-
-  [REAL EXEC] start=2.000000 USDT triangle=USDT→USELESS→USDC→USDT
-    [REAL EXEC] leg 1: BUY USELESSUSDT quoteOrderQty=2.000000
-2025-12-16 06:33:06.550
-[ARB] +0.216%  USDT→USELESS→USDC→USDT  maxStart=9.9083 USDT (9.9083 USDT)  safeStart=9.9083 USDT (9.9083 USDT) (x1.00)  bottleneck=USELESSUSDT
-  USELESSUSDT (USELESS/USDT): bid=0.0718090000 ask=0.0720080000  spread=0.0001990000 (0.27674%)  bidQty=1054.8200 askQty=137.6000
-  USELESSUSDC (USELESS/USDC): bid=0.0722500000 ask=0.0726600000  spread=0.0004100000 (0.56587%)  bidQty=343.2800 askQty=455.3900
-  USDCUSDT (USDC/USDT): bid=1.0000000000 ask=1.0001000000  spread=0.0001000000 (0.01000%)  bidQty=164179.1900 askQty=262862.7200
-
-2025-12-16 06:33:06.590
-[ARB] +0.288%  USDT→USELESS→USDC→USDT  maxStart=24.7109 USDT (24.7109 USDT)  safeStart=24.7109 USDT (24.7109 USDT) (x1.00)  bottleneck=USELESSUSDC
-  USELESSUSDT (USELESS/USDT): bid=0.0718090000 ask=0.0719560000  spread=0.0001470000 (0.20450%)  bidQty=1054.8200 askQty=514.1000
-  USELESSUSDC (USELESS/USDC): bid=0.0722500000 ask=0.0726600000  spread=0.0004100000 (0.56587%)  bidQty=343.2800 askQty=455.3900
-  USDCUSDT (USDC/USDT): bid=1.0000000000 ask=1.0001000000  spread=0.0001000000 (0.01000%)  bidQty=164179.1900 askQty=262862.7200
-
-2025-12-16 06:33:06.600
-[ARB] +0.288%  USDT→USELESS→USDC→USDT  maxStart=24.7109 USDT (24.7109 USDT)  safeStart=24.7109 USDT (24.7109 USDT) (x1.00)  bottleneck=USELESSUSDC
-  USELESSUSDT (USELESS/USDT): bid=0.0718100000 ask=0.0719560000  spread=0.0001460000 (0.20311%)  bidQty=149.0000 askQty=514.1000
-  USELESSUSDC (USELESS/USDC): bid=0.0722500000 ask=0.0726600000  spread=0.0004100000 (0.56587%)  bidQty=343.2800 askQty=455.3900
-  USDCUSDT (USDC/USDT): bid=1.0000000000 ask=1.0001000000  spread=0.0001000000 (0.01000%)  bidQty=164179.1900 askQty=262862.7200
-
-    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"code":700013,"msg":"Invalid content Type."}
-2025-12-16 06:33:28.094
-[ARB] +0.209%  USDT→NAKA→USDC→USDT  maxStart=5.7025 USDT (5.7025 USDT)  safeStart=5.7025 USDT (5.7025 USDT) (x1.00)  bottleneck=NAKAUSDC
-  NAKAUSDT (NAKA/USDT): bid=0.0787500000 ask=0.0789400000  spread=0.0001900000 (0.24098%)  bidQty=1162.6600 askQty=206.4000
-  NAKAUSDC (NAKA/USDC): bid=0.0792000000 ask=0.0793000000  spread=0.0001000000 (0.12618%)  bidQty=72.2100 askQty=36.6700
-  USDCUSDT (USDC/USDT): bid=1.0000000000 ask=1.0001000000  spread=0.0001000000 (0.01000%)  bidQty=163678.6400 askQty=260653.7300
-
-  [REAL EXEC] start=2.000000 USDT triangle=USDT→NAKA→USDC→USDT
-    [REAL EXEC] leg 1: BUY NAKAUSDT quoteOrderQty=2.000000
-    [REAL EXEC] leg 1 ERROR: mexc order error: status=400 body={"code":700013,"msg":"Invalid content Type."}
-^C2025/12/16 06:33:38.709212 shutting down...
-2025/12/16 06:33:38.713042 bye
-
+func (t *Trader) sign(query string) string {
+	mac := hmac.New(sha256.New, []byte(t.apiSecret))
+	_, _ = mac.Write([]byte(query))
+	return hex.EncodeToString(mac.Sum(nil))
+}
 
 
 
