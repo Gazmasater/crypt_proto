@@ -364,6 +364,13 @@ func rebuildSymbolsAndIndex(tris []domain.Triangle) ([]string, map[string][]int)
 
 
 
+2025/12/16 04:35:26.007242 API key/secret: loaded for MEXC
+2025/12/16 04:35:26.009535 треугольников (USDT→...→USDT): 334
+2025/12/16 04:35:26.009564 уникальных символов: 594
+2025/12/16 04:35:26.186597 [MEXC] triangles filtered by exchangeInfo: before=334 after=0
+2025/12/16 04:35:26.186623 нет символов для подписки после фильтрации
+exit status 1
+
 
 
 
