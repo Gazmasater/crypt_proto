@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"crypt_proto/arb"
 	"crypt_proto/config"
@@ -76,7 +77,7 @@ func main() {
 	// Trading toggles (если в твоём Config этих полей нет — добавь их в config.go)
 	consumer.TradeEnabled = cfg.TradeEnabled
 	consumer.TradeAmountUSDT = cfg.TradeAmountUSDT
-	consumer.TradeCooldown = cfg.TradeCooldown
+	consumer.TradeCooldown = time.Duration(cfg.TradeCooldownMs) * time.Millisecond
 
 	// Executor
 	if cfg.Exchange == "MEXC" && cfg.TradeEnabled && cfg.APIKey != "" && cfg.APISecret != "" {
