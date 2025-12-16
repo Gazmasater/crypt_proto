@@ -70,6 +70,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"crypt_proto/arb"
 	"crypt_proto/config"
@@ -139,7 +140,7 @@ func main() {
 	// Trading toggles (если в твоём Config этих полей нет — добавь их в config.go)
 	consumer.TradeEnabled = cfg.TradeEnabled
 	consumer.TradeAmountUSDT = cfg.TradeAmountUSDT
-	consumer.TradeCooldown = cfg.TradeCooldown
+	consumer.TradeCooldown = time.Duration(cfg.TradeCooldownMs) * time.Millisecond
 
 	// Executor
 	if cfg.Exchange == "MEXC" && cfg.TradeEnabled && cfg.APIKey != "" && cfg.APISecret != "" {
@@ -175,51 +176,34 @@ func main() {
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "cfg.TradeCooldown undefined (type config.Config has no field or method TradeCooldown)",
-	"source": "compiler",
-	"startLineNumber": 79,
-	"startColumn": 31,
-	"endLineNumber": 79,
-	"endColumn": 44,
-	"origin": "extHost1"
-}]
+arb/executor_noop.go (новый файл)
+package arb
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/cryptarb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredImportedName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredImportedName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: arb.NewNoopExecutor",
-	"source": "compiler",
-	"startLineNumber": 94,
-	"startColumn": 27,
-	"endLineNumber": 94,
-	"endColumn": 42,
-	"origin": "extHost1"
-}]
+import (
+	"context"
+
+	"crypt_proto/domain"
+)
+
+// NoopExecutor — безопасный исполнитель "ничего не делаю".
+// Используется когда трейд выключен или нет ключей API.
+type NoopExecutor struct{}
+
+func NewNoopExecutor() *NoopExecutor { return &NoopExecutor{} }
+
+func (e *NoopExecutor) Name() string { return "NOOP" }
+
+func (e *NoopExecutor) Execute(ctx context.Context, t domain.Triangle, quotes map[string]domain.Quote, startUSDT float64) error {
+	// намеренно ничего не делаем
+	_ = ctx
+	_ = t
+	_ = quotes
+	_ = startUSDT
+	return nil
+}
+
+
+
 
 
 
