@@ -15,6 +15,13 @@ import (
 
 const BaseAsset = "USDT"
 
+type tradeReq struct {
+	id         int
+	tr         domain.Triangle
+	quotesSnap map[string]domain.Quote // снапшот ТОЛЬКО нужных символов треугольника
+	enqueuedAt time.Time
+}
+
 type Consumer struct {
 	FeePerLeg     float64
 	MinProfit     float64
@@ -29,10 +36,19 @@ type Consumer struct {
 
 	writer io.Writer
 
-	// анти-спам/анти-ддос по трейду
-	mu        sync.Mutex
-	inFlight  bool
+	// котировки (живые, обновляются из events)
+	quotes map[string]domain.Quote
+
+	// очередь сделок (FIFO)
+	tradeQ chan tradeReq
+
+	mu sync.Mutex
+	// cooldown per triangle (по времени ПОСЛЕ исполнения)
 	lastTrade map[int]time.Time
+	// чтобы не ставить один и тот же треугольник в очередь много раз
+	queued map[int]bool
+
+	// анти-спам печати
 	lastPrint map[int]time.Time
 	minPrint  time.Duration
 }
@@ -46,10 +62,16 @@ func NewConsumer(feePerLeg, minProfit, minStart float64, out io.Writer) *Consume
 		TradeEnabled:    false,
 		TradeAmountUSDT: 2.0,
 		TradeCooldown:   800 * time.Millisecond,
+		Executor:        nil,
 		writer:          out,
-		lastTrade:       make(map[int]time.Time),
-		lastPrint:       make(map[int]time.Time),
-		minPrint:        5 * time.Millisecond,
+
+		quotes:    make(map[string]domain.Quote),
+		tradeQ:    make(chan tradeReq, 256),
+		lastTrade: make(map[int]time.Time),
+		queued:    make(map[int]bool),
+
+		lastPrint: make(map[int]time.Time),
+		minPrint:  5 * time.Millisecond,
 	}
 }
 
@@ -60,6 +82,14 @@ func (c *Consumer) Start(
 	indexBySymbol map[string][]int,
 	wg *sync.WaitGroup,
 ) {
+	// 1) worker (последовательное исполнение)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		c.tradeWorker(ctx)
+	}()
+
+	// 2) обработка market-data
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -73,8 +103,6 @@ func (c *Consumer) run(
 	triangles []domain.Triangle,
 	indexBySymbol map[string][]int,
 ) {
-	quotes := make(map[string]domain.Quote)
-
 	sf := c.StartFraction
 	if sf <= 0 || sf > 1 {
 		sf = 0.5
@@ -90,14 +118,14 @@ func (c *Consumer) run(
 				return
 			}
 
-			prev, okPrev := quotes[ev.Symbol]
+			// обновляем quote, если изменился
+			prev, okPrev := c.quotes[ev.Symbol]
 			if okPrev &&
 				prev.Bid == ev.Bid && prev.Ask == ev.Ask &&
 				prev.BidQty == ev.BidQty && prev.AskQty == ev.AskQty {
 				continue
 			}
-
-			quotes[ev.Symbol] = domain.Quote{Bid: ev.Bid, Ask: ev.Ask, BidQty: ev.BidQty, AskQty: ev.AskQty}
+			c.quotes[ev.Symbol] = domain.Quote{Bid: ev.Bid, Ask: ev.Ask, BidQty: ev.BidQty, AskQty: ev.AskQty}
 
 			trIDs := indexBySymbol[ev.Symbol]
 			if len(trIDs) == 0 {
@@ -109,12 +137,12 @@ func (c *Consumer) run(
 			for _, id := range trIDs {
 				tr := triangles[id]
 
-				prof, ok := domain.EvalTriangle(tr, quotes, c.FeePerLeg)
+				prof, ok := domain.EvalTriangle(tr, c.quotes, c.FeePerLeg)
 				if !ok || prof < c.MinProfit {
 					continue
 				}
 
-				ms, okMS := domain.ComputeMaxStartTopOfBook(tr, quotes, c.FeePerLeg)
+				ms, okMS := domain.ComputeMaxStartTopOfBook(tr, c.quotes, c.FeePerLeg)
 				if !okMS {
 					continue
 				}
@@ -123,56 +151,109 @@ func (c *Consumer) run(
 
 				// фильтр по MIN_START_USDT (по safeStart)
 				if c.MinStart > 0 {
-					safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, quotes)
+					safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, c.quotes)
 					if !okConv || safeUSDT < c.MinStart {
 						continue
 					}
 				}
 
 				// анти-спам печати
-				if last, okLast := c.lastPrint[id]; okLast && now.Sub(last) < c.minPrint {
-					// но торговлю можем всё равно запускать (ниже), печать — отдельно
-				} else {
+				if last, okLast := c.lastPrint[id]; !okLast || now.Sub(last) >= c.minPrint {
 					c.lastPrint[id] = now
 					msCopy := ms
-					c.printTriangle(now, tr, prof, quotes, &msCopy, sf)
+					c.printTriangle(now, tr, prof, c.quotes, &msCopy, sf)
 				}
 
-				// торговля
-				c.tryTrade(ctx, now, id, tr, quotes)
+				// торговля: поставить в очередь (снапшот)
+				c.tryEnqueueTrade(ctx, now, id, tr)
 			}
 		}
 	}
 }
 
-func (c *Consumer) tryTrade(ctx context.Context, now time.Time, id int, tr domain.Triangle, quotes map[string]domain.Quote) {
+func (c *Consumer) tryEnqueueTrade(ctx context.Context, now time.Time, id int, tr domain.Triangle) {
 	if !c.TradeEnabled || c.Executor == nil {
 		return
 	}
 
-	// cooldown per triangle
+	// проверим cooldown и queued/inflight
 	c.mu.Lock()
 	if last, ok := c.lastTrade[id]; ok && now.Sub(last) < c.TradeCooldown {
 		c.mu.Unlock()
 		return
 	}
-	if c.inFlight {
+	if c.queued[id] {
 		c.mu.Unlock()
 		return
 	}
-	c.inFlight = true
-	c.lastTrade[id] = now
+	// помечаем queued сразу (чтобы не спамить)
+	c.queued[id] = true
+
+	// делаем снапшот котировок только нужных символов
+	snap := make(map[string]domain.Quote, len(tr.Legs))
+	okSnap := true
+	for _, leg := range tr.Legs {
+		q, ok := c.quotes[leg.Symbol]
+		if !ok || q.Bid <= 0 || q.Ask <= 0 {
+			okSnap = false
+			break
+		}
+		snap[leg.Symbol] = q
+	}
 	c.mu.Unlock()
 
-	go func() {
-		defer func() {
-			c.mu.Lock()
-			c.inFlight = false
-			c.mu.Unlock()
-		}()
+	if !okSnap {
+		// снимем флаг queued, т.к. снапшот не удался
+		c.mu.Lock()
+		c.queued[id] = false
+		c.mu.Unlock()
+		return
+	}
 
-		_ = c.Executor.Execute(ctx, tr, quotes, c.TradeAmountUSDT)
-	}()
+	req := tradeReq{
+		id:         id,
+		tr:         tr,
+		quotesSnap: snap,
+		enqueuedAt: now,
+	}
+
+	// не блокируем навсегда: если очередь забита — просто отпускаем queued и пропускаем
+	select {
+	case c.tradeQ <- req:
+		// ok
+	case <-ctx.Done():
+		c.mu.Lock()
+		c.queued[id] = false
+		c.mu.Unlock()
+	default:
+		// очередь переполнена
+		c.mu.Lock()
+		c.queued[id] = false
+		c.mu.Unlock()
+	}
+}
+
+func (c *Consumer) tradeWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case req := <-c.tradeQ:
+			// снимаем queued (теперь "в работе")
+			c.mu.Lock()
+			c.queued[req.id] = false
+			c.mu.Unlock()
+
+			// исполняем строго последовательно (мы в одном воркере)
+			_ = c.Executor.Execute(ctx, req.tr, req.quotesSnap, c.TradeAmountUSDT)
+
+			// cooldown считаем от факта исполнения (после Execute)
+			c.mu.Lock()
+			c.lastTrade[req.id] = time.Now()
+			c.mu.Unlock()
+		}
+	}
 }
 
 func (c *Consumer) printTriangle(
