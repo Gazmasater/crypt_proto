@@ -60,7 +60,7 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-export TRADE_AMOUNT_USDT=10
+export TRADE_AMOUNT_USDT=100
 export FEE_PCT=0.04
 export SELL_SAFETY=0.995
 
@@ -954,6 +954,18 @@ func main() {
 	fmt.Println("Готово, OK файл:", outFile)
 	fmt.Println("Готово, EXCLUDED файл:", excludedFile)
 }
+
+
+
+
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/cryptarb$ go run .
+2025/12/17 18:28:24.375529 input=triangles_markets.csv output=triangles_markets_enriched.csv excluded=triangles_markets_excluded.csv TRADE_AMOUNT_USDT=100.000000 FEE_PCT=0.040000 SELL_SAFETY=0.995000
+2025/12/17 18:28:24.375755 triangles rows: 415
+2025/12/17 18:28:25.007060 rules loaded: 2538 symbols
+2025/12/17 18:28:25.124686 bookTicker loaded: 2533 symbols
+2025/12/17 18:28:25.128289 DONE: ok triangles written: 44, excluded written: 371
+Готово, OK файл: triangles_markets_enriched.csv
+Готово, EXCLUDED файл: triangles_markets_excluded.csv
 
 
 
