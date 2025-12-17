@@ -61,134 +61,380 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-[ARB] -0.013%  USDT→BDX→BTC→USDT  maxStart=306.1925 USDT (306.1925 USDT)  safeStart=306.1925 USDT (306.1925 USDT) (x1.00)  bottleneck=BDXUSDT
-  BDXUSDT (BDX/USDT): bid=0.0913100000 ask=0.0915100000  spread=0.0002000000 (0.21879%)  bidQty=6774.5500 askQty=3346.0000
-  BDXBTC (BDX/BTC): bid=0.0000010430 ask=0.0000010436  spread=0.0000000006 (0.05751%)  bidQty=3675.0000 askQty=722.0000
-  BTCUSDT (BTC/USDT): bid=87831.3300000000 ask=87831.3900000000  spread=0.0600000000 (0.00007%)  bidQty=0.0057 askQty=1.8749
+package arb
 
-  [REAL EXEC] start=3.000000 USDT triangle=USDT→BDX→BTC→USDT
-    [REAL EXEC] legs: sym1=BDXUSDT sym2=BDXBTC sym3=BTCUSDT
-    [REAL EXEC] parsed: sym1=BDXUSDT (BDX/USDT) sym2=BDXBTC (BDX/BTC) sym3=BTCUSDT (BTC/USDT)
-    [REAL EXEC] >>> GetBalance USDT (before)
-    [REAL EXEC] <<< GetBalance USDT (before) (366ms)
-    [REAL EXEC] BAL before: USDT=35.750330681146
-    [REAL EXEC] >>> GetBalance BDX (before leg1)
-    [REAL EXEC] <<< GetBalance BDX (before leg1) (230ms)
-    [REAL EXEC] leg1 PRE: BUY BDXUSDT by USDT=3.000000 ask=0.0915100000 bid=0.0913100000 | BDX before=0.000000000000
-    [REAL EXEC] >>> SmartMarketBuyUSDT leg1
-    [REAL EXEC] <<< SmartMarketBuyUSDT leg1 (565ms)
-    [REAL EXEC] leg1 PLACE OK: orderId=C02__629753757927804928022
-    [REAL EXEC] >>> waitBalanceChange BDX (after leg1)
-    [REAL EXEC] <<< waitBalanceChange BDX (after leg1) (241ms)
-    [REAL EXEC] leg1 BAL after: BDX=32.000000000000 delta=32.000000000000
-    [REAL EXEC] >>> GetBalance BDX (before leg2)
-    [REAL EXEC] <<< GetBalance BDX (before leg2) (242ms)
-    [REAL EXEC] >>> GetBalance BTC (before leg2)
-    [REAL EXEC] <<< GetBalance BTC (before leg2) (242ms)
-    [REAL EXEC] leg2 PRE: SELL BDXBTC qty=BDX=31.840000000000 (safety x0.995000) bid=0.0000010369 ask=0.0000010436 | BDX before=32.000000000000 BTC before=0.000000000000
-    [REAL EXEC] >>> SmartMarketSellQty leg2
-    [REAL EXEC] <<< SmartMarketSellQty leg2 (565ms)
-    [REAL EXEC] leg2 PLACE OK: orderId=C02__629753763032268800022
-    [REAL EXEC] >>> waitBalanceChange BTC (after leg2)
-    [REAL EXEC] <<< waitBalanceChange BTC (after leg2) (239ms)
-    [REAL EXEC] leg2 BAL after: BTC=0.000032127828 delta=0.000032127828
-    [REAL EXEC] >>> GetBalance BTC (before leg3)
-2025-12-17 02:20:33.780
-[ARB] -0.097%  USDT→WBTC→BTC→USDT  maxStart=5.2445 USDT (5.2445 USDT)  safeStart=5.2445 USDT (5.2445 USDT) (x1.00)  bottleneck=WBTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87646.8400000000 ask=87671.0300000000  spread=24.1900000000 (0.02760%)  bidQty=0.0106 askQty=0.0001
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.3900000000  spread=0.0700000000 (0.00008%)  bidQty=1.5292 askQty=1.8749
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"sync"
+	"time"
 
-2025-12-17 02:20:33.785
-[ARB] -0.097%  USDT→WBTC→BTC→USDT  maxStart=5.2445 USDT (5.2445 USDT)  safeStart=5.2445 USDT (5.2445 USDT) (x1.00)  bottleneck=WBTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87646.8400000000 ask=87671.0300000000  spread=24.1900000000 (0.02760%)  bidQty=0.0106 askQty=0.0001
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.4000000000  spread=0.0800000000 (0.00009%)  bidQty=1.5292 askQty=0.0022
+	"crypt_proto/domain"
+)
 
-    [REAL EXEC] <<< GetBalance BTC (before leg3) (238ms)
-    [REAL EXEC] >>> GetBalance USDT (before leg3)
-2025-12-17 02:20:33.796
-[ARB] -0.097%  USDT→WBTC→BTC→USDT  maxStart=5.2445 USDT (5.2445 USDT)  safeStart=5.2445 USDT (5.2445 USDT) (x1.00)  bottleneck=WBTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87646.8400000000 ask=87671.0300000000  spread=24.1900000000 (0.02760%)  bidQty=0.0106 askQty=0.0001
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.3900000000  spread=0.0700000000 (0.00008%)  bidQty=0.1239 askQty=3.7834
+const BaseAsset = "USDT"
 
-2025-12-17 02:20:33.806
-[ARB] -0.097%  USDT→WBTC→BTC→USDT  maxStart=5.2445 USDT (5.2445 USDT)  safeStart=5.2445 USDT (5.2445 USDT) (x1.00)  bottleneck=WBTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87653.4700000000 ask=87671.0300000000  spread=17.5600000000 (0.02003%)  bidQty=0.0009 askQty=0.0001
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.3900000000  spread=0.0700000000 (0.00008%)  bidQty=0.0929 askQty=3.7834
+type tradeReq struct {
+	id        int
+	tr        domain.Triangle
+	quotesSnap map[string]domain.Quote // снапшот ТОЛЬКО нужных символов треугольника
+	enqueuedAt time.Time
+}
 
-2025-12-17 02:20:33.817
-[ARB] -0.097%  USDT→WBTC→BTC→USDT  maxStart=5.2445 USDT (5.2445 USDT)  safeStart=5.2445 USDT (5.2445 USDT) (x1.00)  bottleneck=WBTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87653.4700000000 ask=87671.0300000000  spread=17.5600000000 (0.02003%)  bidQty=0.0009 askQty=0.0001
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.3900000000  spread=0.0700000000 (0.00008%)  bidQty=0.0310 askQty=3.7834
+type Consumer struct {
+	FeePerLeg     float64
+	MinProfit     float64
+	MinStart      float64
+	StartFraction float64
 
-2025-12-17 02:20:33.824
-[ARB] -0.097%  USDT→WBTC→BTC→USDT  maxStart=5.2445 USDT (5.2445 USDT)  safeStart=5.2445 USDT (5.2445 USDT) (x1.00)  bottleneck=WBTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87653.4700000000 ask=87671.0300000000  spread=17.5600000000 (0.02003%)  bidQty=0.0009 askQty=0.0001
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.3900000000  spread=0.0700000000 (0.00008%)  bidQty=0.0620 askQty=3.7834
+	TradeEnabled    bool
+	TradeAmountUSDT float64
+	TradeCooldown   time.Duration
 
-2025-12-17 02:20:33.835
-[ARB] -0.097%  USDT→WBTC→BTC→USDT  maxStart=5.2445 USDT (5.2445 USDT)  safeStart=5.2445 USDT (5.2445 USDT) (x1.00)  bottleneck=WBTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87653.4700000000 ask=87671.0300000000  spread=17.5600000000 (0.02003%)  bidQty=0.0009 askQty=0.0001
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.3900000000  spread=0.0700000000 (0.00008%)  bidQty=0.0310 askQty=3.7834
+	Executor Executor
 
-2025-12-17 02:20:33.968
-[ARB] -0.097%  USDT→WBTC→BTC→USDT  maxStart=5.2445 USDT (5.2445 USDT)  safeStart=5.2445 USDT (5.2445 USDT) (x1.00)  bottleneck=WBTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87651.7600000000 ask=87671.0300000000  spread=19.2700000000 (0.02198%)  bidQty=0.0009 askQty=0.0001
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.3900000000  spread=0.0700000000 (0.00008%)  bidQty=0.0310 askQty=3.7834
+	writer io.Writer
 
-2025-12-17 02:20:34.009
-[ARB] -0.097%  USDT→WBTC→BTC→USDT  maxStart=2722.5785 USDT (2722.5785 USDT)  safeStart=2722.5785 USDT (2722.5785 USDT) (x1.00)  bottleneck=BTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87651.7600000000 ask=87671.0200000000  spread=19.2600000000 (0.02197%)  bidQty=0.0009 askQty=0.0317
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.3900000000  spread=0.0700000000 (0.00008%)  bidQty=0.0310 askQty=3.7834
+	// котировки (живые, обновляются из events)
+	quotes map[string]domain.Quote
 
-    [REAL EXEC] <<< GetBalance USDT (before leg3) (223ms)
-    [REAL EXEC] leg3 PRE: SELL BTCUSDT qty=BTC=0.000031967189 (safety x0.995000) bid=87831.3300000000 ask=87831.3900000000 | BTC before=0.000032127828 USDT before=32.820546521146
-    [REAL EXEC] >>> SmartMarketSellQty leg3
-2025-12-17 02:20:34.110
-[ARB] -0.097%  USDT→WBTC→BTC→USDT  maxStart=2722.5785 USDT (2722.5785 USDT)  safeStart=2722.5785 USDT (2722.5785 USDT) (x1.00)  bottleneck=BTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87646.8500000000 ask=87671.0200000000  spread=24.1700000000 (0.02757%)  bidQty=0.0009 askQty=0.0317
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.3900000000  spread=0.0700000000 (0.00008%)  bidQty=0.0310 askQty=3.7834
+	// очередь сделок (FIFO)
+	tradeQ chan tradeReq
 
-2025-12-17 02:20:34.185
-[ARB] -0.065%  USDT→TON→USDC→USDT  maxStart=23.6382 USDT (23.6382 USDT)  safeStart=23.6382 USDT (23.6382 USDT) (x1.00)  bottleneck=TONUSDT
-  TONUSDT (TON/USDT): bid=1.5460000000 ask=1.5470000000  spread=0.0010000000 (0.06466%)  bidQty=2553.0600 askQty=15.2800
-  TONUSDC (TON/USDC): bid=1.5480000000 ask=1.5490000000  spread=0.0010000000 (0.06458%)  bidQty=29.7300 askQty=20.4500
-  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=1839728.0600 askQty=130865.8800
+	mu sync.Mutex
+	// cooldown per triangle (по времени ПОСЛЕ исполнения)
+	lastTrade map[int]time.Time
+	// чтобы не ставить один и тот же треугольник в очередь много раз
+	queued map[int]bool
 
-2025-12-17 02:20:34.194
-[ARB] -0.065%  USDT→TON→USDC→USDT  maxStart=35.4263 USDT (35.4263 USDT)  safeStart=35.4263 USDT (35.4263 USDT) (x1.00)  bottleneck=TONUSDT
-  TONUSDT (TON/USDT): bid=1.5460000000 ask=1.5470000000  spread=0.0010000000 (0.06466%)  bidQty=2553.0600 askQty=22.9000
-  TONUSDC (TON/USDC): bid=1.5480000000 ask=1.5490000000  spread=0.0010000000 (0.06458%)  bidQty=29.7300 askQty=20.4500
-  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=1839728.0600 askQty=130865.8800
+	// анти-спам печати
+	lastPrint map[int]time.Time
+	minPrint  time.Duration
+}
 
-2025-12-17 02:20:34.208
-[ARB] -0.065%  USDT→TON→USDC→USDT  maxStart=46.0107 USDT (46.0107 USDT)  safeStart=46.0107 USDT (46.0107 USDT) (x1.00)  bottleneck=TONUSDC
-  TONUSDT (TON/USDT): bid=1.5460000000 ask=1.5470000000  spread=0.0010000000 (0.06466%)  bidQty=2553.0600 askQty=128.7300
-  TONUSDC (TON/USDC): bid=1.5480000000 ask=1.5490000000  spread=0.0010000000 (0.06458%)  bidQty=29.7300 askQty=20.4500
-  USDCUSDT (USDC/USDT): bid=0.9999000000 ask=1.0000000000  spread=0.0001000000 (0.01000%)  bidQty=1839728.0600 askQty=130865.8800
+func NewConsumer(feePerLeg, minProfit, minStart float64, out io.Writer) *Consumer {
+	return &Consumer{
+		FeePerLeg:       feePerLeg,
+		MinProfit:       minProfit,
+		MinStart:        minStart,
+		StartFraction:   0.5,
+		TradeEnabled:    false,
+		TradeAmountUSDT: 2.0,
+		TradeCooldown:   800 * time.Millisecond,
+		Executor:        nil,
+		writer:          out,
 
-2025-12-17 02:20:34.281
-[ARB] -0.100%  USDT→WBTC→BTC→USDT  maxStart=2722.6483 USDT (2722.6483 USDT)  safeStart=2722.6483 USDT (2722.6483 USDT) (x1.00)  bottleneck=BTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87646.8500000000 ask=87673.2700000000  spread=26.4200000000 (0.03014%)  bidQty=0.0009 askQty=0.0317
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.3900000000  spread=0.0700000000 (0.00008%)  bidQty=0.0310 askQty=3.7834
+		quotes:    make(map[string]domain.Quote),
+		tradeQ:    make(chan tradeReq, 256),
+		lastTrade: make(map[int]time.Time),
+		queued:    make(map[int]bool),
 
-    [REAL EXEC] <<< SmartMarketSellQty leg3 (293ms)
-    [REAL EXEC] leg3 PLACE ERR: qty<=0 after normalize (raw=0.000031967189)
-2025-12-17 02:20:34.598
-[ARB] -0.100%  USDT→WBTC→BTC→USDT  maxStart=2774.9774 USDT (2774.9774 USDT)  safeStart=2774.9774 USDT (2774.9774 USDT) (x1.00)  bottleneck=WBTCUSDT
-  WBTCUSDT (WBTC/USDT): bid=87646.8500000000 ask=87673.2700000000  spread=26.4200000000 (0.03014%)  bidQty=0.0009 askQty=0.0317
-  WBTCBTC (WBTC/BTC): bid=0.9984000000 ask=0.9993000000  spread=0.0009000000 (0.09010%)  bidQty=1.3822 askQty=0.0017
-  BTCUSDT (BTC/USDT): bid=87831.3200000000 ask=87831.3900000000  spread=0.0700000000 (0.00008%)  bidQty=0.0747 askQty=3.7834
+		lastPrint: make(map[int]time.Time),
+		minPrint:  5 * time.Millisecond,
+	}
+}
+
+func (c *Consumer) Start(
+	ctx context.Context,
+	events <-chan domain.Event,
+	triangles []domain.Triangle,
+	indexBySymbol map[string][]int,
+	wg *sync.WaitGroup,
+) {
+	// 1) worker (последовательное исполнение)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		c.tradeWorker(ctx)
+	}()
+
+	// 2) обработка market-data
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		c.run(ctx, events, triangles, indexBySymbol)
+	}()
+}
+
+func (c *Consumer) run(
+	ctx context.Context,
+	events <-chan domain.Event,
+	triangles []domain.Triangle,
+	indexBySymbol map[string][]int,
+) {
+	sf := c.StartFraction
+	if sf <= 0 || sf > 1 {
+		sf = 0.5
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+
+			// обновляем quote, если изменился
+			prev, okPrev := c.quotes[ev.Symbol]
+			if okPrev &&
+				prev.Bid == ev.Bid && prev.Ask == ev.Ask &&
+				prev.BidQty == ev.BidQty && prev.AskQty == ev.AskQty {
+				continue
+			}
+			c.quotes[ev.Symbol] = domain.Quote{Bid: ev.Bid, Ask: ev.Ask, BidQty: ev.BidQty, AskQty: ev.AskQty}
+
+			trIDs := indexBySymbol[ev.Symbol]
+			if len(trIDs) == 0 {
+				continue
+			}
+
+			now := time.Now()
+
+			for _, id := range trIDs {
+				tr := triangles[id]
+
+				prof, ok := domain.EvalTriangle(tr, c.quotes, c.FeePerLeg)
+				if !ok || prof < c.MinProfit {
+					continue
+				}
+
+				ms, okMS := domain.ComputeMaxStartTopOfBook(tr, c.quotes, c.FeePerLeg)
+				if !okMS {
+					continue
+				}
+
+				safeStart := ms.MaxStart * sf
+
+				// фильтр по MIN_START_USDT (по safeStart)
+				if c.MinStart > 0 {
+					safeUSDT, okConv := convertToUSDT(safeStart, ms.StartAsset, c.quotes)
+					if !okConv || safeUSDT < c.MinStart {
+						continue
+					}
+				}
+
+				// анти-спам печати
+				if last, okLast := c.lastPrint[id]; !okLast || now.Sub(last) >= c.minPrint {
+					c.lastPrint[id] = now
+					msCopy := ms
+					c.printTriangle(now, tr, prof, c.quotes, &msCopy, sf)
+				}
+
+				// торговля: поставить в очередь (снапшот)
+				c.tryEnqueueTrade(ctx, now, id, tr)
+			}
+		}
+	}
+}
+
+func (c *Consumer) tryEnqueueTrade(ctx context.Context, now time.Time, id int, tr domain.Triangle) {
+	if !c.TradeEnabled || c.Executor == nil {
+		return
+	}
+
+	// проверим cooldown и queued/inflight
+	c.mu.Lock()
+	if last, ok := c.lastTrade[id]; ok && now.Sub(last) < c.TradeCooldown {
+		c.mu.Unlock()
+		return
+	}
+	if c.queued[id] {
+		c.mu.Unlock()
+		return
+	}
+	// помечаем queued сразу (чтобы не спамить)
+	c.queued[id] = true
+
+	// делаем снапшот котировок только нужных символов
+	snap := make(map[string]domain.Quote, len(tr.Legs))
+	okSnap := true
+	for _, leg := range tr.Legs {
+		q, ok := c.quotes[leg.Symbol]
+		if !ok || q.Bid <= 0 || q.Ask <= 0 {
+			okSnap = false
+			break
+		}
+		snap[leg.Symbol] = q
+	}
+	c.mu.Unlock()
+
+	if !okSnap {
+		// снимем флаг queued, т.к. снапшот не удался
+		c.mu.Lock()
+		c.queued[id] = false
+		c.mu.Unlock()
+		return
+	}
+
+	req := tradeReq{
+		id:         id,
+		tr:         tr,
+		quotesSnap: snap,
+		enqueuedAt: now,
+	}
+
+	// не блокируем навсегда: если очередь забита — просто отпускаем queued и пропускаем
+	select {
+	case c.tradeQ <- req:
+		// ok
+	case <-ctx.Done():
+		c.mu.Lock()
+		c.queued[id] = false
+		c.mu.Unlock()
+	default:
+		// очередь переполнена
+		c.mu.Lock()
+		c.queued[id] = false
+		c.mu.Unlock()
+	}
+}
+
+func (c *Consumer) tradeWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case req := <-c.tradeQ:
+			// снимаем queued (теперь "в работе")
+			c.mu.Lock()
+			c.queued[req.id] = false
+			c.mu.Unlock()
+
+			// исполняем строго последовательно (мы в одном воркере)
+			_ = c.Executor.Execute(ctx, req.tr, req.quotesSnap, c.TradeAmountUSDT)
+
+			// cooldown считаем от факта исполнения (после Execute)
+			c.mu.Lock()
+			c.lastTrade[req.id] = time.Now()
+			c.mu.Unlock()
+		}
+	}
+}
+
+func (c *Consumer) printTriangle(
+	ts time.Time,
+	t domain.Triangle,
+	profit float64,
+	quotes map[string]domain.Quote,
+	ms *domain.MaxStartInfo,
+	startFraction float64,
+) {
+	w := c.writer
+	fmt.Fprintf(w, "%s\n", ts.Format("2006-01-02 15:04:05.000"))
+
+	if ms == nil {
+		fmt.Fprintf(w, "[ARB] %+0.3f%%  %s\n", profit*100, t.Name)
+		fmt.Fprintln(w)
+		return
+	}
+
+	bneckSym := ""
+	if ms.BottleneckLeg >= 0 && ms.BottleneckLeg < len(t.Legs) {
+		bneckSym = t.Legs[ms.BottleneckLeg].Symbol
+	}
+
+	safeStart := ms.MaxStart * startFraction
+	maxUSDT, okMax := convertToUSDT(ms.MaxStart, ms.StartAsset, quotes)
+	safeUSDT, okSafe := convertToUSDT(safeStart, ms.StartAsset, quotes)
+
+	maxUSDTStr, safeUSDTStr := "?", "?"
+	if okMax {
+		maxUSDTStr = fmt.Sprintf("%.4f", maxUSDT)
+	}
+	if okSafe {
+		safeUSDTStr = fmt.Sprintf("%.4f", safeUSDT)
+	}
+
+	fmt.Fprintf(w,
+		"[ARB] %+0.3f%%  %s  maxStart=%.4f %s (%s USDT)  safeStart=%.4f %s (%s USDT) (x%.2f)  bottleneck=%s\n",
+		profit*100, t.Name,
+		ms.MaxStart, ms.StartAsset, maxUSDTStr,
+		safeStart, ms.StartAsset, safeUSDTStr,
+		startFraction,
+		bneckSym,
+	)
+
+	for _, leg := range t.Legs {
+		q := quotes[leg.Symbol]
+		mid := (q.Bid + q.Ask) / 2
+		spreadAbs := q.Ask - q.Bid
+		spreadPct := 0.0
+		if mid > 0 {
+			spreadPct = spreadAbs / mid * 100
+		}
+		side := ""
+		if leg.Dir > 0 {
+			side = fmt.Sprintf("%s/%s", leg.From, leg.To)
+		} else {
+			side = fmt.Sprintf("%s/%s", leg.To, leg.From)
+		}
+		fmt.Fprintf(w, "  %s (%s): bid=%.10f ask=%.10f  spread=%.10f (%.5f%%)  bidQty=%.4f askQty=%.4f\n",
+			leg.Symbol, side,
+			q.Bid, q.Ask,
+			spreadAbs, spreadPct,
+			q.BidQty, q.AskQty,
+		)
+	}
+	fmt.Fprintln(w)
+}
+
+// ===== utils =====
+
+func OpenLogWriter(path string) (io.WriteCloser, *bufio.Writer, io.Writer) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Fatalf("open %s: %v", path, err)
+	}
+	buf := bufio.NewWriter(f)
+	out := io.MultiWriter(os.Stdout, buf)
+	return f, buf, out
+}
+
+func convertToUSDT(amount float64, asset string, quotes map[string]domain.Quote) (float64, bool) {
+	if amount <= 0 {
+		return 0, false
+	}
+	if asset == BaseAsset {
+		return amount, true
+	}
+	if q, ok := quotes[asset+"USDT"]; ok && q.Bid > 0 {
+		return amount * q.Bid, true
+	}
+	if q, ok := quotes["USDT"+asset]; ok && q.Ask > 0 {
+		return amount / q.Ask, true
+	}
+	if amtUSDC, ok1 := convertViaQuote(amount, asset, "USDC", quotes); ok1 {
+		if amtUSDT, ok2 := convertViaQuote(amtUSDC, "USDC", "USDT", quotes); ok2 {
+			return amtUSDT, true
+		}
+	}
+	return 0, false
+}
+
+func convertViaQuote(amount float64, from, to string, quotes map[string]domain.Quote) (float64, bool) {
+	if amount <= 0 {
+		return 0, false
+	}
+	if from == to {
+		return amount, true
+	}
+	if q, ok := quotes[from+to]; ok && q.Bid > 0 {
+		return amount * q.Bid, true
+	}
+	if q, ok := quotes[to+from]; ok && q.Ask > 0 {
+		return amount / q.Ask, true
+	}
+	return 0, false
+}
+
 
 
 
