@@ -60,7 +60,7 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-export TRADE_AMOUNT_USDT=100
+export TRADE_AMOUNT_USDT=10
 export FEE_PCT=0.04
 export SELL_SAFETY=0.995
 
