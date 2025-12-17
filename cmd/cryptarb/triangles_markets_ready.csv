@@ -1,0 +1,416 @@
+base1,quote1,base2,quote2,base3,quote3,min_start_usdt,reason
+0G,USDC,USDC,USDT,0G,USDT,0.000000,spot/market/price not ok
+1DOLLAR,USDC,USDC,USDT,1DOLLAR,USDT,0.000000,spot/market/price not ok
+A,USDC,USDC,USDT,A,USDT,0.000000,spot/market/price not ok
+A,BTC,BTC,USDC,A,USDC,0.000000,spot/market/price not ok
+A,BTC,BTC,USDT,A,USDT,0.000000,spot/market/price not ok
+AAVE,USDC,USDC,USDT,AAVE,USDT,0.000000,spot/market/price not ok
+ACH,USDC,USDC,USDT,ACH,USDT,0.000000,spot/market/price not ok
+ADA,EUR,EUR,USDC,ADA,USDC,0.000000,spot/market/price not ok
+ADA,EUR,EUR,USDT,ADA,USDT,0.000000,spot/market/price not ok
+ADA,USDC,USDC,USDT,ADA,USDT,0.000000,spot/market/price not ok
+ADA,BTC,BTC,USDC,ADA,USDC,0.000000,spot/market/price not ok
+ADA,BTC,BTC,USDT,ADA,USDT,0.000000,spot/market/price not ok
+ADA,BTC,BTC,EUR,ADA,EUR,0.000000,spot/market/price not ok
+AERGO,USDC,USDC,USDT,AERGO,USDT,0.000000,spot/market/price not ok
+AGT,USDC,USDC,USDT,AGT,USDT,0.000000,spot/market/price not ok
+AIOT,USDC,USDC,USDT,AIOT,USDT,0.000000,spot/market/price not ok
+AIXBT,USDC,USDC,USDT,AIXBT,USDT,0.010000,
+ALCH,USDC,USDC,USDT,ALCH,USDT,0.000000,spot/market/price not ok
+ALGO,USDC,USDC,USDT,ALGO,USDT,0.000000,spot/market/price not ok
+ALLO,USDC,USDC,USDT,ALLO,USDT,0.000000,spot/market/price not ok
+ANKR,BTC,BTC,USDT,ANKR,USDT,0.000000,spot/market/price not ok
+APE,USDC,USDC,USDT,APE,USDT,0.000000,spot/market/price not ok
+APR,USDC,USDC,USDT,APR,USDT,0.000000,spot/market/price not ok
+APT,USDC,USDC,USDT,APT,USDT,0.000000,spot/market/price not ok
+AR,USDC,USDC,USDT,AR,USDT,0.000000,spot/market/price not ok
+AR,ETH,ETH,USDT,AR,USDT,0.000000,spot/market/price not ok
+AR,ETH,ETH,USDC,AR,USDC,0.000000,spot/market/price not ok
+ARB,USDC,USDC,USDT,ARB,USDT,0.000000,spot/market/price not ok
+ARKM,USDC,USDC,USDT,ARKM,USDT,0.000000,spot/market/price not ok
+ART,USDC,USDC,USDT,ART,USDT,0.000000,spot/market/price not ok
+ASTER,USDC,USDC,USDT,ASTER,USDT,0.000000,spot/market/price not ok
+AT,USDC,USDC,USDT,AT,USDT,0.000000,spot/market/price not ok
+ATOM,BTC,BTC,USDC,ATOM,USDC,0.000000,spot/market/price not ok
+ATOM,BTC,BTC,USDT,ATOM,USDT,0.000000,spot/market/price not ok
+ATOM,USDC,USDC,USDT,ATOM,USDT,0.000000,spot/market/price not ok
+AVAX,USDC,USDC,USDT,AVAX,USDT,0.000000,spot/market/price not ok
+AVAX,EUR,EUR,USDC,AVAX,USDC,0.000000,spot/market/price not ok
+AVAX,EUR,EUR,USDT,AVAX,USDT,0.000000,spot/market/price not ok
+AVNT,USDC,USDC,USDT,AVNT,USDT,0.000000,spot/market/price not ok
+AZERO,USDC,USDC,USDT,AZERO,USDT,0.000000,spot/market/price not ok
+B,USD1,USD1,USDT,B,USDT,0.000000,spot/market/price not ok
+B2,USDC,USDC,USDT,B2,USDT,0.000000,spot/market/price not ok
+BABY,USDC,USDC,USDT,BABY,USDT,0.000000,spot/market/price not ok
+BABYDOGE,USDC,USDC,USDT,BABYDOGE,USDT,0.010000,
+BANANA,USDC,USDC,USDT,BANANA,USDT,0.000000,spot/market/price not ok
+BANANAS31,USDC,USDC,USDT,BANANAS31,USDT,0.000000,spot/market/price not ok
+BANK,USD1,USD1,USDT,BANK,USDT,0.000000,spot/market/price not ok
+BANK,USDC,USDC,USDT,BANK,USDT,0.000000,spot/market/price not ok
+BARD,USDC,USDC,USDT,BARD,USDT,0.000000,spot/market/price not ok
+BCH,USDC,USDC,USDT,BCH,USDT,0.000000,spot/market/price not ok
+BCH,BTC,BTC,USDT,BCH,USDT,0.000000,spot/market/price not ok
+BCH,BTC,BTC,USDC,BCH,USDC,0.000000,spot/market/price not ok
+BDX,BTC,BTC,USDT,BDX,USDT,0.000000,spot/market/price not ok
+BDXN,USDC,USDC,USDT,BDXN,USDT,0.000000,spot/market/price not ok
+BERA,USDC,USDC,USDT,BERA,USDT,0.000000,spot/market/price not ok
+BKN,USDC,USDC,USDT,BKN,USDT,0.000000,spot/market/price not ok
+BLESS,USDC,USDC,USDT,BLESS,USDT,0.000000,spot/market/price not ok
+BLUM,USDC,USDC,USDT,BLUM,USDT,0.000000,spot/market/price not ok
+BMT,USDC,USDC,USDT,BMT,USDT,0.000000,spot/market/price not ok
+BNB,USDC,USDC,USDT,BNB,USDT,0.000000,spot/market/price not ok
+BOB,USDC,USDC,USDT,BOB,USDT,0.000000,spot/market/price not ok
+BOMB,USDC,USDC,USDT,BOMB,USDT,0.000000,spot/market/price not ok
+BONK,USDC,USDC,USDT,BONK,USDT,0.000000,spot/market/price not ok
+BOOM,USDC,USDC,USDT,BOOM,USDT,0.000000,spot/market/price not ok
+MX,BRL,MX,USDC,USDC,BRL,0.000000,spot/market/price not ok
+MX,BRL,MX,USDT,BRL,USDT,0.000000,spot/market/price not ok
+BTC,BRL,BTC,USDC,USDC,BRL,0.000000,spot/market/price not ok
+BTC,BRL,XRP,BTC,XRP,BRL,0.000000,spot/market/price not ok
+BTC,BRL,SOL,BTC,SOL,BRL,0.000000,spot/market/price not ok
+BTC,BRL,ETH,BTC,ETH,BRL,0.000000,spot/market/price not ok
+BTC,BRL,BTC,USDT,BRL,USDT,0.000000,spot/market/price not ok
+BTC,BRL,MX,BTC,MX,BRL,0.000000,spot/market/price not ok
+USDC,BRL,XRP,USDC,XRP,BRL,0.000000,spot/market/price not ok
+USDC,BRL,USDC,USDT,BRL,USDT,0.000000,spot/market/price not ok
+SOL,BRL,SOL,USDT,BRL,USDT,0.000000,spot/market/price not ok
+SOL,BRL,SOL,USDC,USDC,BRL,0.000000,spot/market/price not ok
+ETH,BRL,ETH,USDT,BRL,USDT,0.000000,spot/market/price not ok
+ETH,BRL,MX,ETH,MX,BRL,0.000000,spot/market/price not ok
+ETH,BRL,ETH,USDC,USDC,BRL,0.000000,spot/market/price not ok
+ETH,BRL,XRP,ETH,XRP,BRL,0.000000,spot/market/price not ok
+BRL,USDT,VINE,USDT,VINE,BRL,0.000000,spot/market/price not ok
+BRL,USDT,XRP,USDT,XRP,BRL,0.000000,spot/market/price not ok
+BROCCOLIF3B,USDC,USDC,USDT,BROCCOLIF3B,USDT,0.000000,spot/market/price not ok
+ONT,BTC,ONT,USDT,BTC,USDT,0.000000,spot/market/price not ok
+BTC,USDF,USDF,USDT,BTC,USDT,0.000000,spot/market/price not ok
+BTC,USDC,USDC,USDF,BTC,USDF,0.000000,spot/market/price not ok
+BTC,USDC,XRP,USDC,XRP,BTC,0.000000,spot/market/price not ok
+BTC,USDC,WBTC,USDC,WBTC,BTC,0.000000,spot/market/price not ok
+BTC,USDC,XLM,USDC,XLM,BTC,0.000000,triangle has no USDT
+BTC,USDC,USDC,USDT,BTC,USDT,0.000000,spot/market/price not ok
+DOT,BTC,DOT,USDT,BTC,USDT,0.000000,spot/market/price not ok
+DOT,BTC,DOT,USDC,BTC,USDC,0.000000,spot/market/price not ok
+QTUM,BTC,QTUM,USDT,BTC,USDT,0.000000,spot/market/price not ok
+ETC,BTC,ETC,USDC,BTC,USDC,0.000000,spot/market/price not ok
+ETC,BTC,ETC,USDT,BTC,USDT,0.000000,spot/market/price not ok
+DEXE,BTC,DEXE,USDT,BTC,USDT,0.000000,spot/market/price not ok
+TRX,BTC,TRX,USDT,BTC,USDT,0.000000,spot/market/price not ok
+TRX,BTC,TRX,USDE,BTC,USDE,0.000000,spot/market/price not ok
+TRX,BTC,TRX,USDC,BTC,USDC,0.000000,spot/market/price not ok
+LTC,BTC,LTC,USDT,BTC,USDT,0.000000,spot/market/price not ok
+LTC,BTC,LTC,USDC,BTC,USDC,0.000000,spot/market/price not ok
+NEO,BTC,NEO,USDT,BTC,USDT,0.000000,spot/market/price not ok
+NEO,BTC,NEO,USDC,BTC,USDC,0.000000,spot/market/price not ok
+ETH,BTC,XRP,ETH,XRP,BTC,0.000000,spot/market/price not ok
+ETH,BTC,ETH,USDC,BTC,USDC,0.000000,spot/market/price not ok
+ETH,BTC,IP,ETH,IP,BTC,0.000000,spot/market/price not ok
+ETH,BTC,ETH,USDT,BTC,USDT,0.000000,spot/market/price not ok
+ETH,BTC,ETH,USD1,BTC,USD1,0.000000,spot/market/price not ok
+ETH,BTC,ETH,USDE,BTC,USDE,0.000000,spot/market/price not ok
+ETH,BTC,MX,ETH,MX,BTC,0.000000,spot/market/price not ok
+ETH,BTC,ETH,EUR,BTC,EUR,0.000000,spot/market/price not ok
+ETH,BTC,ETH,USDF,BTC,USDF,0.000000,spot/market/price not ok
+IP,BTC,IP,USDC,BTC,USDC,0.000000,spot/market/price not ok
+IP,BTC,IP,USDT,BTC,USDT,0.000000,spot/market/price not ok
+SOL,BTC,SOL,USDT,BTC,USDT,0.000000,spot/market/price not ok
+SOL,BTC,SOL,USD1,BTC,USD1,0.000000,spot/market/price not ok
+SOL,BTC,SOL,USDE,BTC,USDE,0.000000,spot/market/price not ok
+SOL,BTC,SOL,USDC,BTC,USDC,0.000000,spot/market/price not ok
+DASH,BTC,DASH,USDT,BTC,USDT,0.000000,spot/market/price not ok
+DASH,BTC,DASH,USDC,BTC,USDC,0.000000,spot/market/price not ok
+OMG,BTC,OMG,USDT,BTC,USDT,0.000000,spot/market/price not ok
+BTC,USDT,XRP,USDT,XRP,BTC,0.000000,spot/market/price not ok
+BTC,USDT,WBTC,USDT,WBTC,BTC,0.000000,spot/market/price not ok
+BTC,USDT,XLM,USDT,XLM,BTC,0.000000,spot/market/price not ok
+BTC,USD1,USD1,USDT,BTC,USDT,0.000000,spot/market/price not ok
+BTC,USD1,XRP,USD1,XRP,BTC,0.000000,spot/market/price not ok
+BTC,USDE,XRP,USDE,XRP,BTC,0.000000,spot/market/price not ok
+BTC,USDE,USDE,USDT,BTC,USDT,0.000000,spot/market/price not ok
+MX,BTC,MX,USDT,BTC,USDT,0.000000,spot/market/price not ok
+MX,BTC,MX,USDC,BTC,USDC,0.000000,spot/market/price not ok
+BTC,EUR,SOL,EUR,SOL,BTC,0.000000,spot/market/price not ok
+BTC,EUR,EUR,USDT,BTC,USDT,0.000000,spot/market/price not ok
+BTC,EUR,MX,EUR,MX,BTC,0.000000,spot/market/price not ok
+BTC,EUR,XRP,EUR,XRP,BTC,0.000000,spot/market/price not ok
+BTC,EUR,EUR,USDC,BTC,USDC,0.000000,spot/market/price not ok
+BTC,EUR,LTC,EUR,LTC,BTC,0.000000,spot/market/price not ok
+BTR,USDC,USDC,USDT,BTR,USDT,0.000000,spot/market/price not ok
+BUTTHOLE,USDC,USDC,USDT,BUTTHOLE,USDT,0.010000,
+C,USDC,USDC,USDT,C,USDT,0.000000,spot/market/price not ok
+CAKE,USDC,USDC,USDT,CAKE,USDT,0.000000,spot/market/price not ok
+CAMP,USDC,USDC,USDT,CAMP,USDT,0.000000,spot/market/price not ok
+CAW,USDC,USDC,USDT,CAW,USDT,0.000000,spot/market/price not ok
+CC,USDC,USDC,USDT,CC,USDT,0.000000,spot/market/price not ok
+CFX,USDC,USDC,USDT,CFX,USDT,0.000000,spot/market/price not ok
+CGN,USDC,USDC,USDT,CGN,USDT,0.000000,spot/market/price not ok
+CGPT,USDC,USDC,USDT,CGPT,USDT,0.010000,
+CHZ,USDC,USDC,USDT,CHZ,USDT,0.010000,
+COTI,USDC,USDC,USDT,COTI,USDT,0.000000,spot/market/price not ok
+CRV,USDC,USDC,USDT,CRV,USDT,0.000000,spot/market/price not ok
+CRV,ETH,ETH,USDC,CRV,USDC,0.000000,spot/market/price not ok
+CRV,ETH,ETH,USDT,CRV,USDT,0.000000,spot/market/price not ok
+DASH,USDC,USDC,USDT,DASH,USDT,0.000000,spot/market/price not ok
+DOGE,EUR,EUR,USDT,DOGE,USDT,0.000000,spot/market/price not ok
+DOGE,EUR,EUR,USDC,DOGE,USDC,0.000000,spot/market/price not ok
+DOGE,USDC,USDC,USDT,DOGE,USDT,0.000000,spot/market/price not ok
+DOGE,USDE,USDE,USDT,DOGE,USDT,0.000000,spot/market/price not ok
+DOGS,USDC,USDC,USDT,DOGS,USDT,0.000000,spot/market/price not ok
+DOLO,USDC,USDC,USDT,DOLO,USDT,0.000000,spot/market/price not ok
+DOOD,USDC,USDC,USDT,DOOD,USDT,0.000000,spot/market/price not ok
+DOT,USDC,USDC,USDT,DOT,USDT,0.000000,spot/market/price not ok
+DSYNC,USDC,USDC,USDT,DSYNC,USDT,0.010000,
+EGLD,USDC,USDC,USDT,EGLD,USDT,0.000000,spot/market/price not ok
+EIGEN,USDC,USDC,USDT,EIGEN,USDT,0.000000,spot/market/price not ok
+ELDE,USDC,USDC,USDT,ELDE,USDT,0.000000,missing rules for one of symbols
+ENA,USDC,USDC,USDT,ENA,USDT,0.010000,
+ENA,USDE,USDE,USDT,ENA,USDT,0.000000,spot/market/price not ok
+ENS,USDC,USDC,USDT,ENS,USDT,0.000000,spot/market/price not ok
+EPT,USDC,USDC,USDT,EPT,USDT,0.000000,spot/market/price not ok
+ERA,USDC,USDC,USDT,ERA,USDT,0.000000,spot/market/price not ok
+ES,USDC,USDC,USDT,ES,USDT,0.000000,spot/market/price not ok
+ETC,USDC,USDC,USDT,ETC,USDT,0.000000,spot/market/price not ok
+IP,ETH,IP,USDC,ETH,USDC,0.000000,spot/market/price not ok
+IP,ETH,IP,USDT,ETH,USDT,0.000000,spot/market/price not ok
+MX,ETH,MX,USDT,ETH,USDT,0.000000,spot/market/price not ok
+MX,ETH,MX,USDC,ETH,USDC,0.000000,spot/market/price not ok
+NMR,ETH,NMR,USDT,ETH,USDT,0.000000,spot/market/price not ok
+ETH,USDT,XRP,USDT,XRP,ETH,0.000000,spot/market/price not ok
+LINK,ETH,LINK,USDT,ETH,USDT,0.000000,spot/market/price not ok
+LINK,ETH,LINK,USDC,ETH,USDC,0.000000,spot/market/price not ok
+SNX,ETH,SNX,USDT,ETH,USDT,0.000000,spot/market/price not ok
+ETH,USDE,XRP,USDE,XRP,ETH,0.000000,spot/market/price not ok
+ETH,USDE,USDE,USDT,ETH,USDT,0.000000,spot/market/price not ok
+ETH,EUR,XRP,EUR,XRP,ETH,0.000000,spot/market/price not ok
+ETH,EUR,MX,EUR,MX,ETH,0.000000,spot/market/price not ok
+ETH,EUR,EUR,USDT,ETH,USDT,0.000000,spot/market/price not ok
+ETH,EUR,LINK,EUR,LINK,ETH,0.000000,spot/market/price not ok
+ETH,EUR,EUR,USDC,ETH,USDC,0.000000,spot/market/price not ok
+ETH,USD1,XRP,USD1,XRP,ETH,0.000000,spot/market/price not ok
+ETH,USD1,USD1,USDT,ETH,USDT,0.000000,spot/market/price not ok
+ETH,USDC,USDC,USDF,ETH,USDF,0.000000,spot/market/price not ok
+ETH,USDC,XRP,USDC,XRP,ETH,0.000000,spot/market/price not ok
+ETH,USDC,USDC,USDT,ETH,USDT,0.000000,spot/market/price not ok
+ETH,USDF,USDF,USDT,ETH,USDT,0.000000,spot/market/price not ok
+RSR,ETH,RSR,USDT,ETH,USDT,0.000000,spot/market/price not ok
+OXT,ETH,OXT,USDT,ETH,USDT,0.000000,spot/market/price not ok
+UNI,ETH,UNI,USDC,ETH,USDC,0.000000,spot/market/price not ok
+UNI,ETH,UNI,USDT,ETH,USDT,0.000000,spot/market/price not ok
+SUI,EUR,SUI,USDT,EUR,USDT,0.000000,spot/market/price not ok
+SUI,EUR,SUI,USDC,EUR,USDC,0.000000,spot/market/price not ok
+KAS,EUR,KAS,USDT,EUR,USDT,0.000000,spot/market/price not ok
+KAS,EUR,KAS,USDC,EUR,USDC,0.000000,spot/market/price not ok
+SHIB,EUR,SHIB,USDT,EUR,USDT,0.000000,spot/market/price not ok
+SHIB,EUR,SHIB,USDC,EUR,USDC,0.000000,spot/market/price not ok
+TAO,EUR,TAO,USDT,EUR,USDT,0.000000,spot/market/price not ok
+TAO,EUR,TAO,USDC,EUR,USDC,0.000000,spot/market/price not ok
+PI,EUR,PI,USDC,EUR,USDC,0.000000,spot/market/price not ok
+PI,EUR,PI,USDT,EUR,USDT,0.000000,spot/market/price not ok
+TON,EUR,TON,USDT,EUR,USDT,0.000000,spot/market/price not ok
+TON,EUR,TON,USDC,EUR,USDC,0.000000,spot/market/price not ok
+MX,EUR,MX,USDT,EUR,USDT,0.000000,spot/market/price not ok
+MX,EUR,MX,USDC,EUR,USDC,0.000000,spot/market/price not ok
+ULTIMA,EUR,ULTIMA,USDT,EUR,USDT,0.000000,spot/market/price not ok
+ULTIMA,EUR,ULTIMA,USDC,EUR,USDC,0.000000,spot/market/price not ok
+MELANIA,EUR,MELANIA,USDT,EUR,USDT,0.000000,spot/market/price not ok
+MELANIA,EUR,MELANIA,USDC,EUR,USDC,0.000000,spot/market/price not ok
+RIO,EUR,RIO,USDT,EUR,USDT,0.000000,spot/market/price not ok
+RIO,EUR,RIO,USDC,EUR,USDC,0.000000,spot/market/price not ok
+EUR,USDT,XRP,USDT,XRP,EUR,0.000000,spot/market/price not ok
+EUR,USDT,WIF,USDT,WIF,EUR,0.000000,spot/market/price not ok
+LTC,EUR,LTC,USDT,EUR,USDT,0.000000,spot/market/price not ok
+LTC,EUR,LTC,USDC,EUR,USDC,0.000000,spot/market/price not ok
+EUR,USDC,WIF,USDC,WIF,EUR,0.000000,spot/market/price not ok
+EUR,USDC,XRP,USDC,XRP,EUR,0.000000,spot/market/price not ok
+EUR,USDC,USDC,USDT,EUR,USDT,0.000000,spot/market/price not ok
+SOL,EUR,SOL,USDT,EUR,USDT,0.000000,spot/market/price not ok
+SOL,EUR,SOL,USDC,EUR,USDC,0.000000,spot/market/price not ok
+LINK,EUR,LINK,USDT,EUR,USDT,0.000000,spot/market/price not ok
+LINK,EUR,LINK,USDC,EUR,USDC,0.000000,spot/market/price not ok
+TRUMP,EUR,TRUMP,USDT,EUR,USDT,0.000000,spot/market/price not ok
+TRUMP,EUR,TRUMP,USDC,EUR,USDC,0.000000,spot/market/price not ok
+PEPE,EUR,PEPE,USDT,EUR,USDT,0.000000,spot/market/price not ok
+PEPE,EUR,PEPE,USDC,EUR,USDC,0.000000,spot/market/price not ok
+FARTCOIN,USDC,USDC,USDT,FARTCOIN,USDT,0.010000,
+FET,USDC,USDC,USDT,FET,USDT,0.010000,
+FF,USDF,USDF,USDT,FF,USDT,0.000000,spot/market/price not ok
+FHE,USDC,USDC,USDT,FHE,USDT,0.000000,spot/market/price not ok
+FIL,USDC,USDC,USDT,FIL,USDT,0.000000,spot/market/price not ok
+FLK,USDC,USDC,USDT,FLK,USDT,0.000000,spot/market/price not ok
+FLOCK,USDC,USDC,USDT,FLOCK,USDT,0.000000,spot/market/price not ok
+FLOKI,USDC,USDC,USDT,FLOKI,USDT,0.000000,spot/market/price not ok
+FTT,USDC,USDC,USDT,FTT,USDT,0.000000,spot/market/price not ok
+GAIB,USDC,USDC,USDT,GAIB,USDT,0.000000,spot/market/price not ok
+GHIBLI,USDC,USDC,USDT,GHIBLI,USDT,0.000000,spot/market/price not ok
+GIGGLE,USDC,USDC,USDT,GIGGLE,USDT,0.000000,spot/market/price not ok
+GRIFFAIN,USDC,USDC,USDT,GRIFFAIN,USDT,0.000000,spot/market/price not ok
+GUN,USDC,USDC,USDT,GUN,USDT,0.000000,spot/market/price not ok
+H,USDC,USDC,USDT,H,USDT,0.000000,spot/market/price not ok
+HBAR,USDC,USDC,USDT,HBAR,USDT,0.010000,
+HEMI,USDC,USDC,USDT,HEMI,USDT,0.000000,spot/market/price not ok
+HOLO,USDC,USDC,USDT,HOLO,USDT,0.000000,spot/market/price not ok
+HOME,USDC,USDC,USDT,HOME,USDT,0.000000,spot/market/price not ok
+HUMA,USDC,USDC,USDT,HUMA,USDT,0.000000,spot/market/price not ok
+HYPE,USDC,USDC,USDT,HYPE,USDT,0.000000,spot/market/price not ok
+HYPER,USDC,USDC,USDT,HYPER,USDT,0.000000,spot/market/price not ok
+ICP,USDC,USDC,USDT,ICP,USDT,0.010000,
+IDEX,USDC,USDC,USDT,IDEX,USDT,0.000000,spot/market/price not ok
+IDOL,USDC,USDC,USDT,IDOL,USDT,0.000000,spot/market/price not ok
+INIT,USDC,USDC,USDT,INIT,USDT,0.000000,spot/market/price not ok
+INJ,USDC,USDC,USDT,INJ,USDT,0.010000,
+IP,USDC,USDC,USDT,IP,USDT,0.000000,spot/market/price not ok
+IRYS,USDC,USDC,USDT,IRYS,USDT,0.000000,spot/market/price not ok
+JASMY,USDC,USDC,USDT,JASMY,USDT,0.000000,spot/market/price not ok
+KAIA,USDC,USDC,USDT,KAIA,USDT,0.000000,spot/market/price not ok
+KAITO,USDC,USDC,USDT,KAITO,USDT,0.010000,
+KAS,USDC,USDC,USDT,KAS,USDT,0.010000,
+KAS,USD1,USD1,USDT,KAS,USDT,0.000000,spot/market/price not ok
+KAS,USDE,USDE,USDT,KAS,USDT,0.000000,spot/market/price not ok
+KEKIUS,USDC,USDC,USDT,KEKIUS,USDT,0.010000,
+KERNEL,USDC,USDC,USDT,KERNEL,USDT,0.000000,spot/market/price not ok
+KILO,USDC,USDC,USDT,KILO,USDT,0.000000,spot/market/price not ok
+KITE,USDC,USDC,USDT,KITE,USDT,0.000000,spot/market/price not ok
+LA,USD1,USD1,USDT,LA,USDT,0.000000,spot/market/price not ok
+LA,USDC,USDC,USDT,LA,USDT,0.000000,spot/market/price not ok
+LBTC,USDC,USDC,USDT,LBTC,USDT,0.000000,spot/market/price not ok
+LDO,USDC,USDC,USDT,LDO,USDT,0.000000,spot/market/price not ok
+LINEA,USDC,USDC,USDT,LINEA,USDT,0.000000,spot/market/price not ok
+LINGO,USDC,USDC,USDT,LINGO,USDT,0.010000,
+LINK,USDC,USDC,USDT,LINK,USDT,0.010000,
+LOT,USDC,USDC,USDT,LOT,USDT,0.000000,spot/market/price not ok
+LTC,USDC,USDC,USDT,LTC,USDT,0.000000,spot/market/price not ok
+LUNC,USDC,USDC,USDT,LUNC,USDT,0.000000,spot/market/price not ok
+MELANIA,USDC,USDC,USDT,MELANIA,USDT,0.010000,
+MELANIA,USD1,USD1,USDT,MELANIA,USDT,0.000000,spot/market/price not ok
+MET,USDC,USDC,USDT,MET,USDT,0.000000,spot/market/price not ok
+MILK,USDC,USDC,USDT,MILK,USDT,0.000000,spot/market/price not ok
+MINA,USDC,USDC,USDT,MINA,USDT,0.000000,spot/market/price not ok
+MIRA,USDC,USDC,USDT,MIRA,USDT,0.000000,spot/market/price not ok
+MNT,USDC,USDC,USDT,MNT,USDT,0.000000,spot/market/price not ok
+MON,USDC,USDC,USDT,MON,USDT,0.000000,spot/market/price not ok
+MOONPIG,USDC,USDC,USDT,MOONPIG,USDT,0.000000,missing rules for one of symbols
+MORE,USDC,USDC,USDT,MORE,USDT,0.000000,spot/market/price not ok
+MUBARAK,USDC,USDC,USDT,MUBARAK,USDT,0.000000,spot/market/price not ok
+MX,USDC,USDC,USDT,MX,USDT,0.000000,spot/market/price not ok
+MYX,USDC,USDC,USDT,MYX,USDT,0.000000,spot/market/price not ok
+NAKA,USDC,USDC,USDT,NAKA,USDT,0.010000,
+NEAR,USDC,USDC,USDT,NEAR,USDT,0.000000,spot/market/price not ok
+NEO,USDC,USDC,USDT,NEO,USDT,0.000000,spot/market/price not ok
+NEWT,USDC,USDC,USDT,NEWT,USDT,0.000000,spot/market/price not ok
+NIL,USDC,USDC,USDT,NIL,USDT,0.000000,spot/market/price not ok
+NODE,USDC,USDC,USDT,NODE,USDT,0.000000,spot/market/price not ok
+NPC,USDC,USDC,USDT,NPC,USDT,0.010000,
+NXPC,USDC,USDC,USDT,NXPC,USDT,0.000000,spot/market/price not ok
+OBOL,USDC,USDC,USDT,OBOL,USDT,0.000000,spot/market/price not ok
+OBT,USDC,USDC,USDT,OBT,USDT,0.000000,spot/market/price not ok
+OM,USDC,USDC,USDT,OM,USDT,0.000000,spot/market/price not ok
+OMI,USDC,USDC,USDT,OMI,USDT,0.000000,spot/market/price not ok
+ONDO,USDC,USDC,USDT,ONDO,USDT,0.010000,
+OP,USDC,USDC,USDT,OP,USDT,0.000000,spot/market/price not ok
+OPEN,USDC,USDC,USDT,OPEN,USDT,0.000000,spot/market/price not ok
+ORCA,USDC,USDC,USDT,ORCA,USDT,0.000000,spot/market/price not ok
+PARTI,USDC,USDC,USDT,PARTI,USDT,0.000000,spot/market/price not ok
+PAXG,USDC,USDC,USDT,PAXG,USDT,0.000000,spot/market/price not ok
+PEAQ,USDC,USDC,USDT,PEAQ,USDT,0.010000,
+PENDLE,USDC,USDC,USDT,PENDLE,USDT,0.000000,spot/market/price not ok
+PENGU,USDC,USDC,USDT,PENGU,USDT,0.010000,
+PEPE,USDC,USDC,USDT,PEPE,USDT,0.010000,
+PEPE,USDE,USDE,USDT,PEPE,USDT,0.000000,spot/market/price not ok
+PI,USD1,USD1,USDT,PI,USDT,0.000000,spot/market/price not ok
+PI,USDE,USDE,USDT,PI,USDT,0.000000,spot/market/price not ok
+PI,USDC,USDC,USDT,PI,USDT,0.010000,
+PLUME,USDC,USDC,USDT,PLUME,USDT,0.000000,spot/market/price not ok
+PNUT,USDC,USDC,USDT,PNUT,USDT,0.000000,spot/market/price not ok
+POL,USDC,USDC,USDT,POL,USDT,0.000000,spot/market/price not ok
+POPCAT,USDC,USDC,USDT,POPCAT,USDT,0.000000,spot/market/price not ok
+PRAI,USDC,USDC,USDT,PRAI,USDT,0.000000,spot/market/price not ok
+PROMPT,USDC,USDC,USDT,PROMPT,USDT,0.000000,spot/market/price not ok
+PROVE,USDC,USDC,USDT,PROVE,USDT,0.000000,spot/market/price not ok
+PUMP,USDC,USDC,USDT,PUMP,USDT,0.000000,spot/market/price not ok
+PUMPBTC,USDC,USDC,USDT,PUMPBTC,USDT,0.000000,missing rules for one of symbols
+QNT,USDC,USDC,USDT,QNT,USDT,0.000000,spot/market/price not ok
+QUBIC,USDC,USDC,USDT,QUBIC,USDT,0.010000,
+RAI,USDC,USDC,USDT,RAI,USDT,0.010000,
+RARE,USDC,USDC,USDT,RARE,USDT,0.000000,spot/market/price not ok
+RAY,USDC,USDC,USDT,RAY,USDT,0.000000,spot/market/price not ok
+RBNT,USDC,USDC,USDT,RBNT,USDT,0.010000,
+RECALL,USDC,USDC,USDT,RECALL,USDT,0.000000,spot/market/price not ok
+RED,USDC,USDC,USDT,RED,USDT,0.000000,spot/market/price not ok
+RENDER,USDC,USDC,USDT,RENDER,USDT,0.000000,spot/market/price not ok
+RIO,USDC,USDC,USDT,RIO,USDT,0.010000,
+ROSE,USDC,USDC,USDT,ROSE,USDT,0.000000,spot/market/price not ok
+RUNE,USDC,USDC,USDT,RUNE,USDT,0.000000,spot/market/price not ok
+RWA,USDC,USDC,USDT,RWA,USDT,0.000000,spot/market/price not ok
+S,USDC,USDC,USDT,S,USDT,0.010000,
+SAHARA,USD1,USD1,USDT,SAHARA,USDT,0.000000,spot/market/price not ok
+SAHARA,USDC,USDC,USDT,SAHARA,USDT,0.000000,spot/market/price not ok
+SAPIEN,USDC,USDC,USDT,SAPIEN,USDT,0.000000,spot/market/price not ok
+SEI,USDC,USDC,USDT,SEI,USDT,0.000000,spot/market/price not ok
+SEN,USDC,USDC,USDT,SEN,USDT,0.010000,
+SHIB,USDC,USDC,USDT,SHIB,USDT,0.000000,spot/market/price not ok
+SIGN,USDC,USDC,USDT,SIGN,USDT,0.000000,spot/market/price not ok
+SKATE,USDC,USDC,USDT,SKATE,USDT,0.000000,spot/market/price not ok
+SOL,USD1,USD1,USDT,SOL,USDT,0.000000,spot/market/price not ok
+SOL,USDC,USDC,USDT,SOL,USDT,0.000000,spot/market/price not ok
+SOL,USDE,USDE,USDT,SOL,USDT,0.000000,spot/market/price not ok
+SOMI,USDC,USDC,USDT,SOMI,USDT,0.000000,spot/market/price not ok
+SOON,USDC,USDC,USDT,SOON,USDT,0.000000,spot/market/price not ok
+SOPH,USDC,USDC,USDT,SOPH,USDT,0.000000,missing rules for one of symbols
+SOSO,USDC,USDC,USDT,SOSO,USDT,0.010000,
+SPK,USDC,USDC,USDT,SPK,USDT,0.000000,spot/market/price not ok
+SPX,USDC,USDC,USDT,SPX,USDT,0.000000,spot/market/price not ok
+STABLE,USDC,USDC,USDT,STABLE,USDT,0.000000,spot/market/price not ok
+STO,USDC,USDC,USDT,STO,USDT,0.000000,spot/market/price not ok
+SUI,USDC,USDC,USDT,SUI,USDT,0.010000,
+SUI,USDE,USDE,USDT,SUI,USDT,0.000000,spot/market/price not ok
+SUPRA,USDC,USDC,USDT,SUPRA,USDT,0.010000,
+SXT,USDC,USDC,USDT,SXT,USDT,0.000000,spot/market/price not ok
+TAG,USD1,USD1,USDT,TAG,USDT,0.000000,spot/market/price not ok
+TAO,USDC,USDC,USDT,TAO,USDT,0.010000,
+TIA,USDC,USDC,USDT,TIA,USDT,0.000000,spot/market/price not ok
+TNSR,USDC,USDC,USDT,TNSR,USDT,0.000000,spot/market/price not ok
+TON,USDC,USDC,USDT,TON,USDT,0.010000,
+TOWNS,USDC,USDC,USDT,TOWNS,USDT,0.000000,spot/market/price not ok
+TREE,USDC,USDC,USDT,TREE,USDT,0.000000,spot/market/price not ok
+TRUMP,USD1,USD1,USDT,TRUMP,USDT,0.000000,spot/market/price not ok
+TRUMP,USDC,USDC,USDT,TRUMP,USDT,0.010000,
+TRX,USDC,USDC,USDT,TRX,USDT,0.000000,spot/market/price not ok
+TRX,USDE,USDE,USDT,TRX,USDT,0.000000,spot/market/price not ok
+TURBO,USDC,USDC,USDT,TURBO,USDT,0.010000,
+ULTIMA,USDC,USDC,USDT,ULTIMA,USDT,0.010000,
+ULTIMA,USDE,USDE,USDT,ULTIMA,USDT,0.000000,spot/market/price not ok
+UNI,USDC,USDC,USDT,UNI,USDT,0.000000,spot/market/price not ok
+USD1,USDT,XRP,USDT,XRP,USD1,0.000000,spot/market/price not ok
+USD1,USDT,WLFI,USDT,WLFI,USD1,0.000000,spot/market/price not ok
+USDC,USDT,WAL,USDT,WAL,USDC,0.000000,spot/market/price not ok
+USDC,USDT,ZBT,USDT,ZBT,USDC,0.000000,spot/market/price not ok
+USDC,USDT,XVG,USDT,XVG,USDC,0.000000,spot/market/price not ok
+USDC,USDT,WBTC,USDT,WBTC,USDC,0.000000,spot/market/price not ok
+USDC,USDT,WLD,USDT,WLD,USDC,0.000000,spot/market/price not ok
+USDC,USDT,ZEN,USDT,ZEN,USDC,0.010000,
+USDC,USDT,ZEC,USDT,ZEC,USDC,0.000000,spot/market/price not ok
+USDC,USDT,VELVET,USDT,VELVET,USDC,0.000000,spot/market/price not ok
+USDC,USDT,WIF,USDT,WIF,USDC,0.000000,spot/market/price not ok
+USDC,USDT,ZKC,USDT,ZKC,USDC,0.000000,spot/market/price not ok
+USDC,USDT,ZRO,USDT,ZRO,USDC,0.000000,spot/market/price not ok
+USDC,USDT,ZORA,USDT,ZORA,USDC,0.000000,spot/market/price not ok
+USDC,USDT,ZK,USDT,ZK,USDC,0.000000,spot/market/price not ok
+USDC,USDT,XPL,USDT,XPL,USDC,0.010000,
+USDC,USDT,VIRTUAL,USDT,VIRTUAL,USDC,0.010000,
+USDC,USDT,USELESS,USDT,USELESS,USDC,0.000000,spot/market/price not ok
+USDC,USDT,XRP,USDT,XRP,USDC,0.000000,spot/market/price not ok
+USDC,USDT,WAVES,USDT,WAVES,USDC,0.000000,spot/market/price not ok
+USDC,USDT,XLM,USDT,XLM,USDC,0.010000,
+USDC,USDT,USUAL,USDT,USUAL,USDC,0.000000,spot/market/price not ok
+USDC,USDT,XMR,USDT,XMR,USDC,0.010000,
+USDC,USDT,XCN,USDT,XCN,USDC,0.000000,spot/market/price not ok
+USDC,USDT,XDC,USDT,XDC,USDC,0.000000,spot/market/price not ok
+USDC,USDT,WHITE,USDT,WHITE,USDC,0.000000,spot/market/price not ok
+USDC,USDT,WLFI,USDT,WLFI,USDC,0.000000,spot/market/price not ok
+USDC,USDT,XEN,USDT,XEN,USDC,0.000000,spot/market/price not ok
+USDC,USDT,WCT,USDT,WCT,USDC,0.000000,spot/market/price not ok
+USDC,USDT,ZBCN,USDT,ZBCN,USDC,0.000000,spot/market/price not ok
+USDC,USDT,XAN,USDT,XAN,USDC,0.000000,spot/market/price not ok
+USDC,USDT,VANRY,USDT,VANRY,USDC,0.000000,spot/market/price not ok
+USDC,USDF,USDF,USDT,USDC,USDT,0.000000,spot/market/price not ok
+USDE,USDT,XRP,USDT,XRP,USDE,0.000000,spot/market/price not ok
