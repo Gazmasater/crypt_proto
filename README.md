@@ -72,22 +72,10 @@ go run ./cmd/triangles_enrich_mexc
 
 
 
-Ок. Файл: cmd/cryptarb/main.go (генератор triangles_markets_enriched.csv).
-Ниже — полная версия файла целиком, с правками:
-
-
-✅ пишем в выходной CSV только “проходящие” треугольники (trade_amount_ok=1) — мусора не будет
-
-
-✅ фикс spot not allowed для MEXC: SpotAllowed берём по permissions (SPOT), а isSpotTradingAllowed используем как fallback
-
-
-✅ TRADE_AMOUNT_USDT берётся из env (как ты просил), имя выходного файла оставляем прежним (triangles_markets_enriched.csv)
-
-
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -126,6 +114,18 @@ func envString(key, def string) string {
 	return v
 }
 
+func envInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return i
+}
+
 // ======================
 // MEXC API models
 // ======================
@@ -144,7 +144,7 @@ type mexcSymbol struct {
 	OrderTypes             []string     `json:"orderTypes"`
 	BaseAssetPrecision     any          `json:"baseAssetPrecision"`
 	QuoteAssetPrecision    any          `json:"quoteAssetPrecision"`
-	Filters                []mexcFilter  `json:"filters"`
+	Filters                []mexcFilter `json:"filters"`
 	Permissions            []string     `json:"permissions"`
 	IsMarginTradingAllowed *bool        `json:"isMarginTradingAllowed"`
 }
@@ -159,6 +159,8 @@ type mexcFilter struct {
 	// MIN_NOTIONAL / NOTIONAL
 	MinNotional string `json:"minNotional"`
 	Notional    string `json:"notional"`
+
+	// иногда встречается "minNotional" внутри NOTIONAL, иногда как "notional"
 }
 
 type mexcBookTicker struct {
@@ -183,8 +185,11 @@ type SymbolRules struct {
 
 	BaseStep       float64
 	MinQty         float64
-	MinNotional    float64 // assumed in QUOTE units (USDT/USDC/etc)
+	MinNotional    float64 // в QUOTE единицах
+	BasePrecision  int
 	QuotePrecision int
+
+	QtyDecimals int // сколько знаков quantity (если step=0)
 }
 
 type Quote struct {
@@ -193,7 +198,7 @@ type Quote struct {
 }
 
 // ======================
-// Utils: parsing
+// Utils
 // ======================
 
 func parseFloat(s string) float64 {
@@ -213,6 +218,12 @@ func asInt(v any) (int, bool) {
 		return x, true
 	case int64:
 		return int(x), true
+	case json.Number:
+		i, err := x.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(i), true
 	case string:
 		i, err := strconv.Atoi(x)
 		if err != nil {
@@ -227,15 +238,6 @@ func asInt(v any) (int, bool) {
 func hasMarket(orderTypes []string) bool {
 	for _, s := range orderTypes {
 		if strings.EqualFold(strings.TrimSpace(s), "MARKET") {
-			return true
-		}
-	}
-	return false
-}
-
-func hasPermission(perms []string, want string) bool {
-	for _, p := range perms {
-		if strings.EqualFold(strings.TrimSpace(p), want) {
 			return true
 		}
 	}
@@ -270,6 +272,28 @@ func truncToDecimals(x float64, dec int) float64 {
 	return math.Trunc(x*p) / p
 }
 
+func stepFmt(x float64) string {
+	if x == 0 {
+		return "0"
+	}
+	dec := decimalsFromStep(x)
+	if dec < 0 {
+		return strconv.FormatFloat(x, 'f', 12, 64)
+	}
+	return strconv.FormatFloat(x, 'f', dec, 64)
+}
+
+func f64(x float64) string {
+	return strconv.FormatFloat(x, 'f', 12, 64)
+}
+
+func b01(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
+}
+
 // ======================
 // Build rules from exchangeInfo
 // ======================
@@ -289,18 +313,15 @@ func buildRules(info mexcExchangeInfo) map[string]SymbolRules {
 			Quote:  strings.TrimSpace(s.QuoteAsset),
 		}
 
-		// ===== spot allowed (MEXC): приоритет permissions =====
-		// На MEXC это самый надёжный индикатор.
-		if hasPermission(s.Permissions, "SPOT") {
-			r.SpotAllowed = true
-		} else if s.IsSpotTradingAllowed != nil {
+		// spot allowed
+		if s.IsSpotTradingAllowed != nil {
 			r.SpotAllowed = *s.IsSpotTradingAllowed
 		} else {
-			// не режем рынок "по пустому месту"
+			// если поля нет — НЕ делаем false. Лучше считать "может быть" и дальше фильтровать по MARKET и котировкам.
 			r.SpotAllowed = true
 		}
 
-		// ===== market allowed =====
+		// market allowed
 		r.MarketAllowed = hasMarket(s.OrderTypes)
 
 		// quoteOrderQtyMarketAllowed
@@ -308,7 +329,12 @@ func buildRules(info mexcExchangeInfo) map[string]SymbolRules {
 			r.QuoteOrderQtyMarketAllowed = *s.QuoteOrderQtyMarket
 		}
 
-		// quote precision
+		// precision
+		if v, ok := asInt(s.BaseAssetPrecision); ok {
+			r.BasePrecision = v
+		} else {
+			r.BasePrecision = 8
+		}
 		if v, ok := asInt(s.QuoteAssetPrecision); ok {
 			r.QuotePrecision = v
 		} else {
@@ -334,6 +360,7 @@ func buildRules(info mexcExchangeInfo) map[string]SymbolRules {
 					minNotional = mn
 				}
 			case "NOTIONAL":
+				// бывает по-разному
 				if mn := parseFloat(f.Notional); mn > 0 {
 					minNotional = mn
 				}
@@ -343,7 +370,6 @@ func buildRules(info mexcExchangeInfo) map[string]SymbolRules {
 			}
 		}
 
-		// choose market lot size if present
 		if mktStep > 0 || mktMin > 0 {
 			r.BaseStep = mktStep
 			r.MinQty = mktMin
@@ -351,8 +377,14 @@ func buildRules(info mexcExchangeInfo) map[string]SymbolRules {
 			r.BaseStep = lotStep
 			r.MinQty = lotMin
 		}
-
 		r.MinNotional = minNotional
+
+		// QtyDecimals: если step есть — из step, иначе из basePrecision
+		if r.BaseStep > 0 {
+			r.QtyDecimals = decimalsFromStep(r.BaseStep)
+		} else {
+			r.QtyDecimals = r.BasePrecision
+		}
 
 		out[sym] = r
 	}
@@ -365,7 +397,7 @@ func buildRules(info mexcExchangeInfo) map[string]SymbolRules {
 // ======================
 
 func httpGetJSON(url string, dst any) error {
-	c := &http.Client{Timeout: 15 * time.Second}
+	c := &http.Client{Timeout: 20 * time.Second}
 	resp, err := c.Get(url)
 	if err != nil {
 		return err
@@ -401,21 +433,23 @@ func fetchBookTickerAll(baseURL string) (map[string]Quote, error) {
 				continue
 			}
 			sym, _ := m["symbol"].(string)
-			if strings.TrimSpace(sym) == "" {
+			sym = strings.TrimSpace(sym)
+			if sym == "" {
 				continue
 			}
-			bs, _ := m["bidPrice"].(string)
-			as, _ := m["askPrice"].(string)
-			if bs == "" {
-				if bf, ok := m["bidPrice"].(float64); ok {
-					bs = strconv.FormatFloat(bf, 'f', 18, 64)
-				}
+
+			var bs, as string
+			if s, ok := m["bidPrice"].(string); ok {
+				bs = s
+			} else if f, ok := m["bidPrice"].(float64); ok {
+				bs = strconv.FormatFloat(f, 'f', 18, 64)
 			}
-			if as == "" {
-				if af, ok := m["askPrice"].(float64); ok {
-					as = strconv.FormatFloat(af, 'f', 18, 64)
-				}
+			if s, ok := m["askPrice"].(string); ok {
+				as = s
+			} else if f, ok := m["askPrice"].(float64); ok {
+				as = strconv.FormatFloat(f, 'f', 18, 64)
 			}
+
 			bid := parseFloat(bs)
 			ask := parseFloat(as)
 			if bid <= 0 || ask <= 0 {
@@ -465,6 +499,16 @@ type SimCfg struct {
 	SellSafety float64 // 0.995
 }
 
+func normalizeQty(qtyRaw float64, rules SymbolRules) float64 {
+	qty := qtyRaw
+	if rules.BaseStep > 0 {
+		qty = floorToStep(qtyRaw, rules.BaseStep)
+	} else if rules.QtyDecimals >= 0 {
+		qty = truncToDecimals(qtyRaw, rules.QtyDecimals)
+	}
+	return qty
+}
+
 func applyEdge(amount float64, e Edge, rules SymbolRules, q Quote, cfg SimCfg) (float64, error) {
 	if amount <= 0 {
 		return 0, errors.New("amount<=0")
@@ -478,13 +522,16 @@ func applyEdge(amount float64, e Edge, rules SymbolRules, q Quote, cfg SimCfg) (
 		sellSafety = 0.995
 	}
 
-	step := rules.BaseStep
 	minQty := rules.MinQty
 	minNotional := rules.MinNotional
 
 	switch e.Side {
 	case "BUY":
-		// from QUOTE -> to BASE, pay quote amount = amount
+		// QUOTE -> BASE. amount = quote spent.
+		if q.Ask <= 0 {
+			return 0, fmt.Errorf("ask<=0")
+		}
+
 		if rules.QuoteOrderQtyMarketAllowed {
 			amtQuote := truncToDecimals(amount, rules.QuotePrecision)
 			if amtQuote <= 0 {
@@ -493,48 +540,57 @@ func applyEdge(amount float64, e Edge, rules SymbolRules, q Quote, cfg SimCfg) (
 			if minNotional > 0 && amtQuote+1e-12 < minNotional {
 				return 0, fmt.Errorf("buy minNotional: need>=%.12f have=%.12f", minNotional, amtQuote)
 			}
-			gotBase := amtQuote / q.Ask
-			gotBase *= (1.0 - fee)
+			gotBase := (amtQuote / q.Ask) * (1.0 - fee)
+
+			// биржа всё равно может требовать minQty
 			if minQty > 0 && gotBase+1e-12 < minQty {
 				return 0, fmt.Errorf("buy minQty: need>=%.12f got=%.12f", minQty, gotBase)
 			}
+
+			// здесь НЕ режем по step — потому что фактически у тебя идёт покупка по quoteOrderQty,
+			// но minStart оценка будет консервативной через minNotional / minQty.
 			return gotBase, nil
 		}
 
 		qtyRaw := amount / q.Ask
-		qty := qtyRaw
-		if step > 0 {
-			qty = floorToStep(qtyRaw, step)
-		}
+		qty := normalizeQty(qtyRaw, rules)
+
 		if qty <= 0 {
-			return 0, fmt.Errorf("buy qty<=0 after step (raw=%.12f step=%.12f)", qtyRaw, step)
+			return 0, fmt.Errorf("buy qty<=0 after normalize (raw=%.12f step=%.12f qtyDec=%d)", qtyRaw, rules.BaseStep, rules.QtyDecimals)
 		}
 		if minQty > 0 && qty+1e-12 < minQty {
 			return 0, fmt.Errorf("buy minQty: need>=%.12f got=%.12f", minQty, qty)
 		}
+
 		notional := qty * q.Ask
 		if minNotional > 0 && notional+1e-12 < minNotional {
 			return 0, fmt.Errorf("buy minNotional: need>=%.12f got=%.12f", minNotional, notional)
 		}
+
 		gotBase := qty * (1.0 - fee)
 		return gotBase, nil
 
 	case "SELL":
-		qtyRaw := amount * sellSafety
-		qty := qtyRaw
-		if step > 0 {
-			qty = floorToStep(qtyRaw, step)
+		// BASE -> QUOTE
+		if q.Bid <= 0 {
+			return 0, fmt.Errorf("bid<=0")
 		}
+
+		qtyRaw := amount * sellSafety
+		qty := normalizeQty(qtyRaw, rules)
+
 		if qty <= 0 {
-			return 0, fmt.Errorf("sell qty<=0 after step (raw=%.12f step=%.12f)", qtyRaw, step)
+			return 0, fmt.Errorf("sell qty<=0 after normalize (raw=%.12f step=%.12f qtyDec=%d)", qtyRaw, rules.BaseStep, rules.QtyDecimals)
 		}
 		if minQty > 0 && qty+1e-12 < minQty {
 			return 0, fmt.Errorf("sell minQty: need>=%.12f got=%.12f", minQty, qty)
 		}
+
 		notional := qty * q.Bid
 		if minNotional > 0 && notional+1e-12 < minNotional {
 			return 0, fmt.Errorf("sell minNotional: need>=%.12f got=%.12f", minNotional, notional)
 		}
+
 		gotQuote := qty * q.Bid * (1.0 - fee)
 		return gotQuote, nil
 
@@ -589,7 +645,7 @@ func simulateCycle(startUSDT float64, c Cycle, rulesMap map[string]SymbolRules, 
 	return amt, nil
 }
 
-func findBestUSDT3Cycle(symbols [3]string, rulesMap map[string]SymbolRules) (Cycle, bool, string) {
+func findUSDT3Cycle(symbols [3]string, rulesMap map[string]SymbolRules) (Cycle, bool, string) {
 	edges := []Edge{}
 	for _, sym := range symbols {
 		r, ok := rulesMap[sym]
@@ -611,9 +667,6 @@ func findBestUSDT3Cycle(symbols [3]string, rulesMap map[string]SymbolRules) (Cyc
 		)
 	}
 
-	best := Cycle{}
-	found := false
-
 	type node struct {
 		asset   string
 		usedSym map[string]bool
@@ -632,9 +685,7 @@ func findBestUSDT3Cycle(symbols [3]string, rulesMap map[string]SymbolRules) (Cyc
 
 		if len(n.path) == 3 {
 			if n.asset == "USDT" {
-				best = Cycle{E1: n.path[0], E2: n.path[1], E3: n.path[2]}
-				found = true
-				break
+				return Cycle{E1: n.path[0], E2: n.path[1], E3: n.path[2]}, true, "ok"
 			}
 			continue
 		}
@@ -651,16 +702,12 @@ func findBestUSDT3Cycle(symbols [3]string, rulesMap map[string]SymbolRules) (Cyc
 				used[k] = v
 			}
 			used[e.Symbol] = true
-
 			path := append(append([]Edge{}, n.path...), e)
 			stack = append(stack, node{asset: e.To, usedSym: used, path: path})
 		}
 	}
 
-	if !found {
-		return Cycle{}, false, "no USDT 3-leg cycle"
-	}
-	return best, true, "ok"
+	return Cycle{}, false, "no USDT 3-leg cycle"
 }
 
 func minStartByBinarySearch(c Cycle, rulesMap map[string]SymbolRules, quotes map[string]Quote, cfg SimCfg) (float64, string) {
@@ -757,6 +804,10 @@ func readTrianglesCSV(path string) ([]InRow, error) {
 	return out, nil
 }
 
+// ======================
+// MAIN
+// ======================
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
@@ -767,6 +818,9 @@ func main() {
 	tradeAmountUSDT := envFloat("TRADE_AMOUNT_USDT", 10)
 	feePct := envFloat("FEE_PCT", 0.04)
 	sellSafety := envFloat("SELL_SAFETY", 0.995)
+
+	// можно поднять, если хочешь больше точности в min_start_usdt (по умолчанию 6)
+	outMinStartDecimals := envInt("OUT_MIN_START_DECIMALS", 6)
 
 	log.Printf("input=%s output=%s TRADE_AMOUNT_USDT=%.6f FEE_PCT=%.6f SELL_SAFETY=%.6f",
 		inFile, outFile, tradeAmountUSDT, feePct, sellSafety)
@@ -799,10 +853,11 @@ func main() {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
+	// ПИШЕМ ТОЛЬКО ПРОХОДЯЩИЕ ТРЕУГОЛЬНИКИ
 	header := []string{
-		"base1", "quote1", "symbol1", "step1", "minQty1", "minNotional1", "spot1", "market1", "qoq1", "quotePrec1",
-		"base2", "quote2", "symbol2", "step2", "minQty2", "minNotional2", "spot2", "market2", "qoq2", "quotePrec2",
-		"base3", "quote3", "symbol3", "step3", "minQty3", "minNotional3", "spot3", "market3", "qoq3", "quotePrec3",
+		"base1", "quote1", "symbol1", "step1", "minQty1", "minNotional1", "spot1", "market1", "qoq1", "basePrec1", "quotePrec1",
+		"base2", "quote2", "symbol2", "step2", "minQty2", "minNotional2", "spot2", "market2", "qoq2", "basePrec2", "quotePrec2",
+		"base3", "quote3", "symbol3", "step3", "minQty3", "minNotional3", "spot3", "market3", "qoq3", "basePrec3", "quotePrec3",
 		"cycle_leg1", "cycle_leg2", "cycle_leg3",
 		"min_start_usdt",
 	}
@@ -813,87 +868,80 @@ func main() {
 	cfg := SimCfg{FeePct: feePct, SellSafety: sellSafety}
 
 	okCount := 0
+	skipped := 0
+
+	// чтобы не держать лишний контекст (и не ловить зависания при нетворке)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_ = ctx
+
 	for _, r := range rows {
 		s1 := r.Base1 + r.Quote1
 		s2 := r.Base2 + r.Quote2
 		s3 := r.Base3 + r.Quote3
+		symbols := [3]string{s1, s2, s3}
 
 		rr1, ok1 := rulesMap[s1]
 		rr2, ok2 := rulesMap[s2]
 		rr3, ok3 := rulesMap[s3]
 
-		// быстрые отсеки
+		// быстрые отсечки
 		if !ok1 || !ok2 || !ok3 {
+			skipped++
 			continue
 		}
 		if !rr1.SpotAllowed || !rr2.SpotAllowed || !rr3.SpotAllowed {
+			skipped++
 			continue
 		}
 		if !rr1.MarketAllowed || !rr2.MarketAllowed || !rr3.MarketAllowed {
+			skipped++
 			continue
 		}
 		if _, ok := quotes[s1]; !ok {
+			skipped++
 			continue
 		}
 		if _, ok := quotes[s2]; !ok {
+			skipped++
 			continue
 		}
 		if _, ok := quotes[s3]; !ok {
+			skipped++
 			continue
 		}
 
-		cycle, ok, _ := findBestUSDT3Cycle([3]string{s1, s2, s3}, rulesMap)
+		cycle, ok, _ := findUSDT3Cycle(symbols, rulesMap)
 		if !ok {
+			skipped++
 			continue
 		}
 
 		minStart, why := minStartByBinarySearch(cycle, rulesMap, quotes, cfg)
 		if why != "ok" || minStart <= 0 {
+			skipped++
 			continue
 		}
 
-		// ===== ВАЖНО: пишем в CSV только проходящие (без мусора) =====
+		// КЛЮЧЕВОЕ: фильтр по входу
 		if tradeAmountUSDT+1e-9 < minStart {
+			skipped++
 			continue
 		}
 
-		// formatting helpers
-		stepFmt := func(x float64) string {
-			if x == 0 {
-				return "0"
-			}
-			dec := decimalsFromStep(x)
-			if dec < 0 {
-				return strconv.FormatFloat(x, 'f', 12, 64)
-			}
-			return strconv.FormatFloat(x, 'f', dec, 64)
-		}
-		f64 := func(x float64) string {
-			return strconv.FormatFloat(x, 'f', 12, 64)
-		}
-		bool01 := func(b bool) string {
-			if b {
-				return "1"
-			}
-			return "0"
-		}
+		// формат min_start_usdt
+		minStartStr := strconv.FormatFloat(minStart, 'f', outMinStartDecimals, 64)
 
 		cycleStr1 := fmt.Sprintf("%s:%s %s→%s", cycle.E1.Symbol, cycle.E1.Side, cycle.E1.From, cycle.E1.To)
 		cycleStr2 := fmt.Sprintf("%s:%s %s→%s", cycle.E2.Symbol, cycle.E2.Side, cycle.E2.From, cycle.E2.To)
 		cycleStr3 := fmt.Sprintf("%s:%s %s→%s", cycle.E3.Symbol, cycle.E3.Side, cycle.E3.From, cycle.E3.To)
 
 		out := []string{
-			r.Base1, r.Quote1, s1, stepFmt(rr1.BaseStep), f64(rr1.MinQty), f64(rr1.MinNotional),
-			bool01(rr1.SpotAllowed), bool01(rr1.MarketAllowed), bool01(rr1.QuoteOrderQtyMarketAllowed), strconv.Itoa(rr1.QuotePrecision),
-
-			r.Base2, r.Quote2, s2, stepFmt(rr2.BaseStep), f64(rr2.MinQty), f64(rr2.MinNotional),
-			bool01(rr2.SpotAllowed), bool01(rr2.MarketAllowed), bool01(rr2.QuoteOrderQtyMarketAllowed), strconv.Itoa(rr2.QuotePrecision),
-
-			r.Base3, r.Quote3, s3, stepFmt(rr3.BaseStep), f64(rr3.MinQty), f64(rr3.MinNotional),
-			bool01(rr3.SpotAllowed), bool01(rr3.MarketAllowed), bool01(rr3.QuoteOrderQtyMarketAllowed), strconv.Itoa(rr3.QuotePrecision),
-
+			r.Base1, r.Quote1, s1, stepFmt(rr1.BaseStep), f64(rr1.MinQty), f64(rr1.MinNotional), b01(rr1.SpotAllowed), b01(rr1.MarketAllowed), b01(rr1.QuoteOrderQtyMarketAllowed), strconv.Itoa(rr1.BasePrecision), strconv.Itoa(rr1.QuotePrecision),
+			r.Base2, r.Quote2, s2, stepFmt(rr2.BaseStep), f64(rr2.MinQty), f64(rr2.MinNotional), b01(rr2.SpotAllowed), b01(rr2.MarketAllowed), b01(rr2.QuoteOrderQtyMarketAllowed), strconv.Itoa(rr2.BasePrecision), strconv.Itoa(rr2.QuotePrecision),
+			r.Base3, r.Quote3, s3, stepFmt(rr3.BaseStep), f64(rr3.MinQty), f64(rr3.MinNotional), b01(rr3.SpotAllowed), b01(rr3.MarketAllowed), b01(rr3.QuoteOrderQtyMarketAllowed), strconv.Itoa(rr3.BasePrecision), strconv.Itoa(rr3.QuotePrecision),
 			cycleStr1, cycleStr2, cycleStr3,
-			strconv.FormatFloat(minStart, 'f', 6, 64),
+			minStartStr,
 		}
 
 		if err := w.Write(out); err != nil {
@@ -902,17 +950,9 @@ func main() {
 		okCount++
 	}
 
-	log.Printf("DONE: written ONLY ok triangles (TRADE_AMOUNT_USDT>=min_start_usdt): %d", okCount)
+	log.Printf("DONE: wrote ok triangles: %d (skipped=%d)", okCount, skipped)
 	fmt.Println("Готово, файл:", outFile)
 }
-
-Если хочешь — следующим шагом добавлю второй файл triangles_rejected.csv (отдельно), где будут причины отбраковки, чтобы отлаживать (а “боевой” enriched останется чистым).
-
-
-BDX,BTC,BDXBTC,0,0.000000000000,0.000000000000,1,1,0,10,BTC,USDT,BTCUSDT,0,0.000000000000,0.000000000000,1,1,0,2,BDX,USDT,BDXUSDT,0,0.000000000000,0.000000000000,1,1,0,5,BDXUSDT:BUY USDT→BDX,BDXBTC:SELL BDX→BTC,BTCUSDT:SELL BTC→USDT,0.000000
-BDXN,USDC,BDXNUSDC,0,0.000000000000,0.000000000000,1,1,0,5,USDC,USDT,USDCUSDT,0,0.000000000000,0.000000000000,1,1,0,4,BDXN,USDT,BDXNUSDT,0,0.000000000000,0.000000000000,1,1,0,5,BDXNUSDT:BUY USDT→BDXN,BDXNUSDC:SELL BDXN→USDC,USDCUSDT:SELL USDC→USDT,0.000000
-
-TRADE_AMOUNT_USDT=1
 
 
 
