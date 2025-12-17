@@ -946,3 +946,12 @@ func main() {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/cryptarb$ go run .
+2025/12/17 16:49:48.066847 input=triangles_markets.csv output=triangles_markets_enriched.csv TRADE_AMOUNT_USDT=10.000000 FEE_PCT=0.040000 SELL_SAFETY=0.995000
+2025/12/17 16:49:48.067345 triangles rows: 415
+2025/12/17 16:49:48.296745 rules loaded: 2538 symbols
+2025/12/17 16:49:49.515824 bookTicker loaded: 2533 symbols
+2025/12/17 16:49:49.519520 DONE: ok triangles with TRADE_AMOUNT_USDT>=min_start_usdt: 44
+Готово, файл: triangles_markets_enriched.csv
+
+
