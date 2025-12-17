@@ -18,6 +18,14 @@ type SpotTrader interface {
 	GetBalance(ctx context.Context, asset string) (float64, error)
 }
 
+type execReq struct {
+	ctx       context.Context
+	t         domain.Triangle
+	quotes    map[string]domain.Quote // snapshot только нужных символов
+	startUSDT float64
+	triName   string
+}
+
 type RealExecutor struct {
 	trader SpotTrader
 	out    io.Writer
@@ -25,23 +33,40 @@ type RealExecutor struct {
 	StartUSDT  float64
 	SellSafety float64
 
+	// cooldown по треугольнику (по имени)
 	Cooldown time.Duration
+
+	mu       sync.Mutex
 	lastExec map[string]time.Time
 
-	// чтобы не исполнять несколько треугольников одновременно
-	mu       sync.Mutex
-	inFlight bool
+	// Очередь (строго последовательное исполнение)
+	queue chan execReq
+	wg    sync.WaitGroup
 }
 
 func NewRealExecutor(tr SpotTrader, out io.Writer, startUSDT float64) *RealExecutor {
-	return &RealExecutor{
+	e := &RealExecutor{
 		trader:     tr,
 		out:        out,
 		StartUSDT:  startUSDT,
 		SellSafety: 0.995,
 		Cooldown:   500 * time.Millisecond,
 		lastExec:   make(map[string]time.Time),
+
+		// буфер можно увеличить, но лучше небольшой, чтобы не копить “устаревшие” сделки
+		queue: make(chan execReq, 16),
 	}
+
+	// worker: исполняет строго по одному
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		for req := range e.queue {
+			_ = e.executeOnce(req)
+		}
+	}()
+
+	return e
 }
 
 func (e *RealExecutor) Name() string { return "REAL" }
@@ -63,36 +88,12 @@ func (e *RealExecutor) step(name string) func() {
 	}
 }
 
+// Execute теперь НЕ исполняет сразу.
+// Он кладёт треугольник в очередь со снапшотом котировок и возвращает.
 func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes map[string]domain.Quote, startUSDT float64) error {
-	// не даём запускать real-exec параллельно
-	e.mu.Lock()
-	if e.inFlight {
-		e.mu.Unlock()
-		e.logf("  [REAL EXEC] SKIP: inFlight")
-		return nil
-	}
-	e.inFlight = true
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		e.inFlight = false
-		e.mu.Unlock()
-	}()
-
-	now := time.Now()
-
 	triName := strings.TrimSpace(t.Name)
 	if triName == "" {
 		triName = "triangle"
-	}
-
-	// cooldown по имени треугольника
-	if last, ok := e.lastExec[triName]; ok && e.Cooldown > 0 {
-		if now.Sub(last) < e.Cooldown {
-			e.logf("  [REAL EXEC] SKIP cooldown triangle=%s left=%s",
-				triName, (e.Cooldown - now.Sub(last)).Truncate(time.Millisecond))
-			return nil
-		}
 	}
 
 	if startUSDT <= 0 {
@@ -103,12 +104,68 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 	}
 
 	// 3 символа из ног
+	if len(t.Legs) < 3 {
+		return fmt.Errorf("triangle %s has <3 legs", triName)
+	}
 	sym1 := strings.TrimSpace(t.Legs[0].Symbol)
 	sym2 := strings.TrimSpace(t.Legs[1].Symbol)
 	sym3 := strings.TrimSpace(t.Legs[2].Symbol)
 	if sym1 == "" || sym2 == "" || sym3 == "" {
 		return fmt.Errorf("triangle %s has empty leg symbols: [%q, %q, %q]", triName, sym1, sym2, sym3)
 	}
+
+	// СНАПШОТ котировок только по нужным символам
+	snap := make(map[string]domain.Quote, 3)
+	if q, ok := quotes[sym1]; ok {
+		snap[sym1] = q
+	}
+	if q, ok := quotes[sym2]; ok {
+		snap[sym2] = q
+	}
+	if q, ok := quotes[sym3]; ok {
+		snap[sym3] = q
+	}
+
+	req := execReq{
+		ctx:       ctx,
+		t:         t,
+		quotes:    snap,
+		startUSDT: startUSDT,
+		triName:   triName,
+	}
+
+	select {
+	case e.queue <- req:
+		e.logf("  [REAL EXEC] QUEUED: start=%.6f USDT triangle=%s", startUSDT, triName)
+		return nil
+	default:
+		e.logf("  [REAL EXEC] SKIP: queue full (triangle=%s)", triName)
+		return nil
+	}
+}
+
+func (e *RealExecutor) executeOnce(req execReq) error {
+	now := time.Now()
+
+	// cooldown по имени треугольника
+	e.mu.Lock()
+	if last, ok := e.lastExec[req.triName]; ok && e.Cooldown > 0 && now.Sub(last) < e.Cooldown {
+		left := (e.Cooldown - now.Sub(last)).Truncate(time.Millisecond)
+		e.mu.Unlock()
+		e.logf("  [REAL EXEC] SKIP cooldown triangle=%s left=%s", req.triName, left)
+		return nil
+	}
+	e.mu.Unlock()
+
+	t := req.t
+	quotes := req.quotes
+	startUSDT := req.startUSDT
+	triName := req.triName
+
+	// 3 символа из ног
+	sym1 := strings.TrimSpace(t.Legs[0].Symbol)
+	sym2 := strings.TrimSpace(t.Legs[1].Symbol)
+	sym3 := strings.TrimSpace(t.Legs[2].Symbol)
 
 	e.logf("  [REAL EXEC] start=%.6f USDT triangle=%s", startUSDT, triName)
 	e.logf("    [REAL EXEC] legs: sym1=%s sym2=%s sym3=%s", sym1, sym2, sym3)
@@ -127,7 +184,7 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 	var usdt0 float64
 	{
 		done := e.step("GetBalance USDT (before)")
-		v, err := e.trader.GetBalance(ctx, "USDT")
+		v, err := e.trader.GetBalance(req.ctx, "USDT")
 		done()
 		if err != nil {
 			e.logf("    [REAL EXEC] BAL ERR: get USDT before: %v", err)
@@ -143,13 +200,13 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 	// ===== LEG 1: BUY sym1 by USDT =====
 	q1, ok := quotes[sym1]
 	if !ok {
-		return fmt.Errorf("no quote for sym1=%s", sym1)
+		return fmt.Errorf("no quote snapshot for sym1=%s", sym1)
 	}
 
 	var aBefore1 float64
 	{
 		done := e.step(fmt.Sprintf("GetBalance %s (before leg1)", base1))
-		v, err := e.trader.GetBalance(ctx, base1)
+		v, err := e.trader.GetBalance(req.ctx, base1)
 		done()
 		if err != nil {
 			e.logf("    [REAL EXEC] BAL ERR: get %s before leg1: %v", base1, err)
@@ -163,7 +220,7 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 
 	var ord1 string
 	{
-		// отдельный контекст на ордер — не падаем от Ctrl+C сразу
+		// отдельный контекст на ордер
 		orderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -181,7 +238,7 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 	var aAfter1 float64
 	{
 		done := e.step(fmt.Sprintf("waitBalanceChange %s (after leg1)", base1))
-		v, err := e.waitBalanceChange(ctx, base1, aBefore1, 3*time.Second, 150*time.Millisecond)
+		v, err := e.waitBalanceChange(req.ctx, base1, aBefore1, 3*time.Second, 150*time.Millisecond)
 		done()
 		if err != nil {
 			e.logf("    [REAL EXEC] leg1 WAIT BAL ERR (%s): %v", base1, err)
@@ -195,16 +252,16 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 		return fmt.Errorf("leg1: %s did not increase (before=%.12f after=%.12f)", base1, aBefore1, aAfter1)
 	}
 
-	// ===== LEG 2: SELL sym2 (SELL base2 -> quote2) =====
+	// ===== LEG 2: SELL sym2 =====
 	q2, ok := quotes[sym2]
 	if !ok {
-		return fmt.Errorf("no quote for sym2=%s", sym2)
+		return fmt.Errorf("no quote snapshot for sym2=%s", sym2)
 	}
 
 	var base2Bal float64
 	{
 		done := e.step(fmt.Sprintf("GetBalance %s (before leg2)", base2))
-		v, err := e.trader.GetBalance(ctx, base2)
+		v, err := e.trader.GetBalance(req.ctx, base2)
 		done()
 		if err != nil {
 			e.logf("    [REAL EXEC] BAL ERR: get %s before leg2: %v", base2, err)
@@ -221,7 +278,7 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 	var bBefore2 float64
 	{
 		done := e.step(fmt.Sprintf("GetBalance %s (before leg2)", quote2))
-		v, err := e.trader.GetBalance(ctx, quote2)
+		v, err := e.trader.GetBalance(req.ctx, quote2)
 		done()
 		if err != nil {
 			e.logf("    [REAL EXEC] BAL ERR: get %s before leg2: %v", quote2, err)
@@ -255,7 +312,7 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 	var bAfter2 float64
 	{
 		done := e.step(fmt.Sprintf("waitBalanceChange %s (after leg2)", quote2))
-		v, err := e.waitBalanceChange(ctx, quote2, bBefore2, 3*time.Second, 150*time.Millisecond)
+		v, err := e.waitBalanceChange(req.ctx, quote2, bBefore2, 3*time.Second, 150*time.Millisecond)
 		done()
 		if err != nil {
 			e.logf("    [REAL EXEC] leg2 WAIT BAL ERR (%s): %v", quote2, err)
@@ -269,16 +326,16 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 		return fmt.Errorf("leg2: %s did not increase (before=%.12f after=%.12f)", quote2, bBefore2, bAfter2)
 	}
 
-	// ===== LEG 3: SELL sym3 (SELL base3 -> USDT) =====
+	// ===== LEG 3: SELL sym3 (base3 -> USDT) =====
 	q3, ok := quotes[sym3]
 	if !ok {
-		return fmt.Errorf("no quote for sym3=%s", sym3)
+		return fmt.Errorf("no quote snapshot for sym3=%s", sym3)
 	}
 
 	var base3Bal float64
 	{
 		done := e.step(fmt.Sprintf("GetBalance %s (before leg3)", base3))
-		v, err := e.trader.GetBalance(ctx, base3)
+		v, err := e.trader.GetBalance(req.ctx, base3)
 		done()
 		if err != nil {
 			e.logf("    [REAL EXEC] BAL ERR: get %s before leg3: %v", base3, err)
@@ -295,7 +352,7 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 	var usdtBefore3 float64
 	{
 		done := e.step("GetBalance USDT (before leg3)")
-		v, err := e.trader.GetBalance(ctx, "USDT")
+		v, err := e.trader.GetBalance(req.ctx, "USDT")
 		done()
 		if err != nil {
 			e.logf("    [REAL EXEC] BAL ERR: get USDT before leg3: %v", err)
@@ -327,7 +384,7 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 	var usdtAfter float64
 	{
 		done := e.step("waitBalanceChange USDT (after leg3)")
-		v, err := e.waitBalanceChange(ctx, "USDT", usdtBefore3, 3*time.Second, 150*time.Millisecond)
+		v, err := e.waitBalanceChange(req.ctx, "USDT", usdtBefore3, 3*time.Second, 150*time.Millisecond)
 		done()
 		if err != nil {
 			e.logf("    [REAL EXEC] leg3 WAIT BAL ERR (USDT): %v", err)
@@ -343,7 +400,10 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 	e.logf("    [REAL EXEC] DONE: USDT start=%.12f end=%.12f pnl(total)=%.12f (%.4f%%)",
 		usdt0, usdtAfter, dUSDTTotal, pct(dUSDTTotal, startUSDT))
 
-	e.lastExec[triName] = now
+	e.mu.Lock()
+	e.lastExec[triName] = time.Now()
+	e.mu.Unlock()
+
 	return nil
 }
 

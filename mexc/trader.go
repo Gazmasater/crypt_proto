@@ -43,7 +43,6 @@ func (t *Trader) logf(format string, args ...any) {
 	if !t.debug {
 		return
 	}
-	// без log-пакета, чтобы не менять твой стиль проекта
 	fmt.Printf(time.Now().Format("2006-01-02 15:04:05.000 ")+"[MEXC TRADER] "+format+"\n", args...)
 }
 
@@ -66,30 +65,25 @@ func (t *Trader) Rules(symbol string) (SymbolRules, bool) {
 	return r, ok
 }
 
-// ensureRules: если rules для символа нет — пробуем подгрузить с биржи и закешировать.
 func (t *Trader) ensureRules(ctx context.Context, symbol string) (SymbolRules, bool, error) {
 	symbol = strings.TrimSpace(symbol)
 
-	// быстрый путь: уже в кеше
 	if r, ok := t.Rules(symbol); ok {
 		return r, true, nil
 	}
 
-	// логируем состояние кеша
 	t.mu.RLock()
 	cnt := len(t.rules)
 	sample := sampleKeys(t.rules, 10)
 	t.mu.RUnlock()
 	t.logf("rules miss: symbol=%s rules_count=%d sample_keys=%v", symbol, cnt, sample)
 
-	// тянем exchangeInfo только по одному символу (быстро и безопасно)
 	r, err := t.fetchRulesForSymbol(ctx, symbol)
 	if err != nil {
 		t.logf("fetchRulesForSymbol err: symbol=%s err=%v", symbol, err)
 		return SymbolRules{}, false, err
 	}
 
-	// кладём в кеш
 	t.mu.Lock()
 	t.rules[symbol] = r
 	t.mu.Unlock()
@@ -111,8 +105,6 @@ func sampleKeys(m map[string]SymbolRules, n int) []string {
 	}
 	return keys
 }
-
-// ====== PUBLIC METHODS ======
 
 // SmartMarketBuyUSDT:
 // Покупка по USDT (quote), нормализует amount/qty по правилам symbol.
@@ -160,11 +152,24 @@ func (t *Trader) SmartMarketBuyUSDT(ctx context.Context, symbol string, usdt flo
 		qty = truncToDecimals(qtyRaw, r.QtyDecimals)
 	}
 
-	if r.MinQty > 0 && qty < r.MinQty {
-		return "", fmt.Errorf("qty<minQty (qty=%.12f minQty=%.12f)", qty, r.MinQty)
-	}
+	// ВАЖНО: сначала проверим qty<=0 (после floor может стать 0)
 	if qty <= 0 {
-		return "", fmt.Errorf("qty<=0 after normalize (raw=%.12f)", qtyRaw)
+		needUSDT := 0.0
+		if r.MinQty > 0 {
+			needUSDT = r.MinQty * ask
+		}
+		return "", fmt.Errorf(
+			"qty<=0 after normalize (raw=%.12f norm=%.12f step=%.12f minQty=%.12f ask=%.10f tradeUSDT=%.6f needUSDT>=%.6f)",
+			qtyRaw, qty, r.BaseStep, r.MinQty, ask, usdt, needUSDT,
+		)
+	}
+
+	if r.MinQty > 0 && qty < r.MinQty {
+		needUSDT := r.MinQty * ask
+		return "", fmt.Errorf(
+			"qty<minQty (raw=%.12f norm=%.12f minQty=%.12f step=%.12f ask=%.10f tradeUSDT=%.6f needUSDT>=%.6f)",
+			qtyRaw, qty, r.MinQty, r.BaseStep, ask, usdt, needUSDT,
+		)
 	}
 
 	t.logf("BUY by QTY: symbol=%s usdt=%.8f ask=%.10f qtyRaw=%.12f qty=%.12f step=%.12f minQty=%.12f",
@@ -199,11 +204,11 @@ func (t *Trader) SmartMarketSellQty(ctx context.Context, symbol string, qtyRaw f
 		qty = truncToDecimals(qtyRaw, r.QtyDecimals)
 	}
 
-	if r.MinQty > 0 && qty < r.MinQty {
-		return "", fmt.Errorf("qty<minQty (qty=%.12f minQty=%.12f)", qty, r.MinQty)
-	}
 	if qty <= 0 {
-		return "", fmt.Errorf("qty<=0 after normalize (raw=%.12f)", qtyRaw)
+		return "", fmt.Errorf("qty<=0 after normalize (raw=%.12f norm=%.12f step=%.12f minQty=%.12f)", qtyRaw, qty, r.BaseStep, r.MinQty)
+	}
+	if r.MinQty > 0 && qty < r.MinQty {
+		return "", fmt.Errorf("qty<minQty (raw=%.12f norm=%.12f minQty=%.12f step=%.12f)", qtyRaw, qty, r.MinQty, r.BaseStep)
 	}
 
 	t.logf("SELL: symbol=%s qtyRaw=%.12f qty=%.12f step=%.12f minQty=%.12f", symbol, qtyRaw, qty, r.BaseStep, r.MinQty)
@@ -258,7 +263,6 @@ func (t *Trader) placeMarket(ctx context.Context, symbol, side string, quantity,
 	if v, ok := m["orderIdStr"]; ok {
 		return fmt.Sprintf("%v", v), nil
 	}
-	// На всякий случай лог raw
 	t.logf("placeMarket ok but no orderId in body=%s", string(b))
 	return "", nil
 }
@@ -338,10 +342,6 @@ func stripZeros(v float64) string {
 	return s
 }
 
-//
-// ===== RULES LOADER (exchangeInfo) =====
-//
-
 // fetchRulesForSymbol вытягивает exchangeInfo по одному символу и строит SymbolRules.
 func (t *Trader) fetchRulesForSymbol(ctx context.Context, symbol string) (SymbolRules, error) {
 	u := t.baseURL + "/api/v3/exchangeInfo?symbol=" + url.QueryEscape(symbol)
@@ -361,7 +361,6 @@ func (t *Trader) fetchRulesForSymbol(ctx context.Context, symbol string) (Symbol
 		return SymbolRules{}, fmt.Errorf("exchangeInfo error: status=%d body=%s", resp.StatusCode, string(b))
 	}
 
-	// Парсим максимально гибко (через map), чтобы не зависеть от точной схемы.
 	var root map[string]any
 	if err := json.Unmarshal(b, &root); err != nil {
 		return SymbolRules{}, fmt.Errorf("exchangeInfo unmarshal: %w body=%s", err, string(b))
@@ -379,11 +378,10 @@ func (t *Trader) fetchRulesForSymbol(ctx context.Context, symbol string) (Symbol
 
 	r := SymbolRules{}
 
-	// spot/api разрешение: стараемся найти isSpotTradingAllowed и/или orderTypes MARKET
+	// spot/api разрешение
 	if v, ok := m["isSpotTradingAllowed"].(bool); ok {
 		r.IsSpotTradingAllowed = v
 	}
-	// если поля нет — пробуем по orderTypes
 	if r.IsSpotTradingAllowed == false {
 		if ots, ok := m["orderTypes"].([]any); ok {
 			hasMarket := false
@@ -393,7 +391,6 @@ func (t *Trader) fetchRulesForSymbol(ctx context.Context, symbol string) (Symbol
 					break
 				}
 			}
-			// это не идеально, но лучше чем падать
 			if hasMarket {
 				r.IsSpotTradingAllowed = true
 			}
@@ -401,10 +398,6 @@ func (t *Trader) fetchRulesForSymbol(ctx context.Context, symbol string) (Symbol
 	}
 
 	// precision
-	if v, ok := asInt(m["baseAssetPrecision"]); ok {
-		// у тебя это может быть не нужно, но оставим
-		_ = v
-	}
 	if v, ok := asInt(m["quoteAssetPrecision"]); ok {
 		r.QuoteAssetPrecision = v
 	}
@@ -421,7 +414,6 @@ func (t *Trader) fetchRulesForSymbol(ctx context.Context, symbol string) (Symbol
 
 			switch ft {
 			case "LOT_SIZE", "MARKET_LOT_SIZE":
-				// stepSize / minQty
 				if s, ok := fm["stepSize"].(string); ok {
 					if v, err := strconv.ParseFloat(s, 64); err == nil {
 						r.BaseStep = v
@@ -436,12 +428,10 @@ func (t *Trader) fetchRulesForSymbol(ctx context.Context, symbol string) (Symbol
 		}
 	}
 
-	// quoteOrderQtyMarketAllowed (если есть в ответе — отлично)
 	if v, ok := m["quoteOrderQtyMarketAllowed"].(bool); ok {
 		r.QuoteOrderQtyMarketAllowed = v
 	}
 
-	// Доп. лог: что загрузили
 	t.logf("rules loaded: symbol=%s spotAllowed=%v quoteOrderQtyMarketAllowed=%v quotePrec=%d step=%.12f minQty=%.12f",
 		symbol, r.IsSpotTradingAllowed, r.QuoteOrderQtyMarketAllowed, r.QuoteAssetPrecision, r.BaseStep, r.MinQty)
 
