@@ -23,11 +23,17 @@ type exchangeInfo struct {
 }
 
 type symbolInfo struct {
-	Symbol      string   `json:"symbol"`
-	Status      string   `json:"status"`
-	OrderTypes  []string `json:"orderTypes"`
-	Permissions []string `json:"permissions"`
-	St          bool     `json:"st"`
+	Symbol string `json:"symbol"`
+	Status string `json:"status"`
+
+	OrderTypes   []string `json:"orderTypes"`
+	Permissions  []string `json:"permissions"`
+	St           bool     `json:"st"`
+	BaseSizePrec string   `json:"baseSizePrecision"`
+
+	QuoteAmountPrecisionMarket string `json:"quoteAmountPrecisionMarket"`
+	// на всякий случай: иногда может быть полезно как fallback
+	QuoteAmountPrecision string `json:"quoteAmountPrecision"`
 }
 
 func colIndex(header []string, name string) int {
@@ -49,27 +55,51 @@ func hasMarket(orderTypes []string) bool {
 	return false
 }
 
-func hasSPOT(perms []string) bool {
+func hasPerm(perms []string, want string) bool {
 	for _, p := range perms {
-		if strings.EqualFold(strings.TrimSpace(p), "SPOT") {
+		if strings.EqualFold(strings.TrimSpace(p), want) {
 			return true
 		}
 	}
 	return false
 }
 
+// "0.000001" -> 6; "1" -> 0; "" -> -1
+func decimalsFromStep(step string) int {
+	step = strings.TrimSpace(step)
+	if step == "" {
+		return -1
+	}
+	if !strings.Contains(step, ".") {
+		return 0
+	}
+	parts := strings.SplitN(step, ".", 2)
+	frac := parts[1]
+	frac = strings.TrimRight(frac, "0")
+	return len(frac)
+}
+
+// Выбор точности quote для MARKET: сначала quoteAmountPrecisionMarket, иначе fallback quoteAmountPrecision
+func quoteMarketStep(s symbolInfo) string {
+	if strings.TrimSpace(s.QuoteAmountPrecisionMarket) != "" {
+		return s.QuoteAmountPrecisionMarket
+	}
+	return s.QuoteAmountPrecision
+}
+
+// Фильтр "пара подходит для торговли MARKET" по твоему требованию:
+// status=="1", st==false, permissions содержит "SPOT", orderTypes содержит "MARKET"
 func marketOk(s symbolInfo) bool {
 	if strings.TrimSpace(s.Status) != "1" {
 		return false
 	}
-	if !hasSPOT(s.Permissions) {
+	if s.St {
+		return false
+	}
+	if !hasPerm(s.Permissions, "SPOT") {
 		return false
 	}
 	if !hasMarket(s.OrderTypes) {
-		return false
-	}
-	// опционально: если st=true означает special treatment — можно отрезать
-	if s.St {
 		return false
 	}
 	return true
@@ -127,6 +157,13 @@ func main() {
 		log.Fatalf("ERR: нет колонок leg1_symbol/leg2_symbol/leg3_symbol в CSV")
 	}
 
+	// Добавляем два вида точности:
+	// qty_dp (по baseSizePrecision) и quote_dp_market (по quoteAmountPrecisionMarket / fallback quoteAmountPrecision)
+	header = append(header,
+		"leg1_qty_dp", "leg2_qty_dp", "leg3_qty_dp",
+		"leg1_quote_dp_market", "leg2_quote_dp_market", "leg3_quote_dp_market",
+	)
+
 	out, err := os.Create(OutputCSV)
 	if err != nil {
 		log.Fatalf("ERR: create %s: %v", OutputCSV, err)
@@ -175,6 +212,21 @@ func main() {
 			skippedNotEligible++
 			continue
 		}
+
+		// qty precision (base)
+		dpQty1 := decimalsFromStep(r1.BaseSizePrec)
+		dpQty2 := decimalsFromStep(r2.BaseSizePrec)
+		dpQty3 := decimalsFromStep(r3.BaseSizePrec)
+
+		// quoteAmount precision for MARKET (quote)
+		dpQm1 := decimalsFromStep(quoteMarketStep(r1))
+		dpQm2 := decimalsFromStep(quoteMarketStep(r2))
+		dpQm3 := decimalsFromStep(quoteMarketStep(r3))
+
+		row = append(row,
+			fmt.Sprintf("%d", dpQty1), fmt.Sprintf("%d", dpQty2), fmt.Sprintf("%d", dpQty3),
+			fmt.Sprintf("%d", dpQm1), fmt.Sprintf("%d", dpQm2), fmt.Sprintf("%d", dpQm3),
+		)
 
 		if err := cw.Write(row); err != nil {
 			log.Fatalf("ERR: write row: %v", err)
