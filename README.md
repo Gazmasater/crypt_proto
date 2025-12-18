@@ -73,36 +73,40 @@ go run ./cmd/triangles_enrich_mexc
 
 
 type symbolInfo struct {
-    Symbol     string   `json:"symbol"`
-    Status     string   `json:"status"`
-    OrderTypes []string `json:"orderTypes"`
-    Permissions []string `json:"permissions"`
-    St         bool     `json:"st"`
+	Symbol     string   `json:"symbol"`
+	Status     string   `json:"status"`
+	OrderTypes []string `json:"orderTypes"`
+	Permissions []string `json:"permissions"`
+	St         bool     `json:"st"`
 }
 
-func hasSPOT(perms []string) bool {
-    for _, p := range perms {
-        if strings.EqualFold(strings.TrimSpace(p), "SPOT") {
-            return true
-        }
-    }
-    return false
+func hasPerm(perms []string, want string) bool {
+	for _, p := range perms {
+		if strings.EqualFold(strings.TrimSpace(p), want) {
+			return true
+		}
+	}
+	return false
 }
 
 func marketOk(s symbolInfo) bool {
-    if strings.TrimSpace(s.Status) != "1" {
-        return false
-    }
-    if !hasSPOT(s.Permissions) {
-        return false
-    }
-    if !hasMarket(s.OrderTypes) {
-        return false
-    }
-    // опционально: если st=true означает special treatment — можно отрезать
-    if s.St {
-        return false
-    }
-    return true
+	// 1) status=="1"
+	if strings.TrimSpace(s.Status) != "1" {
+		return false
+	}
+	// 2) st==false
+	if s.St {
+		return false
+	}
+	// 3) permissions содержит "SPOT"
+	if !hasPerm(s.Permissions, "SPOT") {
+		return false
+	}
+	// 4) orderTypes содержит "MARKET"
+	if !hasMarket(s.OrderTypes) {
+		return false
+	}
+	return true
 }
+
 
