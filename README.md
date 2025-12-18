@@ -72,909 +72,300 @@ go run ./cmd/triangles_enrich_mexc
 
 
 
-package main
-
-import (
-	"encoding/csv"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"log"
-	"math"
-	"net/http"
-	"os"
-	"strconv"
-	"strings"
-	"time"
-)
-
-// ======================
-// ENV
-// ======================
-
-func envFloat(key string, def float64) float64 {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	f, err := strconv.ParseFloat(v, 64)
-	if err != nil {
-		return def
-	}
-	return f
-}
-
-func envString(key, def string) string {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	return v
-}
-
-// ======================
-// MEXC API models
-// ======================
-
-type mexcExchangeInfo struct {
-	Symbols []mexcSymbol `json:"symbols"`
-}
-
-type mexcSymbol struct {
-	Symbol              string       `json:"symbol"`
-	Status              string       `json:"status"`
-	BaseAsset           string       `json:"baseAsset"`
-	QuoteAsset          string       `json:"quoteAsset"`
-	BaseAssetPrecision  any          `json:"baseAssetPrecision"`
-	QuoteAssetPrecision any          `json:"quoteAssetPrecision"`
-	OrderTypes          []string     `json:"orderTypes"`
-	Permissions         []string     `json:"permissions"`
-	Filters             []mexcFilter `json:"filters"`
-
-	// важные "нестандартные" поля MEXC:
-	IsSpotTradingAllowed       *bool  `json:"isSpotTradingAllowed"`       // НЕ используем как решающее!
-	QuoteOrderQtyMarketAllowed *bool  `json:"quoteOrderQtyMarketAllowed"` // если есть
-	BaseSizePrecision          string `json:"baseSizePrecision"`          // пример: "0.000001"
-	QuoteAmountPrecisionMarket string `json:"quoteAmountPrecisionMarket"` // пример: "1"
-	MaxQuoteAmountMarket       string `json:"maxQuoteAmountMarket"`       // иногда нужно
-}
-
-type mexcFilter struct {
-	FilterType string `json:"filterType"`
-
-	// LOT_SIZE / MARKET_LOT_SIZE
-	StepSize string `json:"stepSize"`
-	MinQty   string `json:"minQty"`
-
-	// MIN_NOTIONAL / NOTIONAL
-	MinNotional string `json:"minNotional"`
-	Notional    string `json:"notional"`
-}
-
-type mexcBookTicker struct {
-	Symbol string `json:"symbol"`
-	Bid    string `json:"bidPrice"`
-	Ask    string `json:"askPrice"`
-}
-
-// ======================
-// Rules normalized
-// ======================
-
-type SymbolRules struct {
-	Symbol string
-	Base   string
-	Quote  string
-
-	// решающие флаги для генератора
-	SpotAllowed   bool // по permissions содержит SPOT
-	MarketAllowed bool // orderTypes содержит MARKET
-
-	// "сырое" поле для диагностики
-	RawIsSpotTradingAllowed bool
-	RawHasIsSpotField       bool
-
-	// quoteOrderQty market возможность (если можно купить на сумму)
-	QuoteOrderQtyMarketAllowed bool
-
-	// шаг/точности
-	BaseStep float64
-
-	// из фильтров (если есть)
-	MinQty      float64
-	MinNotional float64
-
-	// точности
-	BasePrecision         int
-	QuotePrecision        int
-	QuotePrecisionMarket  int // из quoteAmountPrecisionMarket (если есть), иначе = QuotePrecision
-}
-
-type Quote struct {
-	Bid float64
-	Ask float64
-}
-
-// ======================
-// Utils
-// ======================
-
-func parseFloat(s string) float64 {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0
-	}
-	f, _ := strconv.ParseFloat(s, 64)
-	return f
-}
-
-func asInt(v any) (int, bool) {
-	switch x := v.(type) {
-	case float64:
-		return int(x), true
-	case int:
-		return x, true
-	case int64:
-		return int(x), true
-	case string:
-		i, err := strconv.Atoi(x)
-		if err != nil {
-			return 0, false
-		}
-		return i, true
-	default:
-		return 0, false
-	}
-}
-
-func hasMarket(orderTypes []string) bool {
-	for _, s := range orderTypes {
-		if strings.EqualFold(strings.TrimSpace(s), "MARKET") {
-			return true
-		}
-	}
-	return false
-}
-
-func hasPermission(perms []string, want string) bool {
-	for _, p := range perms {
-		if strings.EqualFold(strings.TrimSpace(p), want) {
-			return true
-		}
-	}
-	return false
-}
-
-func decimalsFromStep(step float64) int {
-	if step <= 0 {
-		return -1
-	}
-	s := strconv.FormatFloat(step, 'f', 18, 64)
-	s = strings.TrimRight(s, "0")
-	if strings.Contains(s, ".") {
-		parts := strings.SplitN(s, ".", 2)
-		return len(parts[1])
-	}
-	return 0
-}
-
-func floorToStep(x, step float64) float64 {
-	if step <= 0 {
-		return x
-	}
-	return math.Floor(x/step) * step
-}
-
-func truncToDecimals(x float64, dec int) float64 {
-	if dec < 0 {
-		return x
-	}
-	p := math.Pow10(dec)
-	return math.Trunc(x*p) / p
-}
-
-// ======================
-// Build rules from exchangeInfo
-// ======================
-
-func buildRules(info mexcExchangeInfo) map[string]SymbolRules {
-	out := make(map[string]SymbolRules, len(info.Symbols))
-
-	for _, s := range info.Symbols {
-		sym := strings.TrimSpace(s.Symbol)
-		if sym == "" {
-			continue
-		}
-
-		r := SymbolRules{
-			Symbol: sym,
-			Base:   strings.TrimSpace(s.BaseAsset),
-			Quote:  strings.TrimSpace(s.QuoteAsset),
-		}
-
-		// status: на MEXC чаще "1"
-		statusOK := (strings.TrimSpace(s.Status) == "" || strings.TrimSpace(s.Status) == "1" ||
-			strings.EqualFold(strings.TrimSpace(s.Status), "ENABLED") ||
-			strings.EqualFold(strings.TrimSpace(s.Status), "TRADING"))
-
-		// РЕШАЮЩЕЕ: SpotAllowed — только через permissions содержит "SPOT"
-		// (isSpotTradingAllowed у BTCUSDT = false, но permissions=["SPOT"] и MARKET есть)
-		r.SpotAllowed = statusOK && hasPermission(s.Permissions, "SPOT")
-
-		// MarketAllowed
-		r.MarketAllowed = hasMarket(s.OrderTypes)
-
-		// raw isSpotTradingAllowed (только для диагностики)
-		if s.IsSpotTradingAllowed != nil {
-			r.RawHasIsSpotField = true
-			r.RawIsSpotTradingAllowed = *s.IsSpotTradingAllowed
-		}
-
-		// precision
-		if v, ok := asInt(s.BaseAssetPrecision); ok {
-			r.BasePrecision = v
-		}
-		if v, ok := asInt(s.QuoteAssetPrecision); ok {
-			r.QuotePrecision = v
-		} else {
-			r.QuotePrecision = 2
-		}
-
-		// quote precision for MARKET quote amount
-		r.QuotePrecisionMarket = r.QuotePrecision
-		if qpm := strings.TrimSpace(s.QuoteAmountPrecisionMarket); qpm != "" {
-			if iv, err := strconv.Atoi(qpm); err == nil && iv >= 0 {
-				r.QuotePrecisionMarket = iv
-			}
-		}
-
-		// quoteOrderQtyMarketAllowed
-		// 1) если биржа прислала булево — используем
-		// 2) иначе "эвристика": если есть quoteAmountPrecisionMarket и maxQuoteAmountMarket — считаем что можно
-		if s.QuoteOrderQtyMarketAllowed != nil {
-			r.QuoteOrderQtyMarketAllowed = *s.QuoteOrderQtyMarketAllowed
-		} else {
-			if strings.TrimSpace(s.QuoteAmountPrecisionMarket) != "" && strings.TrimSpace(s.MaxQuoteAmountMarket) != "" {
-				r.QuoteOrderQtyMarketAllowed = true
-			}
-		}
-
-		// filters (если есть) — minQty/step/minNotional
-		var lotStep, lotMin float64
-		var mktStep, mktMin float64
-		var minNotional float64
-
-		for _, f := range s.Filters {
-			ft := strings.ToUpper(strings.TrimSpace(f.FilterType))
-			switch ft {
-			case "LOT_SIZE":
-				lotStep = parseFloat(f.StepSize)
-				lotMin = parseFloat(f.MinQty)
-			case "MARKET_LOT_SIZE":
-				mktStep = parseFloat(f.StepSize)
-				mktMin = parseFloat(f.MinQty)
-			case "MIN_NOTIONAL":
-				if mn := parseFloat(f.MinNotional); mn > 0 {
-					minNotional = mn
-				}
-			case "NOTIONAL":
-				if mn := parseFloat(f.Notional); mn > 0 {
-					minNotional = mn
-				}
-				if mn := parseFloat(f.MinNotional); mn > 0 {
-					minNotional = mn
-				}
-			}
-		}
-
-		// ВАЖНО для MEXC: часто нет LOT_SIZE в filters, но есть baseSizePrecision
-		// Пример BTCUSDT: baseSizePrecision="0.000001"
-		baseStepFromPrecision := parseFloat(s.BaseSizePrecision)
-
-		// выбираем step/minQty: MARKET_LOT_SIZE > LOT_SIZE > baseSizePrecision
-		if mktStep > 0 {
-			r.BaseStep = mktStep
-		} else if lotStep > 0 {
-			r.BaseStep = lotStep
-		} else if baseStepFromPrecision > 0 {
-			r.BaseStep = baseStepFromPrecision
-		}
-
-		if mktMin > 0 {
-			r.MinQty = mktMin
-		} else if lotMin > 0 {
-			r.MinQty = lotMin
-		} else {
-			r.MinQty = 0
-		}
-
-		r.MinNotional = minNotional
-
-		out[sym] = r
-	}
-
-	return out
-}
-
-// ======================
-// API calls
-// ======================
-
-func httpGetJSON(url string, dst any) error {
-	c := &http.Client{Timeout: 20 * time.Second}
-	resp, err := c.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("http %d: %s", resp.StatusCode, string(b))
-	}
-	return json.NewDecoder(resp.Body).Decode(dst)
-}
-
-func fetchExchangeInfo(baseURL string) (mexcExchangeInfo, error) {
-	var info mexcExchangeInfo
-	err := httpGetJSON(baseURL+"/api/v3/exchangeInfo", &info)
-	return info, err
-}
-
-func fetchBookTickerAll(baseURL string) (map[string]Quote, error) {
-	var raw any
-	if err := httpGetJSON(baseURL+"/api/v3/ticker/bookTicker", &raw); err != nil {
-		return nil, err
-	}
-
-	out := map[string]Quote{}
-
-	switch v := raw.(type) {
-	case []any:
-		for _, it := range v {
-			m, ok := it.(map[string]any)
-			if !ok {
-				continue
-			}
-			sym, _ := m["symbol"].(string)
-			if strings.TrimSpace(sym) == "" {
-				continue
-			}
-			bs, _ := m["bidPrice"].(string)
-			as, _ := m["askPrice"].(string)
-			if bs == "" {
-				if bf, ok := m["bidPrice"].(float64); ok {
-					bs = strconv.FormatFloat(bf, 'f', 18, 64)
-				}
-			}
-			if as == "" {
-				if af, ok := m["askPrice"].(float64); ok {
-					as = strconv.FormatFloat(af, 'f', 18, 64)
-				}
-			}
-			bid := parseFloat(bs)
-			ask := parseFloat(as)
-			if bid <= 0 || ask <= 0 {
-				continue
-			}
-			out[sym] = Quote{Bid: bid, Ask: ask}
-		}
-	default:
-		b, _ := json.Marshal(raw)
-		var arr []mexcBookTicker
-		if err := json.Unmarshal(b, &arr); err != nil {
-			return nil, fmt.Errorf("unexpected bookTicker format")
-		}
-		for _, t := range arr {
-			bid := parseFloat(t.Bid)
-			ask := parseFloat(t.Ask)
-			if bid <= 0 || ask <= 0 {
-				continue
-			}
-			out[t.Symbol] = Quote{Bid: bid, Ask: ask}
-		}
-	}
-
-	if len(out) == 0 {
-		return nil, fmt.Errorf("bookTicker: empty result")
-	}
-	return out, nil
-}
-
-// ======================
-// Triangle simulation
-// ======================
-
-type Edge struct {
-	Symbol string
-	From   string
-	To     string
-	Side   string // BUY or SELL (market)
-}
-
-type Cycle struct {
-	E1, E2, E3 Edge
-}
-
-type SimCfg struct {
-	FeePct     float64 // percent, e.g. 0.04
-	SellSafety float64 // 0.995
-}
-
-func applyEdge(amount float64, e Edge, rules SymbolRules, q Quote, cfg SimCfg) (float64, error) {
-	if amount <= 0 {
-		return 0, errors.New("amount<=0")
-	}
-	fee := cfg.FeePct / 100.0
-	if fee < 0 {
-		fee = 0
-	}
-	sellSafety := cfg.SellSafety
-	if sellSafety <= 0 || sellSafety > 1 {
-		sellSafety = 0.995
-	}
-
-	step := rules.BaseStep
-	minQty := rules.MinQty
-	minNotional := rules.MinNotional
-
-	switch e.Side {
-	case "BUY":
-		// from QUOTE -> to BASE, pay quote amount = amount
-		// если можно BUY по quoteOrderQty — используем amount с ограничением по quoteAmountPrecisionMarket
-		if rules.QuoteOrderQtyMarketAllowed {
-			dec := rules.QuotePrecisionMarket
-			amtQuote := truncToDecimals(amount, dec)
-			if amtQuote <= 0 {
-				return 0, fmt.Errorf("buy amount<=0 after quote precisionMarket dec=%d", dec)
-			}
-			if minNotional > 0 && amtQuote+1e-12 < minNotional {
-				return 0, fmt.Errorf("buy minNotional: need>=%.12f have=%.12f", minNotional, amtQuote)
-			}
-			gotBase := (amtQuote / q.Ask) * (1.0 - fee)
-
-			// проверка minQty (если она известна)
-			if minQty > 0 && gotBase+1e-12 < minQty {
-				return 0, fmt.Errorf("buy minQty: need>=%.12f got=%.12f", minQty, gotBase)
-			}
-			return gotBase, nil
-		}
-
-		// иначе BUY quantity по ask и режем step
-		qtyRaw := amount / q.Ask
-		qty := qtyRaw
-		if step > 0 {
-			qty = floorToStep(qtyRaw, step)
-		}
-		if qty <= 0 {
-			return 0, fmt.Errorf("buy qty<=0 after step (raw=%.12f step=%.12f)", qtyRaw, step)
-		}
-		if minQty > 0 && qty+1e-12 < minQty {
-			return 0, fmt.Errorf("buy minQty: need>=%.12f got=%.12f", minQty, qty)
-		}
-		notional := qty * q.Ask
-		if minNotional > 0 && notional+1e-12 < minNotional {
-			return 0, fmt.Errorf("buy minNotional: need>=%.12f got=%.12f", minNotional, notional)
-		}
-		gotBase := qty * (1.0 - fee)
-		return gotBase, nil
-
-	case "SELL":
-		// from BASE -> to QUOTE, sell base amount with safety
-		qtyRaw := amount * sellSafety
-		qty := qtyRaw
-		if step > 0 {
-			qty = floorToStep(qtyRaw, step)
-		}
-		if qty <= 0 {
-			return 0, fmt.Errorf("sell qty<=0 after step (raw=%.12f step=%.12f)", qtyRaw, step)
-		}
-		if minQty > 0 && qty+1e-12 < minQty {
-			return 0, fmt.Errorf("sell minQty: need>=%.12f got=%.12f", minQty, qty)
-		}
-		notional := qty * q.Bid
-		if minNotional > 0 && notional+1e-12 < minNotional {
-			return 0, fmt.Errorf("sell minNotional: need>=%.12f got=%.12f", minNotional, notional)
-		}
-		gotQuote := qty * q.Bid * (1.0 - fee)
-		return gotQuote, nil
-
-	default:
-		return 0, fmt.Errorf("unknown side=%s", e.Side)
-	}
-}
-
-func simulateCycle(startUSDT float64, c Cycle, rulesMap map[string]SymbolRules, quotes map[string]Quote, cfg SimCfg) (float64, error) {
-	amt := startUSDT
-
-	r1, ok := rulesMap[c.E1.Symbol]
-	if !ok {
-		return 0, fmt.Errorf("no rules %s", c.E1.Symbol)
-	}
-	q1, ok := quotes[c.E1.Symbol]
-	if !ok {
-		return 0, fmt.Errorf("no price %s", c.E1.Symbol)
-	}
-	amt, err := applyEdge(amt, c.E1, r1, q1, cfg)
-	if err != nil {
-		return 0, fmt.Errorf("leg1 %s: %v", c.E1.Symbol, err)
-	}
-
-	r2, ok := rulesMap[c.E2.Symbol]
-	if !ok {
-		return 0, fmt.Errorf("no rules %s", c.E2.Symbol)
-	}
-	q2, ok := quotes[c.E2.Symbol]
-	if !ok {
-		return 0, fmt.Errorf("no price %s", c.E2.Symbol)
-	}
-	amt, err = applyEdge(amt, c.E2, r2, q2, cfg)
-	if err != nil {
-		return 0, fmt.Errorf("leg2 %s: %v", c.E2.Symbol, err)
-	}
-
-	r3, ok := rulesMap[c.E3.Symbol]
-	if !ok {
-		return 0, fmt.Errorf("no rules %s", c.E3.Symbol)
-	}
-	q3, ok := quotes[c.E3.Symbol]
-	if !ok {
-		return 0, fmt.Errorf("no price %s", c.E3.Symbol)
-	}
-	amt, err = applyEdge(amt, c.E3, r3, q3, cfg)
-	if err != nil {
-		return 0, fmt.Errorf("leg3 %s: %v", c.E3.Symbol, err)
-	}
-
-	return amt, nil
-}
-
-func findBestUSDT3Cycle(symbols [3]string, rulesMap map[string]SymbolRules) (Cycle, bool, string) {
-	edges := []Edge{}
-	for _, sym := range symbols {
-		r, ok := rulesMap[sym]
-		if !ok {
-			return Cycle{}, false, "missing rules"
-		}
-		if !r.SpotAllowed {
-			return Cycle{}, false, "spot not allowed"
-		}
-		if !r.MarketAllowed {
-			return Cycle{}, false, "market not allowed"
-		}
-		if r.Base == "" || r.Quote == "" {
-			return Cycle{}, false, "base/quote empty"
-		}
-		edges = append(edges,
-			Edge{Symbol: sym, From: r.Quote, To: r.Base, Side: "BUY"},
-			Edge{Symbol: sym, From: r.Base, To: r.Quote, Side: "SELL"},
-		)
-	}
-
-	type node struct {
-		asset   string
-		usedSym map[string]bool
-		path    []Edge
-	}
-
-	stack := []node{{
-		asset:   "USDT",
-		usedSym: map[string]bool{},
-		path:    []Edge{},
-	}}
-
-	for len(stack) > 0 {
-		n := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-
-		if len(n.path) == 3 {
-			if n.asset == "USDT" {
-				return Cycle{E1: n.path[0], E2: n.path[1], E3: n.path[2]}, true, "ok"
-			}
-			continue
-		}
-
-		for _, e := range edges {
-			if n.usedSym[e.Symbol] {
-				continue
-			}
-			if e.From != n.asset {
-				continue
-			}
-			used := make(map[string]bool, len(n.usedSym)+1)
-			for k, v := range n.usedSym {
-				used[k] = v
-			}
-			used[e.Symbol] = true
-
-			path := append(append([]Edge{}, n.path...), e)
-			stack = append(stack, node{asset: e.To, usedSym: used, path: path})
-		}
-	}
-
-	return Cycle{}, false, "no USDT 3-leg cycle"
-}
-
-func minStartByBinarySearch(c Cycle, rulesMap map[string]SymbolRules, quotes map[string]Quote, cfg SimCfg) (float64, string) {
-	low := 0.0
-	high := 1.0
-	ok := false
-	var lastErr error
-
-	for i := 0; i < 40; i++ {
-		_, err := simulateCycle(high, c, rulesMap, quotes, cfg)
-		if err == nil {
-			ok = true
-			break
-		}
-		lastErr = err
-		high *= 2
-		if high > 1_000_000 {
-			break
-		}
-	}
-	if !ok {
-		if lastErr != nil {
-			return 0, lastErr.Error()
-		}
-		return 0, "not feasible"
-	}
-
-	for i := 0; i < 60; i++ {
-		mid := (low + high) / 2
-		if mid <= 0 {
-			low = mid
-			continue
-		}
-		_, err := simulateCycle(mid, c, rulesMap, quotes, cfg)
-		if err == nil {
-			high = mid
-		} else {
-			low = mid
-		}
-	}
-
-	return high, "ok"
-}
-
-// ======================
-// CSV I/O
-// ======================
-
-type InRow struct {
-	Base1, Quote1 string
-	Base2, Quote2 string
-	Base3, Quote3 string
-}
-
-func readTrianglesCSV(path string) ([]InRow, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	r.FieldsPerRecord = -1
-
-	head, err := r.Read()
-	if err != nil {
-		return nil, err
-	}
-	if len(head) < 6 {
-		return nil, fmt.Errorf("bad header: %v", head)
-	}
-
-	var out []InRow
-	for {
-		rec, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if len(rec) < 6 {
-			continue
-		}
-		out = append(out, InRow{
-			Base1:  strings.TrimSpace(rec[0]),
-			Quote1: strings.TrimSpace(rec[1]),
-			Base2:  strings.TrimSpace(rec[2]),
-			Quote2: strings.TrimSpace(rec[3]),
-			Base3:  strings.TrimSpace(rec[4]),
-			Quote3: strings.TrimSpace(rec[5]),
-		})
-	}
-	return out, nil
-}
-
-// ======================
-// Main
-// ======================
-
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
-	baseURL := envString("MEXC_BASE_URL", "https://api.mexc.com")
-	inFile := envString("TRIANGLES_FILE", "triangles_markets.csv")
-	outFile := envString("TRIANGLES_ENRICHED_FILE", "triangles_markets_enriched.csv")
-
-	tradeAmountUSDT := envFloat("TRADE_AMOUNT_USDT", 10)
-	feePct := envFloat("FEE_PCT", 0.04)
-	sellSafety := envFloat("SELL_SAFETY", 0.995)
-
-	log.Printf("input=%s output=%s TRADE_AMOUNT_USDT=%.6f FEE_PCT=%.6f SELL_SAFETY=%.6f",
-		inFile, outFile, tradeAmountUSDT, feePct, sellSafety)
-
-	rows, err := readTrianglesCSV(inFile)
-	if err != nil {
-		log.Fatalf("read triangles csv: %v", err)
-	}
-	log.Printf("triangles rows: %d", len(rows))
-
-	info, err := fetchExchangeInfo(baseURL)
-	if err != nil {
-		log.Fatalf("fetch exchangeInfo: %v", err)
-	}
-	rulesMap := buildRules(info)
-	log.Printf("rules loaded: %d symbols", len(rulesMap))
-
-	quotes, err := fetchBookTickerAll(baseURL)
-	if err != nil {
-		log.Fatalf("fetch bookTicker: %v", err)
-	}
-	log.Printf("bookTicker loaded: %d symbols", len(quotes))
-
-	f, err := os.Create(outFile)
-	if err != nil {
-		log.Fatalf("create out: %v", err)
-	}
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	// Пишем только проходящие треугольники, но хедер — полный
-	header := []string{
-		"base1", "quote1", "symbol1", "step1", "minQty1", "minNotional1",
-		"spot1", "market1", "qoq1",
-		"basePrec1", "quotePrec1", "quotePrecMkt1",
-		"rawIsSpot1",
-
-		"base2", "quote2", "symbol2", "step2", "minQty2", "minNotional2",
-		"spot2", "market2", "qoq2",
-		"basePrec2", "quotePrec2", "quotePrecMkt2",
-		"rawIsSpot2",
-
-		"base3", "quote3", "symbol3", "step3", "minQty3", "minNotional3",
-		"spot3", "market3", "qoq3",
-		"basePrec3", "quotePrec3", "quotePrecMkt3",
-		"rawIsSpot3",
-
-		"cycle_leg1", "cycle_leg2", "cycle_leg3",
-		"min_start_usdt",
-	}
-	if err := w.Write(header); err != nil {
-		log.Fatalf("write header: %v", err)
-	}
-
-	cfg := SimCfg{FeePct: feePct, SellSafety: sellSafety}
-
-	okCount := 0
-	skipped := 0
-
-	stepFmt := func(x float64) string {
-		if x == 0 {
-			return "0"
-		}
-		dec := decimalsFromStep(x)
-		if dec < 0 {
-			return strconv.FormatFloat(x, 'f', 12, 64)
-		}
-		return strconv.FormatFloat(x, 'f', dec, 64)
-	}
-	f64 := func(x float64) string { return strconv.FormatFloat(x, 'f', 12, 64) }
-	b2s := func(b bool) string {
-		if b {
-			return "1"
-		}
-		return "0"
-	}
-
-	for _, r := range rows {
-		s1 := r.Base1 + r.Quote1
-		s2 := r.Base2 + r.Quote2
-		s3 := r.Base3 + r.Quote3
-
-		rr1, ok1 := rulesMap[s1]
-		rr2, ok2 := rulesMap[s2]
-		rr3, ok3 := rulesMap[s3]
-
-		if !ok1 || !ok2 || !ok3 {
-			skipped++
-			continue
-		}
-		// нужны цены
-		if _, ok := quotes[s1]; !ok {
-			skipped++
-			continue
-		}
-		if _, ok := quotes[s2]; !ok {
-			skipped++
-			continue
-		}
-		if _, ok := quotes[s3]; !ok {
-			skipped++
-			continue
-		}
-
-		// структурный цикл USDT→...→USDT
-		symbols := [3]string{s1, s2, s3}
-		cycle, ok, _ := findBestUSDT3Cycle(symbols, rulesMap)
-		if !ok {
-			skipped++
-			continue
-		}
-
-		ms, why := minStartByBinarySearch(cycle, rulesMap, quotes, cfg)
-		if why != "ok" || ms <= 0 {
-			skipped++
-			continue
-		}
-
-		// ФИЛЬТР: пишем только проходящие под вход
-		if tradeAmountUSDT+1e-9 < ms {
-			skipped++
-			continue
-		}
-
-		cycleStr1 := fmt.Sprintf("%s:%s %s→%s", cycle.E1.Symbol, cycle.E1.Side, cycle.E1.From, cycle.E1.To)
-		cycleStr2 := fmt.Sprintf("%s:%s %s→%s", cycle.E2.Symbol, cycle.E2.Side, cycle.E2.From, cycle.E2.To)
-		cycleStr3 := fmt.Sprintf("%s:%s %s→%s", cycle.E3.Symbol, cycle.E3.Side, cycle.E3.From, cycle.E3.To)
-
-		raw1 := ""
-		raw2 := ""
-		raw3 := ""
-		if rr1.RawHasIsSpotField {
-			raw1 = b2s(rr1.RawIsSpotTradingAllowed)
-		}
-		if rr2.RawHasIsSpotField {
-			raw2 = b2s(rr2.RawIsSpotTradingAllowed)
-		}
-		if rr3.RawHasIsSpotField {
-			raw3 = b2s(rr3.RawIsSpotTradingAllowed)
-		}
-
-		out := []string{
-			r.Base1, r.Quote1, s1, stepFmt(rr1.BaseStep), f64(rr1.MinQty), f64(rr1.MinNotional),
-			b2s(rr1.SpotAllowed), b2s(rr1.MarketAllowed), b2s(rr1.QuoteOrderQtyMarketAllowed),
-			strconv.Itoa(rr1.BasePrecision), strconv.Itoa(rr1.QuotePrecision), strconv.Itoa(rr1.QuotePrecisionMarket),
-			raw1,
-
-			r.Base2, r.Quote2, s2, stepFmt(rr2.BaseStep), f64(rr2.MinQty), f64(rr2.MinNotional),
-			b2s(rr2.SpotAllowed), b2s(rr2.MarketAllowed), b2s(rr2.QuoteOrderQtyMarketAllowed),
-			strconv.Itoa(rr2.BasePrecision), strconv.Itoa(rr2.QuotePrecision), strconv.Itoa(rr2.QuotePrecisionMarket),
-			raw2,
-
-			r.Base3, r.Quote3, s3, stepFmt(rr3.BaseStep), f64(rr3.MinQty), f64(rr3.MinNotional),
-			b2s(rr3.SpotAllowed), b2s(rr3.MarketAllowed), b2s(rr3.QuoteOrderQtyMarketAllowed),
-			strconv.Itoa(rr3.BasePrecision), strconv.Itoa(rr3.QuotePrecision), strconv.Itoa(rr3.QuotePrecisionMarket),
-			raw3,
-
-			cycleStr1, cycleStr2, cycleStr3,
-			strconv.FormatFloat(ms, 'f', 6, 64),
-		}
-
-		if err := w.Write(out); err != nil {
-			log.Fatalf("write out: %v", err)
-		}
-		okCount++
-	}
-
-	log.Printf("DONE: wrote ok triangles: %d (skipped=%d)", okCount, skipped)
-	fmt.Println("Готово, файл:", outFile)
-}
+base1,quote1,symbol1,step1,minQty1,minNotional1,spot1,market1,qoq1,basePrec1,quotePrec1,quotePrecMkt1,rawIsSpot1,base2,quote2,symbol2,step2,minQty2,minNotional2,spot2,market2,qoq2,basePrec2,quotePrec2,quotePrecMkt2,rawIsSpot2,base3,quote3,symbol3,step3,minQty3,minNotional3,spot3,market3,qoq3,basePrec3,quotePrec3,quotePrecMkt3,rawIsSpot3,cycle_leg1,cycle_leg2,cycle_leg3,min_start_usdt
+0G,USDC,0GUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,0G,USDT,0GUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,0GUSDT:BUY USDT→0G,0GUSDC:SELL 0G→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+1DOLLAR,USDC,1DOLLARUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,1DOLLAR,USDT,1DOLLARUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,1DOLLARUSDT:BUY USDT→1DOLLAR,1DOLLARUSDC:SELL 1DOLLAR→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+A,USDC,AUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,A,USDT,AUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,AUSDT:BUY USDT→A,AUSDC:SELL A→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+A,BTC,ABTC,0,0.000000000000,0.000000000000,1,1,1,0,9,9,0,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,A,USDT,AUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,AUSDT:BUY USDT→A,ABTC:SELL A→BTC,BTCUSDT:SELL BTC→USDT,0.100000
+ACH,USDC,ACHUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ACH,USDT,ACHUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,6,1,1,ACHUSDT:BUY USDT→ACH,ACHUSDC:SELL ACH→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ADA,EUR,ADAEUR,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,ADA,USDT,ADAUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ADAUSDT:BUY USDT→ADA,ADAEUR:SELL ADA→EUR,EURUSDT:SELL EUR→USDT,0.100000
+AERGO,USDC,AERGOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,AERGO,USDT,AERGOUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,5,1,1,AERGOUSDT:BUY USDT→AERGO,AERGOUSDC:SELL AERGO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+AGT,USDC,AGTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,AGT,USDT,AGTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,AGTUSDT:BUY USDT→AGT,AGTUSDC:SELL AGT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+AIOT,USDC,AIOTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,AIOT,USDT,AIOTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,AIOTUSDT:BUY USDT→AIOT,AIOTUSDC:SELL AIOT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+AIXBT,USDC,AIXBTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,AIXBT,USDT,AIXBTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,AIXBTUSDT:BUY USDT→AIXBT,AIXBTUSDC:SELL AIXBT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ALCH,USDC,ALCHUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ALCH,USDT,ALCHUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,ALCHUSDT:BUY USDT→ALCH,ALCHUSDC:SELL ALCH→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ALLO,USDC,ALLOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ALLO,USDT,ALLOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ALLOUSDT:BUY USDT→ALLO,ALLOUSDC:SELL ALLO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ANKR,BTC,ANKRBTC,0.01,0.000000000000,0.000000000000,1,1,1,4,11,11,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,ANKR,USDT,ANKRUSDT,0.001,0.000000000000,0.000000000000,1,1,1,4,6,1,1,ANKRUSDT:BUY USDT→ANKR,ANKRBTC:SELL ANKR→BTC,BTCUSDT:SELL BTC→USDT,0.100000
+APR,USDC,APRUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,APR,USDT,APRUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,APRUSDT:BUY USDT→APR,APRUSDC:SELL APR→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+APT,USDC,APTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,APT,USDT,APTUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,APTUSDT:BUY USDT→APT,APTUSDC:SELL APT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+AR,USDC,ARUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,AR,USDT,ARUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,3,1,1,ARUSDT:BUY USDT→AR,ARUSDC:SELL AR→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+AR,ETH,ARETH,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,7,7,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,AR,USDT,ARUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,3,1,1,ARUSDT:BUY USDT→AR,ARETH:SELL AR→ETH,ETHUSDT:SELL ETH→USDT,0.400000
+ARB,USDC,ARBUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ARB,USDT,ARBUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ARBUSDT:BUY USDT→ARB,ARBUSDC:SELL ARB→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ARKM,USDC,ARKMUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ARKM,USDT,ARKMUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ARKMUSDT:BUY USDT→ARKM,ARKMUSDC:SELL ARKM→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ART,USDC,ARTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,7,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ART,USDT,ARTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,7,1,1,ARTUSDT:BUY USDT→ART,ARTUSDC:SELL ART→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ASTER,USDC,ASTERUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ASTER,USDT,ASTERUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ASTERUSDT:BUY USDT→ASTER,ASTERUSDC:SELL ASTER→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+AT,USDC,ATUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,AT,USDT,ATUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,ATUSDT:BUY USDT→AT,ATUSDC:SELL AT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ATOM,BTC,ATOMBTC,0.001,0.000000000000,0.000000000000,1,1,1,2,8,8,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,ATOM,USDT,ATOMUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,ATOMUSDT:BUY USDT→ATOM,ATOMBTC:SELL ATOM→BTC,BTCUSDT:SELL BTC→USDT,0.100000
+AVAX,EUR,AVAXEUR,0,0.000000000000,0.000000000000,1,1,1,2,2,1,0,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,AVAX,USDT,AVAXUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,2,2,1,1,AVAXUSDT:BUY USDT→AVAX,AVAXEUR:SELL AVAX→EUR,EURUSDT:SELL EUR→USDT,0.100000
+AVNT,USDC,AVNTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,AVNT,USDT,AVNTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,AVNTUSDT:BUY USDT→AVNT,AVNTUSDC:SELL AVNT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+B,USD1,BUSD1,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,B,USDT,BUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BUSDT:BUY USDT→B,BUSD1:SELL B→USD1,USD1USDT:SELL USD1→USDT,0.100000
+B2,USDC,B2USDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,B2,USDT,B2USDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,B2USDT:BUY USDT→B2,B2USDC:SELL B2→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BABY,USDC,BABYUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BABY,USDT,BABYUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BABYUSDT:BUY USDT→BABY,BABYUSDC:SELL BABY→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BABYDOGE,USDC,BABYDOGEUSDC,0,0.000000000000,0.000000000000,1,1,1,0,13,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BABYDOGE,USDT,BABYDOGEUSDT,10000,0.000000000000,0.000000000000,1,1,1,0,13,1,1,BABYDOGEUSDT:BUY USDT→BABYDOGE,BABYDOGEUSDC:SELL BABYDOGE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BANANA,USDC,BANANAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BANANA,USDT,BANANAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,BANANAUSDT:BUY USDT→BANANA,BANANAUSDC:SELL BANANA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BANANAS31,USDC,BANANAS31USDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BANANAS31,USDT,BANANAS31USDT,0,0.000000000000,0.000000000000,1,1,1,2,7,1,1,BANANAS31USDT:BUY USDT→BANANAS31,BANANAS31USDC:SELL BANANAS31→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BANK,USD1,BANKUSD1,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BANK,USDT,BANKUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BANKUSDT:BUY USDT→BANK,BANKUSD1:SELL BANK→USD1,USD1USDT:SELL USD1→USDT,0.100000
+BANK,USDC,BANKUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BANK,USDT,BANKUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BANKUSDT:BUY USDT→BANK,BANKUSDC:SELL BANK→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BARD,USDC,BARDUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BARD,USDT,BARDUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BARDUSDT:BUY USDT→BARD,BARDUSDC:SELL BARD→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BCH,BTC,BCHBTC,0.001,0.000000000000,0.000000000000,1,1,1,3,6,6,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BCH,USDT,BCHUSDT,0.001,0.000000000000,0.000000000000,1,1,1,5,1,1,1,BCHUSDT:BUY USDT→BCH,BCHBTC:SELL BCH→BTC,BTCUSDT:SELL BTC→USDT,0.600000
+BDX,BTC,BDXBTC,0,0.000000000000,0.000000000000,1,1,1,0,10,10,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BDX,USDT,BDXUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BDXUSDT:BUY USDT→BDX,BDXBTC:SELL BDX→BTC,BTCUSDT:SELL BTC→USDT,0.100000
+BDXN,USDC,BDXNUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BDXN,USDT,BDXNUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BDXNUSDT:BUY USDT→BDXN,BDXNUSDC:SELL BDXN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BERA,USDC,BERAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BERA,USDT,BERAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,BERAUSDT:BUY USDT→BERA,BERAUSDC:SELL BERA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BKN,USDC,BKNUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BKN,USDT,BKNUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,BKNUSDT:BUY USDT→BKN,BKNUSDC:SELL BKN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BLESS,USDC,BLESSUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BLESS,USDT,BLESSUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BLESSUSDT:BUY USDT→BLESS,BLESSUSDC:SELL BLESS→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BLUM,USDC,BLUMUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BLUM,USDT,BLUMUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BLUMUSDT:BUY USDT→BLUM,BLUMUSDC:SELL BLUM→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BMT,USDC,BMTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BMT,USDT,BMTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BMTUSDT:BUY USDT→BMT,BMTUSDC:SELL BMT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BOB,USDC,BOBUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BOB,USDT,BOBUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BOBUSDT:BUY USDT→BOB,BOBUSDC:SELL BOB→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BOMB,USDC,BOMBUSDC,0,0.000000000000,0.000000000000,1,1,1,2,7,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BOMB,USDT,BOMBUSDT,0,0.000000000000,0.000000000000,1,1,1,2,7,1,1,BOMBUSDT:BUY USDT→BOMB,BOMBUSDC:SELL BOMB→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BONK,USDC,BONKUSDC,0,0.000000000000,0.000000000000,1,1,1,0,9,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BONK,USDT,BONKUSDT,0,0.000000000000,0.000000000000,1,1,1,0,8,1,1,BONKUSDT:BUY USDT→BONK,BONKUSDC:SELL BONK→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BOOM,USDC,BOOMUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BOOM,USDT,BOOMUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,BOOMUSDT:BUY USDT→BOOM,BOOMUSDC:SELL BOOM→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+MX,BRL,MXBRL,0,0.000000000000,0.000000000000,1,1,1,2,2,5,0,MX,USDT,MXUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BRL,USDT,BRLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,BRLUSDT:BUY USDT→BRL,MXBRL:BUY BRL→MX,MXUSDT:SELL MX→USDT,0.100000
+BTC,BRL,BTCBRL,0,0.000000000000,0.000000000000,1,1,1,5,1,5,0,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BRL,USDT,BRLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,BRLUSDT:BUY USDT→BRL,BTCBRL:BUY BRL→BTC,BTCUSDT:SELL BTC→USDT,0.100000
+USDC,BRL,USDCBRL,0,0.000000000000,0.000000000000,1,1,1,2,3,5,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BRL,USDT,BRLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,BRLUSDT:BUY USDT→BRL,USDCBRL:BUY BRL→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SOL,BRL,SOLBRL,0,0.000000000000,0.000000000000,1,1,1,3,2,5,0,SOL,USDT,SOLUSDT,0.01,0.000000000000,0.000000000000,1,1,1,3,2,1,1,BRL,USDT,BRLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,BRLUSDT:BUY USDT→BRL,SOLBRL:BUY BRL→SOL,SOLUSDT:SELL SOL→USDT,1.300000
+ETH,BRL,ETHBRL,0,0.000000000000,0.000000000000,1,1,1,4,2,5,0,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,BRL,USDT,BRLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,BRLUSDT:BUY USDT→BRL,ETHBRL:BUY BRL→ETH,ETHUSDT:SELL ETH→USDT,0.300000
+BRL,USDT,BRLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,VINE,USDT,VINEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,VINE,BRL,VINEBRL,0,0.000000000000,0.000000000000,1,1,1,2,4,5,0,VINEUSDT:BUY USDT→VINE,VINEBRL:SELL VINE→BRL,BRLUSDT:SELL BRL→USDT,0.100000
+BRL,USDT,BRLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,XRP,USDT,XRPUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XRP,BRL,XRPBRL,0,0.000000000000,0.000000000000,1,1,1,2,3,5,0,XRPUSDT:BUY USDT→XRP,XRPBRL:SELL XRP→BRL,BRLUSDT:SELL BRL→USDT,0.100000
+BROCCOLIF3B,USDC,BROCCOLIF3BUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BROCCOLIF3B,USDT,BROCCOLIF3BUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,BROCCOLIF3BUSDT:BUY USDT→BROCCOLIF3B,BROCCOLIF3BUSDC:SELL BROCCOLIF3B→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ONT,BTC,ONTBTC,0.01,0.000000000000,0.000000000000,1,1,1,2,10,10,1,ONT,USDT,ONTUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,ONTBTC:BUY BTC→ONT,ONTUSDT:SELL ONT→USDT,0.100000
+BTC,USDF,BTCUSDF,0,0.000000000000,0.000000000000,1,1,1,5,2,1,0,USDF,USDT,USDFUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,BTCUSDF:SELL BTC→USDF,USDFUSDT:SELL USDF→USDT,0.100000
+BTC,USDC,BTCUSDC,0.000001,0.000000000000,0.000000000000,1,1,1,6,2,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,BTCUSDC:SELL BTC→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+DOT,BTC,DOTBTC,0.0001,0.000000000000,0.000000000000,1,1,1,4,8,8,1,DOT,USDT,DOTUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,DOTBTC:BUY BTC→DOT,DOTUSDT:SELL DOT→USDT,0.100000
+QTUM,BTC,QTUMBTC,0.01,0.000000000000,0.000000000000,1,1,1,3,8,8,1,QTUM,USDT,QTUMUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,3,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,QTUMBTC:BUY BTC→QTUM,QTUMUSDT:SELL QTUM→USDT,0.200000
+ETC,BTC,ETCBTC,0,0.000000000000,0.000000000000,1,1,1,2,7,7,1,ETC,USDT,ETCUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,3,2,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,ETCBTC:BUY BTC→ETC,ETCUSDT:SELL ETC→USDT,1.300000
+DEXE,BTC,DEXEBTC,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,8,8,1,DEXE,USDT,DEXEUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,DEXEBTC:BUY BTC→DEXE,DEXEUSDT:SELL DEXE→USDT,0.100000
+TRX,BTC,TRXBTC,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,3,9,9,1,TRX,USDT,TRXUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,TRXBTC:BUY BTC→TRX,TRXUSDT:SELL TRX→USDT,0.300000
+NEO,BTC,NEOBTC,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,3,8,8,1,NEO,USDT,NEOUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,3,3,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,NEOBTC:BUY BTC→NEO,NEOUSDT:SELL NEO→USDT,0.400000
+ETH,BTC,ETHBTC,0.001,0.000000000000,0.000000000000,1,1,1,3,6,6,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,ETHBTC:BUY BTC→ETH,ETHUSDT:SELL ETH→USDT,0.400000
+IP,BTC,IPBTC,0,0.000000000000,0.000000000000,1,1,1,2,8,8,0,IP,USDT,IPUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,IPBTC:BUY BTC→IP,IPUSDT:SELL IP→USDT,0.100000
+SOL,BTC,SOLBTC,1,0.000000000000,0.000000000000,1,1,1,2,8,8,1,SOL,USDT,SOLUSDT,0.01,0.000000000000,0.000000000000,1,1,1,3,2,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,SOLBTC:BUY BTC→SOL,SOLUSDT:SELL SOL→USDT,1.300000
+DASH,BTC,DASHBTC,0.01,0.000000000000,0.000000000000,1,1,1,3,7,7,1,DASH,USDT,DASHUSDT,0.001,0.000000000000,0.000000000000,1,1,1,6,2,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,DASHBTC:BUY BTC→DASH,DASHUSDT:SELL DASH→USDT,0.100000
+OMG,BTC,OMGBTC,0.000001,0.000000000000,0.000000000000,1,1,1,2,10,10,1,OMG,USDT,OMGUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,OMGBTC:BUY BTC→OMG,OMGUSDT:SELL OMG→USDT,0.100000
+BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,WBTC,USDT,WBTCUSDT,0.00001,0.000000000000,0.000000000000,1,1,1,8,2,1,1,WBTC,BTC,WBTCBTC,0,0.000000000000,0.000000000000,1,1,1,5,4,4,0,WBTCUSDT:BUY USDT→WBTC,WBTCBTC:SELL WBTC→BTC,BTCUSDT:SELL BTC→USDT,0.100000
+BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,XLM,USDT,XLMUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XLM,BTC,XLMBTC,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,3,9,9,1,XLMUSDT:BUY USDT→XLM,XLMBTC:SELL XLM→BTC,BTCUSDT:SELL BTC→USDT,0.200000
+BTC,USD1,BTCUSD1,0,0.000000000000,0.000000000000,1,1,1,5,2,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,BTCUSD1:SELL BTC→USD1,USD1USDT:SELL USD1→USDT,0.100000
+BTC,USDE,BTCUSDE,0,0.000000000000,0.000000000000,1,1,1,5,2,1,1,USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,BTCUSDE:SELL BTC→USDE,USDEUSDT:SELL USDE→USDT,0.100000
+MX,BTC,MXBTC,0,0.000000000000,0.000000000000,1,1,1,2,8,8,0,MX,USDT,MXUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,MXBTC:BUY BTC→MX,MXUSDT:SELL MX→USDT,0.100000
+BTC,EUR,BTCEUR,0,0.000000000000,0.000000000000,1,1,1,5,2,1,0,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,BTC,USDT,BTCUSDT,0.000001,0.000000000000,0.000000000000,1,1,1,8,2,1,0,BTCUSDT:BUY USDT→BTC,BTCEUR:SELL BTC→EUR,EURUSDT:SELL EUR→USDT,0.100000
+BTR,USDC,BTRUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BTR,USDT,BTRUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,BTRUSDT:BUY USDT→BTR,BTRUSDC:SELL BTR→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+BUTTHOLE,USDC,BUTTHOLEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,7,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,BUTTHOLE,USDT,BUTTHOLEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,7,1,1,BUTTHOLEUSDT:BUY USDT→BUTTHOLE,BUTTHOLEUSDC:SELL BUTTHOLE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+C,USDC,CUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,C,USDT,CUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,CUSDT:BUY USDT→C,CUSDC:SELL C→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+CAKE,USDC,CAKEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,CAKE,USDT,CAKEUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,CAKEUSDT:BUY USDT→CAKE,CAKEUSDC:SELL CAKE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+CAMP,USDC,CAMPUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,CAMP,USDT,CAMPUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,CAMPUSDT:BUY USDT→CAMP,CAMPUSDC:SELL CAMP→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+CC,USDC,CCUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,CC,USDT,CCUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,CCUSDT:BUY USDT→CC,CCUSDC:SELL CC→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+CFX,USDC,CFXUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,CFX,USDT,CFXUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,2,5,1,1,CFXUSDT:BUY USDT→CFX,CFXUSDC:SELL CFX→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+CGN,USDC,CGNUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,CGN,USDT,CGNUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,CGNUSDT:BUY USDT→CGN,CGNUSDC:SELL CGN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+CGPT,USDC,CGPTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,CGPT,USDT,CGPTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,CGPTUSDT:BUY USDT→CGPT,CGPTUSDC:SELL CGPT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+CHZ,USDC,CHZUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,CHZ,USDT,CHZUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,5,1,1,CHZUSDT:BUY USDT→CHZ,CHZUSDC:SELL CHZ→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+COTI,USDC,COTIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,COTI,USDT,COTIUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,5,1,1,COTIUSDT:BUY USDT→COTI,COTIUSDC:SELL COTI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+CRV,USDC,CRVUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,CRV,USDT,CRVUSDT,0.01,0.000000000000,0.000000000000,1,1,1,3,4,1,1,CRVUSDT:BUY USDT→CRV,CRVUSDC:SELL CRV→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+CRV,ETH,CRVETH,0.001,0.000000000000,0.000000000000,1,1,1,3,8,8,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,CRV,USDT,CRVUSDT,0.01,0.000000000000,0.000000000000,1,1,1,3,4,1,1,CRVUSDT:BUY USDT→CRV,CRVETH:SELL CRV→ETH,ETHUSDT:SELL ETH→USDT,0.300000
+DASH,USDC,DASHUSDC,0,0.000000000000,0.000000000000,1,1,1,6,2,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,DASH,USDT,DASHUSDT,0.001,0.000000000000,0.000000000000,1,1,1,6,2,1,1,DASHUSDT:BUY USDT→DASH,DASHUSDC:SELL DASH→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+DOGE,EUR,DOGEEUR,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,DOGE,USDT,DOGEUSDT,1,0.000000000000,0.000000000000,1,1,1,2,5,1,1,DOGEUSDT:BUY USDT→DOGE,DOGEEUR:SELL DOGE→EUR,EURUSDT:SELL EUR→USDT,0.100000
+DOGE,USDE,DOGEUSDE,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,DOGE,USDT,DOGEUSDT,1,0.000000000000,0.000000000000,1,1,1,2,5,1,1,DOGEUSDT:BUY USDT→DOGE,DOGEUSDE:SELL DOGE→USDE,USDEUSDT:SELL USDE→USDT,0.100000
+DOGS,USDC,DOGSUSDC,0,0.000000000000,0.000000000000,1,1,1,0,8,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,DOGS,USDT,DOGSUSDT,0,0.000000000000,0.000000000000,1,1,1,2,8,1,1,DOGSUSDT:BUY USDT→DOGS,DOGSUSDC:SELL DOGS→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+DOLO,USDC,DOLOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,DOLO,USDT,DOLOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,DOLOUSDT:BUY USDT→DOLO,DOLOUSDC:SELL DOLO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+DOOD,USDC,DOODUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,DOOD,USDT,DOODUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,DOODUSDT:BUY USDT→DOOD,DOODUSDC:SELL DOOD→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+DOT,USDC,DOTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,DOT,USDT,DOTUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,DOTUSDT:BUY USDT→DOT,DOTUSDC:SELL DOT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+DSYNC,USDC,DSYNCUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,DSYNC,USDT,DSYNCUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,DSYNCUSDT:BUY USDT→DSYNC,DSYNCUSDC:SELL DSYNC→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+EGLD,USDC,EGLDUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,EGLD,USDT,EGLDUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,3,3,1,1,EGLDUSDT:BUY USDT→EGLD,EGLDUSDC:SELL EGLD→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+EIGEN,USDC,EIGENUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,EIGEN,USDT,EIGENUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,EIGENUSDT:BUY USDT→EIGEN,EIGENUSDC:SELL EIGEN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ENA,USDC,ENAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ENA,USDT,ENAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ENAUSDT:BUY USDT→ENA,ENAUSDC:SELL ENA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ENA,USDE,ENAUSDE,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,ENA,USDT,ENAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ENAUSDT:BUY USDT→ENA,ENAUSDE:SELL ENA→USDE,USDEUSDT:SELL USDE→USDT,0.100000
+EPT,USDC,EPTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,EPT,USDT,EPTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,EPTUSDT:BUY USDT→EPT,EPTUSDC:SELL EPT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ERA,USDC,ERAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ERA,USDT,ERAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ERAUSDT:BUY USDT→ERA,ERAUSDC:SELL ERA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ES,USDC,ESUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ES,USDT,ESUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,ESUSDT:BUY USDT→ES,ESUSDC:SELL ES→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ETC,USDC,ETCUSDC,0,0.000000000000,0.000000000000,1,1,1,3,2,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ETC,USDT,ETCUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,3,2,1,1,ETCUSDT:BUY USDT→ETC,ETCUSDC:SELL ETC→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+IP,ETH,IPETH,0,0.000000000000,0.000000000000,1,1,1,2,7,7,0,IP,USDT,IPUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,IPETH:BUY ETH→IP,IPUSDT:SELL IP→USDT,0.100000
+MX,ETH,MXETH,0,0.000000000000,0.000000000000,1,1,1,2,8,8,1,MX,USDT,MXUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,MXETH:BUY ETH→MX,MXUSDT:SELL MX→USDT,0.100000
+NMR,ETH,NMRETH,0.01,0.000000000000,0.000000000000,1,1,1,2,6,6,1,NMR,USDT,NMRUSDT,0.001,0.000000000000,0.000000000000,1,1,1,3,3,1,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,NMRETH:BUY ETH→NMR,NMRUSDT:SELL NMR→USDT,0.100000
+ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,XRP,USDT,XRPUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XRP,ETH,XRPETH,0.0001,0.000000000000,0.000000000000,1,1,1,2,7,7,0,XRPUSDT:BUY USDT→XRP,XRPETH:SELL XRP→ETH,ETHUSDT:SELL ETH→USDT,0.300000
+LINK,ETH,LINKETH,0,0.000000000000,0.000000000000,1,1,1,2,6,6,1,LINK,USDT,LINKUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,2,1,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,LINKETH:BUY ETH→LINK,LINKUSDT:SELL LINK→USDT,0.200000
+SNX,ETH,SNXETH,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,7,7,1,SNX,USDT,SNXUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,SNXETH:BUY ETH→SNX,SNXUSDT:SELL SNX→USDT,0.100000
+ETH,USDE,ETHUSDE,0,0.000000000000,0.000000000000,1,1,1,5,2,1,0,USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,ETHUSDE:SELL ETH→USDE,USDEUSDT:SELL USDE→USDT,0.100000
+ETH,EUR,ETHEUR,0,0.000000000000,0.000000000000,1,1,1,4,2,1,0,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,ETHEUR:SELL ETH→EUR,EURUSDT:SELL EUR→USDT,0.100000
+ETH,USD1,ETHUSD1,0,0.000000000000,0.000000000000,1,1,1,5,2,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,ETHUSD1:SELL ETH→USD1,USD1USDT:SELL USD1→USDT,0.100000
+ETH,USDF,ETHUSDF,0,0.000000000000,0.000000000000,1,1,1,5,2,1,0,USDF,USDT,USDFUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,ETHUSDF:SELL ETH→USDF,USDFUSDT:SELL USDF→USDT,0.100000
+RSR,ETH,RSRETH,5,0.000000000000,0.000000000000,1,1,1,2,10,10,1,RSR,USDT,RSRUSDT,5,0.000000000000,0.000000000000,1,1,1,2,6,1,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,RSRETH:BUY ETH→RSR,RSRUSDT:SELL RSR→USDT,0.100000
+OXT,ETH,OXTETH,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,9,9,1,OXT,USDT,OXTUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,2,5,1,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,OXTETH:BUY ETH→OXT,OXTUSDT:SELL OXT→USDT,0.100000
+UNI,ETH,UNIETH,0.001,0.000000000000,0.000000000000,1,1,1,2,6,6,1,UNI,USDT,UNIUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,ETH,USDT,ETHUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,5,2,1,0,ETHUSDT:BUY USDT→ETH,UNIETH:BUY ETH→UNI,UNIUSDT:SELL UNI→USDT,0.100000
+SUI,EUR,SUIEUR,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,SUI,USDT,SUIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,SUIEUR:BUY EUR→SUI,SUIUSDT:SELL SUI→USDT,0.200000
+KAS,EUR,KASEUR,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,KAS,USDT,KASUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,6,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,KASEUR:BUY EUR→KAS,KASUSDT:SELL KAS→USDT,0.200000
+SHIB,EUR,SHIBEUR,0,0.000000000000,0.000000000000,1,1,1,0,9,1,0,SHIB,USDT,SHIBUSDT,10000,0.000000000000,0.000000000000,1,1,1,0,9,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,SHIBEUR:BUY EUR→SHIB,SHIBUSDT:SELL SHIB→USDT,0.200000
+TAO,EUR,TAOEUR,0,0.000000000000,0.000000000000,1,1,1,2,2,1,1,TAO,USDT,TAOUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,2,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,TAOEUR:BUY EUR→TAO,TAOUSDT:SELL TAO→USDT,2.500000
+PI,EUR,PIEUR,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,PI,USDT,PIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,PIEUR:BUY EUR→PI,PIUSDT:SELL PI→USDT,0.200000
+TON,EUR,TONEUR,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,TON,USDT,TONUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,TONEUR:BUY EUR→TON,TONUSDT:SELL TON→USDT,0.200000
+MX,EUR,MXEUR,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,MX,USDT,MXUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,4,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,MXEUR:BUY EUR→MX,MXUSDT:SELL MX→USDT,0.200000
+ULTIMA,EUR,ULTIMAEUR,0,0.000000000000,0.000000000000,1,1,1,4,2,1,0,ULTIMA,USDT,ULTIMAUSDT,0,0.000000000000,0.000000000000,1,1,1,4,2,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,ULTIMAEUR:BUY EUR→ULTIMA,ULTIMAUSDT:SELL ULTIMA→USDT,0.200000
+MELANIA,EUR,MELANIAEUR,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,MELANIA,USDT,MELANIAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,MELANIAEUR:BUY EUR→MELANIA,MELANIAUSDT:SELL MELANIA→USDT,0.200000
+RIO,EUR,RIOEUR,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RIO,USDT,RIOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,RIOEUR:BUY EUR→RIO,RIOUSDT:SELL RIO→USDT,0.200000
+EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,XRP,USDT,XRPUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XRP,EUR,XRPEUR,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XRPUSDT:BUY USDT→XRP,XRPEUR:SELL XRP→EUR,EURUSDT:SELL EUR→USDT,0.100000
+EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,WIF,USDT,WIFUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,WIF,EUR,WIFEUR,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,WIFUSDT:BUY USDT→WIF,WIFEUR:SELL WIF→EUR,EURUSDT:SELL EUR→USDT,0.100000
+LTC,EUR,LTCEUR,0,0.000000000000,0.000000000000,1,1,1,4,2,1,0,LTC,USDT,LTCUSDT,0.001,0.000000000000,0.000000000000,1,1,1,4,2,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,LTCEUR:BUY EUR→LTC,LTCUSDT:SELL LTC→USDT,0.200000
+EUR,USDC,EURUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,EURUSDC:SELL EUR→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SOL,EUR,SOLEUR,0,0.000000000000,0.000000000000,1,1,1,3,2,1,0,SOL,USDT,SOLUSDT,0.01,0.000000000000,0.000000000000,1,1,1,3,2,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,SOLEUR:BUY EUR→SOL,SOLUSDT:SELL SOL→USDT,1.300000
+LINK,EUR,LINKEUR,0,0.000000000000,0.000000000000,1,1,1,2,2,1,0,LINK,USDT,LINKUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,2,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,LINKEUR:BUY EUR→LINK,LINKUSDT:SELL LINK→USDT,0.300000
+TRUMP,EUR,TRUMPEUR,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,TRUMP,USDT,TRUMPUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,TRUMPEUR:BUY EUR→TRUMP,TRUMPUSDT:SELL TRUMP→USDT,0.200000
+PEPE,EUR,PEPEEUR,0,0.000000000000,0.000000000000,1,1,1,2,9,1,1,PEPE,USDT,PEPEUSDT,0,0.000000000000,0.000000000000,1,1,1,0,9,1,1,EUR,USDT,EURUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,EURUSDT:BUY USDT→EUR,PEPEEUR:BUY EUR→PEPE,PEPEUSDT:SELL PEPE→USDT,0.200000
+FARTCOIN,USDC,FARTCOINUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,FARTCOIN,USDT,FARTCOINUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,FARTCOINUSDT:BUY USDT→FARTCOIN,FARTCOINUSDC:SELL FARTCOIN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+FET,USDC,FETUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,FET,USDT,FETUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,4,1,1,FETUSDT:BUY USDT→FET,FETUSDC:SELL FET→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+FF,USDF,FFUSDF,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDF,USDT,USDFUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,FF,USDT,FFUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,FFUSDT:BUY USDT→FF,FFUSDF:SELL FF→USDF,USDFUSDT:SELL USDF→USDT,0.100000
+FHE,USDC,FHEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,FHE,USDT,FHEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,FHEUSDT:BUY USDT→FHE,FHEUSDC:SELL FHE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+FLK,USDC,FLKUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,FLK,USDT,FLKUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,FLKUSDT:BUY USDT→FLK,FLKUSDC:SELL FLK→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+FLOCK,USDC,FLOCKUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,FLOCK,USDT,FLOCKUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,FLOCKUSDT:BUY USDT→FLOCK,FLOCKUSDC:SELL FLOCK→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+FLOKI,USDC,FLOKIUSDC,0,0.000000000000,0.000000000000,1,1,1,0,8,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,FLOKI,USDT,FLOKIUSDT,1,0.000000000000,0.000000000000,1,1,1,0,8,1,1,FLOKIUSDT:BUY USDT→FLOKI,FLOKIUSDC:SELL FLOKI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+GAIB,USDC,GAIBUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,GAIB,USDT,GAIBUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,GAIBUSDT:BUY USDT→GAIB,GAIBUSDC:SELL GAIB→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+GHIBLI,USDC,GHIBLIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,7,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,GHIBLI,USDT,GHIBLIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,7,1,1,GHIBLIUSDT:BUY USDT→GHIBLI,GHIBLIUSDC:SELL GHIBLI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+GIGGLE,USDC,GIGGLEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,2,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,GIGGLE,USDT,GIGGLEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,2,1,1,GIGGLEUSDT:BUY USDT→GIGGLE,GIGGLEUSDC:SELL GIGGLE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+GRIFFAIN,USDC,GRIFFAINUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,GRIFFAIN,USDT,GRIFFAINUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,GRIFFAINUSDT:BUY USDT→GRIFFAIN,GRIFFAINUSDC:SELL GRIFFAIN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+GUN,USDC,GUNUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,GUN,USDT,GUNUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,GUNUSDT:BUY USDT→GUN,GUNUSDC:SELL GUN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+H,USDC,HUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,H,USDT,HUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,HUSDT:BUY USDT→H,HUSDC:SELL H→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+HBAR,USDC,HBARUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,HBAR,USDT,HBARUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,5,1,1,HBARUSDT:BUY USDT→HBAR,HBARUSDC:SELL HBAR→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+HEMI,USDC,HEMIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,HEMI,USDT,HEMIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,HEMIUSDT:BUY USDT→HEMI,HEMIUSDC:SELL HEMI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+HOLO,USDC,HOLOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,HOLO,USDT,HOLOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,HOLOUSDT:BUY USDT→HOLO,HOLOUSDC:SELL HOLO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+HOME,USDC,HOMEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,HOME,USDT,HOMEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,HOMEUSDT:BUY USDT→HOME,HOMEUSDC:SELL HOME→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+HUMA,USDC,HUMAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,HUMA,USDT,HUMAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,HUMAUSDT:BUY USDT→HUMA,HUMAUSDC:SELL HUMA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+HYPE,USDC,HYPEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,2,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,HYPE,USDT,HYPEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,2,1,1,HYPEUSDT:BUY USDT→HYPE,HYPEUSDC:SELL HYPE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+HYPER,USDC,HYPERUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,HYPER,USDT,HYPERUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,HYPERUSDT:BUY USDT→HYPER,HYPERUSDC:SELL HYPER→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ICP,USDC,ICPUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ICP,USDT,ICPUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,ICPUSDT:BUY USDT→ICP,ICPUSDC:SELL ICP→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+IDEX,USDC,IDEXUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,IDEX,USDT,IDEXUSDT,1,0.000000000000,0.000000000000,1,1,1,2,5,1,1,IDEXUSDT:BUY USDT→IDEX,IDEXUSDC:SELL IDEX→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+IDOL,USDC,IDOLUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,IDOL,USDT,IDOLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,IDOLUSDT:BUY USDT→IDOL,IDOLUSDC:SELL IDOL→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+INIT,USDC,INITUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,INIT,USDT,INITUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,INITUSDT:BUY USDT→INIT,INITUSDC:SELL INIT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+INJ,USDC,INJUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,INJ,USDT,INJUSDT,0,0.000000000000,0.000000000000,1,1,1,2,2,1,1,INJUSDT:BUY USDT→INJ,INJUSDC:SELL INJ→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+IP,USDC,IPUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,IP,USDT,IPUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,IPUSDT:BUY USDT→IP,IPUSDC:SELL IP→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+IRYS,USDC,IRYSUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,IRYS,USDT,IRYSUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,IRYSUSDT:BUY USDT→IRYS,IRYSUSDC:SELL IRYS→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+KAITO,USDC,KAITOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,KAITO,USDT,KAITOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,KAITOUSDT:BUY USDT→KAITO,KAITOUSDC:SELL KAITO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+KAS,USDC,KASUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,KAS,USDT,KASUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,6,1,1,KASUSDT:BUY USDT→KAS,KASUSDC:SELL KAS→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+KAS,USD1,KASUSD1,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,KAS,USDT,KASUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,6,1,1,KASUSDT:BUY USDT→KAS,KASUSD1:SELL KAS→USD1,USD1USDT:SELL USD1→USDT,0.100000
+KAS,USDE,KASUSDE,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,KAS,USDT,KASUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,6,1,1,KASUSDT:BUY USDT→KAS,KASUSDE:SELL KAS→USDE,USDEUSDT:SELL USDE→USDT,0.100000
+KEKIUS,USDC,KEKIUSUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,KEKIUS,USDT,KEKIUSUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,KEKIUSUSDT:BUY USDT→KEKIUS,KEKIUSUSDC:SELL KEKIUS→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+KERNEL,USDC,KERNELUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,KERNEL,USDT,KERNELUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,KERNELUSDT:BUY USDT→KERNEL,KERNELUSDC:SELL KERNEL→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+KILO,USDC,KILOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,KILO,USDT,KILOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,KILOUSDT:BUY USDT→KILO,KILOUSDC:SELL KILO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+KITE,USDC,KITEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,KITE,USDT,KITEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,KITEUSDT:BUY USDT→KITE,KITEUSDC:SELL KITE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+LA,USD1,LAUSD1,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,LA,USDT,LAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,LAUSDT:BUY USDT→LA,LAUSD1:SELL LA→USD1,USD1USDT:SELL USD1→USDT,0.100000
+LA,USDC,LAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,LA,USDT,LAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,LAUSDT:BUY USDT→LA,LAUSDC:SELL LA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+LBTC,USDC,LBTCUSDC,0,0.000000000000,0.000000000000,1,1,1,6,2,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,LBTC,USDT,LBTCUSDT,0,0.000000000000,0.000000000000,1,1,1,6,2,1,1,LBTCUSDT:BUY USDT→LBTC,LBTCUSDC:SELL LBTC→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+LDO,USDC,LDOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,LDO,USDT,LDOUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,2,4,1,1,LDOUSDT:BUY USDT→LDO,LDOUSDC:SELL LDO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+LINEA,USDC,LINEAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,LINEA,USDT,LINEAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,LINEAUSDT:BUY USDT→LINEA,LINEAUSDC:SELL LINEA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+LINGO,USDC,LINGOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,LINGO,USDT,LINGOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,LINGOUSDT:BUY USDT→LINGO,LINGOUSDC:SELL LINGO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+LINK,USDC,LINKUSDC,0,0.000000000000,0.000000000000,1,1,1,2,2,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,LINK,USDT,LINKUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,2,1,1,LINKUSDT:BUY USDT→LINK,LINKUSDC:SELL LINK→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+LOT,USDC,LOTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,LOT,USDT,LOTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,LOTUSDT:BUY USDT→LOT,LOTUSDC:SELL LOT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+MELANIA,USDC,MELANIAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MELANIA,USDT,MELANIAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,MELANIAUSDT:BUY USDT→MELANIA,MELANIAUSDC:SELL MELANIA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+MELANIA,USD1,MELANIAUSD1,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MELANIA,USDT,MELANIAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,MELANIAUSDT:BUY USDT→MELANIA,MELANIAUSD1:SELL MELANIA→USD1,USD1USDT:SELL USD1→USDT,0.100000
+MET,USDC,METUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MET,USDT,METUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,METUSDT:BUY USDT→MET,METUSDC:SELL MET→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+MILK,USDC,MILKUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MILK,USDT,MILKUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,MILKUSDT:BUY USDT→MILK,MILKUSDC:SELL MILK→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+MIRA,USDC,MIRAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MIRA,USDT,MIRAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MIRAUSDT:BUY USDT→MIRA,MIRAUSDC:SELL MIRA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+MNT,USDC,MNTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MNT,USDT,MNTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MNTUSDT:BUY USDT→MNT,MNTUSDC:SELL MNT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+MON,USDC,MONUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MON,USDT,MONUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,MONUSDT:BUY USDT→MON,MONUSDC:SELL MON→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+MORE,USDC,MOREUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MORE,USDT,MOREUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,MOREUSDT:BUY USDT→MORE,MOREUSDC:SELL MORE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+MUBARAK,USDC,MUBARAKUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MUBARAK,USDT,MUBARAKUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,MUBARAKUSDT:BUY USDT→MUBARAK,MUBARAKUSDC:SELL MUBARAK→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+MYX,USDC,MYXUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,MYX,USDT,MYXUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,MYXUSDT:BUY USDT→MYX,MYXUSDC:SELL MYX→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+NAKA,USDC,NAKAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,NAKA,USDT,NAKAUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,5,1,1,NAKAUSDT:BUY USDT→NAKA,NAKAUSDC:SELL NAKA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+NEO,USDC,NEOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,NEO,USDT,NEOUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,3,3,1,1,NEOUSDT:BUY USDT→NEO,NEOUSDC:SELL NEO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+NEWT,USDC,NEWTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,NEWT,USDT,NEWTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,NEWTUSDT:BUY USDT→NEWT,NEWTUSDC:SELL NEWT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+NIL,USDC,NILUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,NIL,USDT,NILUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,NILUSDT:BUY USDT→NIL,NILUSDC:SELL NIL→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+NODE,USDC,NODEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,NODE,USDT,NODEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,NODEUSDT:BUY USDT→NODE,NODEUSDC:SELL NODE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+NPC,USDC,NPCUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,NPC,USDT,NPCUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,NPCUSDT:BUY USDT→NPC,NPCUSDC:SELL NPC→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+NXPC,USDC,NXPCUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,NXPC,USDT,NXPCUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,NXPCUSDT:BUY USDT→NXPC,NXPCUSDC:SELL NXPC→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+OBOL,USDC,OBOLUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,OBOL,USDT,OBOLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,OBOLUSDT:BUY USDT→OBOL,OBOLUSDC:SELL OBOL→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+OBT,USDC,OBTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,OBT,USDT,OBTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,OBTUSDT:BUY USDT→OBT,OBTUSDC:SELL OBT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+OM,USDC,OMUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,OM,USDT,OMUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,OMUSDT:BUY USDT→OM,OMUSDC:SELL OM→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+OMI,USDC,OMIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,7,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,OMI,USDT,OMIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,7,1,1,OMIUSDT:BUY USDT→OMI,OMIUSDC:SELL OMI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ONDO,USDC,ONDOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ONDO,USDT,ONDOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,ONDOUSDT:BUY USDT→ONDO,ONDOUSDC:SELL ONDO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+OPEN,USDC,OPENUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,OPEN,USDT,OPENUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,OPENUSDT:BUY USDT→OPEN,OPENUSDC:SELL OPEN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ORCA,USDC,ORCAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ORCA,USDT,ORCAUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,ORCAUSDT:BUY USDT→ORCA,ORCAUSDC:SELL ORCA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PARTI,USDC,PARTIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PARTI,USDT,PARTIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,PARTIUSDT:BUY USDT→PARTI,PARTIUSDC:SELL PARTI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PEAQ,USDC,PEAQUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PEAQ,USDT,PEAQUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,PEAQUSDT:BUY USDT→PEAQ,PEAQUSDC:SELL PEAQ→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PENDLE,USDC,PENDLEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PENDLE,USDT,PENDLEUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,PENDLEUSDT:BUY USDT→PENDLE,PENDLEUSDC:SELL PENDLE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PENGU,USDC,PENGUUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PENGU,USDT,PENGUUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,PENGUUSDT:BUY USDT→PENGU,PENGUUSDC:SELL PENGU→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PEPE,USDC,PEPEUSDC,0,0.000000000000,0.000000000000,1,1,1,0,9,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PEPE,USDT,PEPEUSDT,0,0.000000000000,0.000000000000,1,1,1,0,9,1,1,PEPEUSDT:BUY USDT→PEPE,PEPEUSDC:SELL PEPE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PEPE,USDE,PEPEUSDE,0,0.000000000000,0.000000000000,1,1,1,0,9,1,0,USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,PEPE,USDT,PEPEUSDT,0,0.000000000000,0.000000000000,1,1,1,0,9,1,1,PEPEUSDT:BUY USDT→PEPE,PEPEUSDE:SELL PEPE→USDE,USDEUSDT:SELL USDE→USDT,0.100000
+PI,USD1,PIUSD1,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PI,USDT,PIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,PIUSDT:BUY USDT→PI,PIUSD1:SELL PI→USD1,USD1USDT:SELL USD1→USDT,0.100000
+PI,USDE,PIUSDE,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,PI,USDT,PIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,PIUSDT:BUY USDT→PI,PIUSDE:SELL PI→USDE,USDEUSDT:SELL USDE→USDT,0.100000
+PI,USDC,PIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PI,USDT,PIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,PIUSDT:BUY USDT→PI,PIUSDC:SELL PI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PLUME,USDC,PLUMEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PLUME,USDT,PLUMEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,PLUMEUSDT:BUY USDT→PLUME,PLUMEUSDC:SELL PLUME→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PNUT,USDC,PNUTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PNUT,USDT,PNUTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,PNUTUSDT:BUY USDT→PNUT,PNUTUSDC:SELL PNUT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+POL,USDC,POLUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,POL,USDT,POLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,POLUSDT:BUY USDT→POL,POLUSDC:SELL POL→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+POPCAT,USDC,POPCATUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,POPCAT,USDT,POPCATUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,POPCATUSDT:BUY USDT→POPCAT,POPCATUSDC:SELL POPCAT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PRAI,USDC,PRAIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PRAI,USDT,PRAIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,PRAIUSDT:BUY USDT→PRAI,PRAIUSDC:SELL PRAI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PROMPT,USDC,PROMPTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PROMPT,USDT,PROMPTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,PROMPTUSDT:BUY USDT→PROMPT,PROMPTUSDC:SELL PROMPT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PROVE,USDC,PROVEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PROVE,USDT,PROVEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PROVEUSDT:BUY USDT→PROVE,PROVEUSDC:SELL PROVE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+PUMP,USDC,PUMPUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,PUMP,USDT,PUMPUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,PUMPUSDT:BUY USDT→PUMP,PUMPUSDC:SELL PUMP→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+QNT,USDC,QNTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,2,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,QNT,USDT,QNTUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,2,1,1,QNTUSDT:BUY USDT→QNT,QNTUSDC:SELL QNT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+QUBIC,USDC,QUBICUSDC,0,0.000000000000,0.000000000000,1,1,1,0,10,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,QUBIC,USDT,QUBICUSDT,0,0.000000000000,0.000000000000,1,1,1,0,10,1,1,QUBICUSDT:BUY USDT→QUBIC,QUBICUSDC:SELL QUBIC→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+RAI,USDC,RAIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RAI,USDT,RAIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RAIUSDT:BUY USDT→RAI,RAIUSDC:SELL RAI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+RARE,USDC,RAREUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RARE,USDT,RAREUSDT,0.0001,0.000000000000,0.000000000000,1,1,1,2,5,1,1,RAREUSDT:BUY USDT→RARE,RAREUSDC:SELL RARE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+RBNT,USDC,RBNTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RBNT,USDT,RBNTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,RBNTUSDT:BUY USDT→RBNT,RBNTUSDC:SELL RBNT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+RECALL,USDC,RECALLUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RECALL,USDT,RECALLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,RECALLUSDT:BUY USDT→RECALL,RECALLUSDC:SELL RECALL→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+RED,USDC,REDUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RED,USDT,REDUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,REDUSDT:BUY USDT→RED,REDUSDC:SELL RED→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+RENDER,USDC,RENDERUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RENDER,USDT,RENDERUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,RENDERUSDT:BUY USDT→RENDER,RENDERUSDC:SELL RENDER→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+RIO,USDC,RIOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RIO,USDT,RIOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RIOUSDT:BUY USDT→RIO,RIOUSDC:SELL RIO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ROSE,USDC,ROSEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ROSE,USDT,ROSEUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,5,1,1,ROSEUSDT:BUY USDT→ROSE,ROSEUSDC:SELL ROSE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+RUNE,USDC,RUNEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RUNE,USDT,RUNEUSDT,1,0.000000000000,0.000000000000,1,1,1,2,3,1,1,RUNEUSDT:BUY USDT→RUNE,RUNEUSDC:SELL RUNE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+RWA,USDC,RWAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,RWA,USDT,RWAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,RWAUSDT:BUY USDT→RWA,RWAUSDC:SELL RWA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+S,USDC,SUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,S,USDT,SUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,SUSDT:BUY USDT→S,SUSDC:SELL S→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SAHARA,USD1,SAHARAUSD1,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SAHARA,USDT,SAHARAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,SAHARAUSDT:BUY USDT→SAHARA,SAHARAUSD1:SELL SAHARA→USD1,USD1USDT:SELL USD1→USDT,0.100000
+SAHARA,USDC,SAHARAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SAHARA,USDT,SAHARAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,SAHARAUSDT:BUY USDT→SAHARA,SAHARAUSDC:SELL SAHARA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SAPIEN,USDC,SAPIENUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SAPIEN,USDT,SAPIENUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,SAPIENUSDT:BUY USDT→SAPIEN,SAPIENUSDC:SELL SAPIEN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SEI,USDC,SEIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SEI,USDT,SEIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SEIUSDT:BUY USDT→SEI,SEIUSDC:SELL SEI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SEN,USDC,SENUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SEN,USDT,SENUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,SENUSDT:BUY USDT→SEN,SENUSDC:SELL SEN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SIGN,USDC,SIGNUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SIGN,USDT,SIGNUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,SIGNUSDT:BUY USDT→SIGN,SIGNUSDC:SELL SIGN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SKATE,USDC,SKATEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SKATE,USDT,SKATEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,SKATEUSDT:BUY USDT→SKATE,SKATEUSDC:SELL SKATE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SOL,USD1,SOLUSD1,0,0.000000000000,0.000000000000,1,1,1,2,2,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SOL,USDT,SOLUSDT,0.01,0.000000000000,0.000000000000,1,1,1,3,2,1,1,SOLUSDT:BUY USDT→SOL,SOLUSD1:SELL SOL→USD1,USD1USDT:SELL USD1→USDT,0.100000
+SOL,USDE,SOLUSDE,0,0.000000000000,0.000000000000,1,1,1,3,2,1,0,USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,SOL,USDT,SOLUSDT,0.01,0.000000000000,0.000000000000,1,1,1,3,2,1,1,SOLUSDT:BUY USDT→SOL,SOLUSDE:SELL SOL→USDE,USDEUSDT:SELL USDE→USDT,0.100000
+SOMI,USDC,SOMIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SOMI,USDT,SOMIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SOMIUSDT:BUY USDT→SOMI,SOMIUSDC:SELL SOMI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SOON,USDC,SOONUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SOON,USDT,SOONUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SOONUSDT:BUY USDT→SOON,SOONUSDC:SELL SOON→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SOSO,USDC,SOSOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SOSO,USDT,SOSOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SOSOUSDT:BUY USDT→SOSO,SOSOUSDC:SELL SOSO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SPK,USDC,SPKUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SPK,USDT,SPKUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,SPKUSDT:BUY USDT→SPK,SPKUSDC:SELL SPK→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SPX,USDC,SPXUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SPX,USDT,SPXUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SPXUSDT:BUY USDT→SPX,SPXUSDC:SELL SPX→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+STABLE,USDC,STABLEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,STABLE,USDT,STABLEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,STABLEUSDT:BUY USDT→STABLE,STABLEUSDC:SELL STABLE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+STO,USDC,STOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,STO,USDT,STOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,STOUSDT:BUY USDT→STO,STOUSDC:SELL STO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SUI,USDC,SUIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SUI,USDT,SUIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SUIUSDT:BUY USDT→SUI,SUIUSDC:SELL SUI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SUI,USDE,SUIUSDE,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,SUI,USDT,SUIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SUIUSDT:BUY USDT→SUI,SUIUSDE:SELL SUI→USDE,USDEUSDT:SELL USDE→USDT,0.100000
+SUPRA,USDC,SUPRAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,7,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SUPRA,USDT,SUPRAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,7,1,1,SUPRAUSDT:BUY USDT→SUPRA,SUPRAUSDC:SELL SUPRA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+SXT,USDC,SXTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,SXT,USDT,SXTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,SXTUSDT:BUY USDT→SXT,SXTUSDC:SELL SXT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+TAG,USD1,TAGUSD1,0,0.000000000000,0.000000000000,1,1,1,2,7,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TAG,USDT,TAGUSDT,0,0.000000000000,0.000000000000,1,1,1,2,7,1,0,TAGUSDT:BUY USDT→TAG,TAGUSD1:SELL TAG→USD1,USD1USDT:SELL USD1→USDT,0.100000
+TAO,USDC,TAOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,2,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TAO,USDT,TAOUSDT,0.01,0.000000000000,0.000000000000,1,1,1,2,2,1,1,TAOUSDT:BUY USDT→TAO,TAOUSDC:SELL TAO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+TIA,USDC,TIAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TIA,USDT,TIAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TIAUSDT:BUY USDT→TIA,TIAUSDC:SELL TIA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+TNSR,USDC,TNSRUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TNSR,USDT,TNSRUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,TNSRUSDT:BUY USDT→TNSR,TNSRUSDC:SELL TNSR→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+TON,USDC,TONUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TON,USDT,TONUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,TONUSDT:BUY USDT→TON,TONUSDC:SELL TON→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+TOWNS,USDC,TOWNSUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TOWNS,USDT,TOWNSUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,TOWNSUSDT:BUY USDT→TOWNS,TOWNSUSDC:SELL TOWNS→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+TREE,USDC,TREEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TREE,USDT,TREEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TREEUSDT:BUY USDT→TREE,TREEUSDC:SELL TREE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+TRUMP,USD1,TRUMPUSD1,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TRUMP,USDT,TRUMPUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,TRUMPUSDT:BUY USDT→TRUMP,TRUMPUSD1:SELL TRUMP→USD1,USD1USDT:SELL USD1→USDT,0.100000
+TRUMP,USDC,TRUMPUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TRUMP,USDT,TRUMPUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,TRUMPUSDT:BUY USDT→TRUMP,TRUMPUSDC:SELL TRUMP→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+TRX,USDE,TRXUSDE,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,TRX,USDT,TRXUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TRXUSDT:BUY USDT→TRX,TRXUSDE:SELL TRX→USDE,USDEUSDT:SELL USDE→USDT,0.100000
+TURBO,USDC,TURBOUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,TURBO,USDT,TURBOUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,TURBOUSDT:BUY USDT→TURBO,TURBOUSDC:SELL TURBO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ULTIMA,USDC,ULTIMAUSDC,0,0.000000000000,0.000000000000,1,1,1,4,2,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ULTIMA,USDT,ULTIMAUSDT,0,0.000000000000,0.000000000000,1,1,1,4,2,1,1,ULTIMAUSDT:BUY USDT→ULTIMA,ULTIMAUSDC:SELL ULTIMA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+ULTIMA,USDE,ULTIMAUSDE,0,0.000000000000,0.000000000000,1,1,1,4,2,1,0,USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,ULTIMA,USDT,ULTIMAUSDT,0,0.000000000000,0.000000000000,1,1,1,4,2,1,1,ULTIMAUSDT:BUY USDT→ULTIMA,ULTIMAUSDE:SELL ULTIMA→USDE,USDEUSDT:SELL USDE→USDT,0.100000
+USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XRP,USDT,XRPUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XRP,USD1,XRPUSD1,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,XRPUSDT:BUY USDT→XRP,XRPUSD1:SELL XRP→USD1,USD1USDT:SELL USD1→USDT,0.100000
+USD1,USDT,USD1USDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,WLFI,USDT,WLFIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,WLFI,USD1,WLFIUSD1,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,WLFIUSDT:BUY USDT→WLFI,WLFIUSD1:SELL WLFI→USD1,USD1USDT:SELL USD1→USDT,0.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,WAL,USDT,WALUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,WAL,USDC,WALUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,WALUSDT:BUY USDT→WAL,WALUSDC:SELL WAL→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ZBT,USDT,ZBTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,ZBT,USDC,ZBTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,ZBTUSDT:BUY USDT→ZBT,ZBTUSDC:SELL ZBT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XVG,USDT,XVGUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,6,1,1,XVG,USDC,XVGUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,XVGUSDT:BUY USDT→XVG,XVGUSDC:SELL XVG→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,WLD,USDT,WLDUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,WLD,USDC,WLDUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,WLDUSDT:BUY USDT→WLD,WLDUSDC:SELL WLD→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ZEN,USDT,ZENUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,3,1,1,ZEN,USDC,ZENUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,ZENUSDT:BUY USDT→ZEN,ZENUSDC:SELL ZEN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ZEC,USDT,ZECUSDT,0.001,0.000000000000,0.000000000000,1,1,1,6,2,1,1,ZEC,USDC,ZECUSDC,0,0.000000000000,0.000000000000,1,1,1,6,2,1,0,ZECUSDT:BUY USDT→ZEC,ZECUSDC:SELL ZEC→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,VELVET,USDT,VELVETUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,VELVET,USDC,VELVETUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,VELVETUSDT:BUY USDT→VELVET,VELVETUSDC:SELL VELVET→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,WIF,USDT,WIFUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,WIF,USDC,WIFUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,WIFUSDT:BUY USDT→WIF,WIFUSDC:SELL WIF→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ZKC,USDT,ZKCUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ZKC,USDC,ZKCUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,ZKCUSDT:BUY USDT→ZKC,ZKCUSDC:SELL ZKC→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ZRO,USDT,ZROUSDT,0,0.000000000000,0.000000000000,1,1,1,2,3,1,1,ZRO,USDC,ZROUSDC,0,0.000000000000,0.000000000000,1,1,1,2,3,1,0,ZROUSDT:BUY USDT→ZRO,ZROUSDC:SELL ZRO→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ZORA,USDT,ZORAUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,ZORA,USDC,ZORAUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,ZORAUSDT:BUY USDT→ZORA,ZORAUSDC:SELL ZORA→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ZK,USDT,ZKUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,ZK,USDC,ZKUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,ZKUSDT:BUY USDT→ZK,ZKUSDC:SELL ZK→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XPL,USDT,XPLUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XPL,USDC,XPLUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XPLUSDT:BUY USDT→XPL,XPLUSDC:SELL XPL→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,VIRTUAL,USDT,VIRTUALUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,VIRTUAL,USDC,VIRTUALUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,VIRTUALUSDT:BUY USDT→VIRTUAL,VIRTUALUSDC:SELL VIRTUAL→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USELESS,USDT,USELESSUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,USELESS,USDC,USELESSUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USELESSUSDT:BUY USDT→USELESS,USELESSUSDC:SELL USELESS→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XLM,USDT,XLMUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XLM,USDC,XLMUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XLMUSDT:BUY USDT→XLM,XLMUSDC:SELL XLM→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USUAL,USDT,USUALUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,USUAL,USDC,USUALUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,USUALUSDT:BUY USDT→USUAL,USUALUSDC:SELL USUAL→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XMR,USDT,XMRUSDT,0.001,0.000000000000,0.000000000000,1,1,1,3,2,1,1,XMR,USDC,XMRUSDC,0,0.000000000000,0.000000000000,1,1,1,3,2,1,1,XMRUSDT:BUY USDT→XMR,XMRUSDC:SELL XMR→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XCN,USDT,XCNUSDT,0.001,0.000000000000,0.000000000000,1,1,1,2,7,1,1,XCN,USDC,XCNUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,XCNUSDT:BUY USDT→XCN,XCNUSDC:SELL XCN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XDC,USDT,XDCUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,XDC,USDC,XDCUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,XDCUSDT:BUY USDT→XDC,XDCUSDC:SELL XDC→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,WHITE,USDT,WHITEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,7,1,1,WHITE,USDC,WHITEUSDC,0,0.000000000000,0.000000000000,1,1,1,2,7,1,0,WHITEUSDT:BUY USDT→WHITE,WHITEUSDC:SELL WHITE→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,WLFI,USDT,WLFIUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,WLFI,USDC,WLFIUSDC,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,WLFIUSDT:BUY USDT→WLFI,WLFIUSDC:SELL WLFI→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,WCT,USDT,WCTUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,WCT,USDC,WCTUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,WCTUSDT:BUY USDT→WCT,WCTUSDC:SELL WCT→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,ZBCN,USDT,ZBCNUSDT,0,0.000000000000,0.000000000000,1,1,1,2,7,1,1,ZBCN,USDC,ZBCNUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,ZBCNUSDT:BUY USDT→ZBCN,ZBCNUSDC:SELL ZBCN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XAN,USDT,XANUSDT,0,0.000000000000,0.000000000000,1,1,1,2,5,1,1,XAN,USDC,XANUSDC,0,0.000000000000,0.000000000000,1,1,1,2,5,1,0,XANUSDT:BUY USDT→XAN,XANUSDC:SELL XAN→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,VANRY,USDT,VANRYUSDT,0,0.000000000000,0.000000000000,1,1,1,2,6,1,1,VANRY,USDC,VANRYUSDC,0,0.000000000000,0.000000000000,1,1,1,2,6,1,0,VANRYUSDT:BUY USDT→VANRY,VANRYUSDC:SELL VANRY→USDC,USDCUSDT:SELL USDC→USDT,1.100000
+USDC,USDF,USDCUSDF,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,USDF,USDT,USDFUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDC,USDT,USDCUSDT,1,0.000000000000,0.000000000000,1,1,1,2,4,1,1,USDCUSDT:BUY USDT→USDC,USDCUSDF:SELL USDC→USDF,USDFUSDT:SELL USDF→USDT,0.100000
+USDE,USDT,USDEUSDT,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,XRP,USDT,XRPUSDT,0.100000000000000006,0.000000000000,0.000000000000,1,1,1,2,4,1,1,XRP,USDE,XRPUSDE,0,0.000000000000,0.000000000000,1,1,1,2,4,1,0,XRPUSDT:BUY USDT→XRP,XRPUSDE:SELL XRP→USDE,USDEUSDT:SELL USDE→USDT,0.100000
 
 
