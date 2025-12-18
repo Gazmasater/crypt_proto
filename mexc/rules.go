@@ -15,7 +15,12 @@ import (
 type SymbolRules struct {
 	Symbol string
 
-	IsSpotTradingAllowed       bool
+	// Мы используем это поле как "допущен к торговле спот MARKET через API".
+	// Для MEXC оно НЕ равно json-полю isSpotTradingAllowed (которое часто false даже на BTCUSDT).
+	IsSpotTradingAllowed bool
+
+	// Историческое поле. На MEXC оно часто отсутствует/ложное,
+	// поэтому в торговой логике на него НЕ опираемся (только TRY->fallback).
 	QuoteOrderQtyMarketAllowed bool
 
 	// baseSizePrecision приходит строкой "0.0001" — это step для quantity
@@ -26,6 +31,12 @@ type SymbolRules struct {
 	// точность для quoteOrderQty (amount)
 	QuoteAssetPrecision int
 	QuotePrecision      int
+
+	// Точность для MARKET BUY через quoteOrderQty.
+	// У MEXC приходит как строка (например "1" или "0.01").
+	QuoteMarketStepStr  string
+	QuoteMarketStep     float64
+	QuoteMarketDecimals int
 
 	// минималки (если есть)
 	MinQty         float64
@@ -39,8 +50,11 @@ type exchangeInfoResp struct {
 
 		Status string `json:"status"`
 
-		IsSpotTradingAllowed       bool `json:"isSpotTradingAllowed"`
-		QuoteOrderQtyMarketAllowed bool `json:"quoteOrderQtyMarketAllowed"`
+		IsSpotTradingAllowed       bool     `json:"isSpotTradingAllowed"`
+		QuoteOrderQtyMarketAllowed bool     `json:"quoteOrderQtyMarketAllowed"`
+		OrderTypes                 []string `json:"orderTypes"`
+		Permissions                []string `json:"permissions"`
+		St                         bool     `json:"st"`
 
 		BaseSizePrecision string `json:"baseSizePrecision"`
 
@@ -48,11 +62,40 @@ type exchangeInfoResp struct {
 		QuoteAssetPrecision int `json:"quoteAssetPrecision"`
 		QuotePrecision      int `json:"quotePrecision"`
 
+		QuoteAmountPrecisionMarket string `json:"quoteAmountPrecisionMarket"`
+
 		// Иногда присутствуют (зависит от версии ответа)
 		MinQty               string `json:"minQty"`
 		MinNotional          string `json:"minNotional"`
 		QuoteAmountPrecision string `json:"quoteAmountPrecision"`
 	} `json:"symbols"`
+}
+
+func hasStr(a []string, want string) bool {
+	for _, v := range a {
+		if strings.EqualFold(strings.TrimSpace(v), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// marketEligibleMEXC: критерий "пара подходит для торговли" по твоему требованию:
+// status=="1", st==false, permissions содержит "SPOT", orderTypes содержит "MARKET".
+func marketEligibleMEXC(status string, st bool, permissions, orderTypes []string) bool {
+	if strings.TrimSpace(status) != "1" {
+		return false
+	}
+	if st {
+		return false
+	}
+	if !hasStr(permissions, "SPOT") {
+		return false
+	}
+	if !hasStr(orderTypes, "MARKET") {
+		return false
+	}
+	return true
 }
 
 func LoadSymbolRules(ctx context.Context, baseURL string, client *http.Client) (map[string]SymbolRules, error) {
@@ -91,21 +134,39 @@ func LoadSymbolRules(ctx context.Context, baseURL string, client *http.Client) (
 			continue
 		}
 
-		step := parseStep(s.BaseSizePrecision)
-		dec := decimalsFromStepStr(s.BaseSizePrecision)
+		baseStep := parseStep(s.BaseSizePrecision)
+		baseDec := decimalsFromStepStr(s.BaseSizePrecision)
+
+		qmStepStr := strings.TrimSpace(s.QuoteAmountPrecisionMarket)
+		qmStep := parseStep(qmStepStr)
+		qmDec := decimalsFromStepStr(qmStepStr)
+		// В ответе MEXC quoteAmountPrecisionMarket часто бывает "1" (т.е. decimals=0)
+		// Если поля нет — оставим -1 и будем фолбэчить на QuoteAssetPrecision.
+		if qmStepStr == "" {
+			qmDec = -1
+		}
 
 		r := SymbolRules{
-			Symbol:                     sym,
-			IsSpotTradingAllowed:       s.IsSpotTradingAllowed,
+			Symbol: sym,
+
+			IsSpotTradingAllowed: marketEligibleMEXC(s.Status, s.St, s.Permissions, s.OrderTypes),
+			// На это поле не опираемся, но сохраним если пришло.
 			QuoteOrderQtyMarketAllowed: s.QuoteOrderQtyMarketAllowed,
-			BaseStepStr:                s.BaseSizePrecision,
-			BaseStep:                   step,
-			QtyDecimals:                dec,
-			QuoteAssetPrecision:        s.QuoteAssetPrecision,
-			QuotePrecision:             s.QuotePrecision,
-			MinQty:                     parseFloatSafe(s.MinQty),
-			MinNotional:                parseFloatSafe(s.MinNotional),
-			MinOrderAmount:             parseFloatSafe(s.QuoteAmountPrecision),
+
+			BaseStepStr: s.BaseSizePrecision,
+			BaseStep:    baseStep,
+			QtyDecimals: baseDec,
+
+			QuoteAssetPrecision: s.QuoteAssetPrecision,
+			QuotePrecision:      s.QuotePrecision,
+
+			QuoteMarketStepStr:  qmStepStr,
+			QuoteMarketStep:     qmStep,
+			QuoteMarketDecimals: qmDec,
+
+			MinQty:         parseFloatSafe(s.MinQty),
+			MinNotional:    parseFloatSafe(s.MinNotional),
+			MinOrderAmount: parseFloatSafe(s.QuoteAmountPrecision),
 		}
 
 		out[sym] = r
