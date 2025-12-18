@@ -71,246 +71,1638 @@ go run ./cmd/triangles_enrich_mexc
 
 
 
-
-package main
+rules.go
+package mexc
 
 import (
-	"encoding/csv"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"math"
 	"net/http"
-	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
-const (
-	InputCSV  = "triangles_usdt_routes.csv"
-	OutputCSV = "triangles_usdt_routes_market.csv"
-	BaseURL   = "https://api.mexc.com"
-)
+type SymbolRules struct {
+	Symbol string
 
-type exchangeInfo struct {
-	Symbols []symbolInfo `json:"symbols"`
+	// Мы используем это поле как "допущен к торговле спот MARKET через API".
+	// Для MEXC оно НЕ равно json-полю isSpotTradingAllowed (которое часто false даже на BTCUSDT).
+	IsSpotTradingAllowed bool
+
+	// Историческое поле. На MEXC оно часто отсутствует/ложное,
+	// поэтому в торговой логике на него НЕ опираемся (только TRY->fallback).
+	QuoteOrderQtyMarketAllowed bool
+
+	// baseSizePrecision приходит строкой "0.0001" — это step для quantity
+	BaseStepStr string
+	BaseStep    float64
+	QtyDecimals int
+
+	// точность для quoteOrderQty (amount)
+	QuoteAssetPrecision int
+	QuotePrecision      int
+
+	// Точность для MARKET BUY через quoteOrderQty.
+	// У MEXC приходит как строка (например "1" или "0.01").
+	QuoteMarketStepStr  string
+	QuoteMarketStep     float64
+	QuoteMarketDecimals int
+
+	// минималки (если есть)
+	MinQty         float64
+	MinNotional    float64
+	MinOrderAmount float64 // quoteAmountPrecision (по сути min amount), если пригодится
 }
 
-type symbolInfo struct {
-	Symbol string `json:"symbol"`
-	Status string `json:"status"`
+type exchangeInfoResp struct {
+	Symbols []struct {
+		Symbol string `json:"symbol"`
 
-	OrderTypes   []string `json:"orderTypes"`
-	Permissions  []string `json:"permissions"`
-	St           bool     `json:"st"`
-	BaseSizePrec string   `json:"baseSizePrecision"`
+		Status string `json:"status"`
 
-	QuoteAmountPrecisionMarket string `json:"quoteAmountPrecisionMarket"`
-	// на всякий случай: иногда может быть полезно как fallback
-	QuoteAmountPrecision string `json:"quoteAmountPrecision"`
+		IsSpotTradingAllowed       bool     `json:"isSpotTradingAllowed"`
+		QuoteOrderQtyMarketAllowed bool     `json:"quoteOrderQtyMarketAllowed"`
+		OrderTypes                 []string `json:"orderTypes"`
+		Permissions                []string `json:"permissions"`
+		St                         bool     `json:"st"`
+
+		BaseSizePrecision string `json:"baseSizePrecision"`
+
+		BaseAssetPrecision  int `json:"baseAssetPrecision"`
+		QuoteAssetPrecision int `json:"quoteAssetPrecision"`
+		QuotePrecision      int `json:"quotePrecision"`
+
+		QuoteAmountPrecisionMarket string `json:"quoteAmountPrecisionMarket"`
+
+		// Иногда присутствуют (зависит от версии ответа)
+		MinQty               string `json:"minQty"`
+		MinNotional          string `json:"minNotional"`
+		QuoteAmountPrecision string `json:"quoteAmountPrecision"`
+	} `json:"symbols"`
 }
 
-func colIndex(header []string, name string) int {
-	name = strings.ToLower(strings.TrimSpace(name))
-	for i, h := range header {
-		if strings.ToLower(strings.TrimSpace(h)) == name {
-			return i
-		}
-	}
-	return -1
-}
-
-func hasMarket(orderTypes []string) bool {
-	for _, t := range orderTypes {
-		if strings.EqualFold(strings.TrimSpace(t), "MARKET") {
+func hasStr(a []string, want string) bool {
+	for _, v := range a {
+		if strings.EqualFold(strings.TrimSpace(v), want) {
 			return true
 		}
 	}
 	return false
 }
 
-func hasPerm(perms []string, want string) bool {
-	for _, p := range perms {
-		if strings.EqualFold(strings.TrimSpace(p), want) {
-			return true
-		}
-	}
-	return false
-}
-
-// "0.000001" -> 6; "1" -> 0; "" -> -1
-func decimalsFromStep(step string) int {
-	step = strings.TrimSpace(step)
-	if step == "" {
-		return -1
-	}
-	if !strings.Contains(step, ".") {
-		return 0
-	}
-	parts := strings.SplitN(step, ".", 2)
-	frac := parts[1]
-	frac = strings.TrimRight(frac, "0")
-	return len(frac)
-}
-
-// Выбор точности quote для MARKET: сначала quoteAmountPrecisionMarket, иначе fallback quoteAmountPrecision
-func quoteMarketStep(s symbolInfo) string {
-	if strings.TrimSpace(s.QuoteAmountPrecisionMarket) != "" {
-		return s.QuoteAmountPrecisionMarket
-	}
-	return s.QuoteAmountPrecision
-}
-
-// Фильтр "пара подходит для торговли MARKET" по твоему требованию:
-// status=="1", st==false, permissions содержит "SPOT", orderTypes содержит "MARKET"
-func marketOk(s symbolInfo) bool {
-	if strings.TrimSpace(s.Status) != "1" {
+// marketEligibleMEXC: критерий "пара подходит для торговли" по твоему требованию:
+// status=="1", st==false, permissions содержит "SPOT", orderTypes содержит "MARKET".
+func marketEligibleMEXC(status string, st bool, permissions, orderTypes []string) bool {
+	if strings.TrimSpace(status) != "1" {
 		return false
 	}
-	if s.St {
+	if st {
 		return false
 	}
-	if !hasPerm(s.Permissions, "SPOT") {
+	if !hasStr(permissions, "SPOT") {
 		return false
 	}
-	if !hasMarket(s.OrderTypes) {
+	if !hasStr(orderTypes, "MARKET") {
 		return false
 	}
 	return true
 }
 
-func loadRules() (map[string]symbolInfo, error) {
-	client := &http.Client{Timeout: 25 * time.Second}
-	resp, err := client.Get(BaseURL + "/api/v3/exchangeInfo")
+func LoadSymbolRules(ctx context.Context, baseURL string, client *http.Client) (map[string]SymbolRules, error) {
+	if baseURL == "" {
+		baseURL = "https://api.mexc.com"
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/v3/exchangeInfo", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
+	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("exchangeInfo %d: %s", resp.StatusCode, string(b))
+		return nil, fmt.Errorf("exchangeInfo error: status=%d body=%s", resp.StatusCode, string(b))
 	}
 
-	var info exchangeInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	var root exchangeInfoResp
+	if err := json.Unmarshal(b, &root); err != nil {
 		return nil, err
 	}
 
-	m := make(map[string]symbolInfo, len(info.Symbols))
-	for _, s := range info.Symbols {
-		m[s.Symbol] = s
+	out := make(map[string]SymbolRules, len(root.Symbols))
+	for _, s := range root.Symbols {
+		sym := strings.TrimSpace(s.Symbol)
+		if sym == "" {
+			continue
+		}
+
+		baseStep := parseStep(s.BaseSizePrecision)
+		baseDec := decimalsFromStepStr(s.BaseSizePrecision)
+
+		qmStepStr := strings.TrimSpace(s.QuoteAmountPrecisionMarket)
+		qmStep := parseStep(qmStepStr)
+		qmDec := decimalsFromStepStr(qmStepStr)
+		// В ответе MEXC quoteAmountPrecisionMarket часто бывает "1" (т.е. decimals=0)
+		// Если поля нет — оставим -1 и будем фолбэчить на QuoteAssetPrecision.
+		if qmStepStr == "" {
+			qmDec = -1
+		}
+
+		r := SymbolRules{
+			Symbol: sym,
+
+			IsSpotTradingAllowed: marketEligibleMEXC(s.Status, s.St, s.Permissions, s.OrderTypes),
+			// На это поле не опираемся, но сохраним если пришло.
+			QuoteOrderQtyMarketAllowed: s.QuoteOrderQtyMarketAllowed,
+
+			BaseStepStr: s.BaseSizePrecision,
+			BaseStep:    baseStep,
+			QtyDecimals: baseDec,
+
+			QuoteAssetPrecision: s.QuoteAssetPrecision,
+			QuotePrecision:      s.QuotePrecision,
+
+			QuoteMarketStepStr:  qmStepStr,
+			QuoteMarketStep:     qmStep,
+			QuoteMarketDecimals: qmDec,
+
+			MinQty:         parseFloatSafe(s.MinQty),
+			MinNotional:    parseFloatSafe(s.MinNotional),
+			MinOrderAmount: parseFloatSafe(s.QuoteAmountPrecision),
+		}
+
+		out[sym] = r
 	}
-	return m, nil
+
+	return out, nil
 }
 
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
-	rules, err := loadRules()
+func parseFloatSafe(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		log.Fatalf("ERR: load exchangeInfo: %v", err)
+		return 0
 	}
+	return v
+}
 
-	in, err := os.Open(InputCSV)
+func parseStep(stepStr string) float64 {
+	stepStr = strings.TrimSpace(stepStr)
+	if stepStr == "" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(stepStr, 64)
 	if err != nil {
-		log.Fatalf("ERR: open %s: %v", InputCSV, err)
+		return 0
 	}
-	defer in.Close()
+	return v
+}
 
-	cr := csv.NewReader(in)
-	header, err := cr.Read()
+func decimalsFromStepStr(step string) int {
+	step = strings.TrimSpace(step)
+	if step == "" || step == "1" {
+		return 0
+	}
+	if i := strings.IndexByte(step, '.'); i >= 0 {
+		frac := step[i+1:]
+		frac = strings.TrimRight(frac, "0")
+		return len(frac)
+	}
+	return 0
+}
+
+func floorToStep(x, step float64) float64 {
+	if step <= 0 {
+		return x
+	}
+	return math.Floor(x/step) * step
+}
+
+func truncToDecimals(x float64, decimals int) float64 {
+	if decimals <= 0 {
+		return math.Floor(x)
+	}
+	p := math.Pow10(decimals)
+	return math.Floor(x*p) / p
+}
+
+
+
+trader.go
+
+package mexc
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+type Trader struct {
+	apiKey    string
+	apiSecret string
+	debug     bool
+	baseURL   string
+	client    *http.Client
+
+	mu    sync.RWMutex
+	rules map[string]SymbolRules
+}
+
+func NewTrader(apiKey, apiSecret string, debug bool) *Trader {
+	return &Trader{
+		apiKey:    strings.TrimSpace(apiKey),
+		apiSecret: strings.TrimSpace(apiSecret),
+		debug:     debug,
+		baseURL:   "https://api.mexc.com",
+		client:    &http.Client{Timeout: 10 * time.Second},
+		rules:     map[string]SymbolRules{},
+	}
+}
+
+func (t *Trader) logf(format string, args ...any) {
+	if !t.debug {
+		return
+	}
+	fmt.Printf(time.Now().Format("2006-01-02 15:04:05.000 ")+"[MEXC TRADER] "+format+"\n", args...)
+}
+
+func (t *Trader) SetRules(r map[string]SymbolRules) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if r == nil {
+		t.rules = map[string]SymbolRules{}
+		return
+	}
+	t.rules = r
+}
+
+func (t *Trader) Rules(symbol string) (SymbolRules, bool) {
+	symbol = strings.TrimSpace(symbol)
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	r, ok := t.rules[symbol]
+	return r, ok
+}
+
+func (t *Trader) ensureRules(ctx context.Context, symbol string) (SymbolRules, bool, error) {
+	symbol = strings.TrimSpace(symbol)
+
+	if r, ok := t.Rules(symbol); ok {
+		return r, true, nil
+	}
+
+	t.mu.RLock()
+	cnt := len(t.rules)
+	sample := sampleKeys(t.rules, 10)
+	t.mu.RUnlock()
+	t.logf("rules miss: symbol=%s rules_count=%d sample_keys=%v", symbol, cnt, sample)
+
+	r, err := t.fetchRulesForSymbol(ctx, symbol)
 	if err != nil {
-		log.Fatalf("ERR: read header: %v", err)
+		t.logf("fetchRulesForSymbol err: symbol=%s err=%v", symbol, err)
+		return SymbolRules{}, false, err
 	}
 
-	iL1 := colIndex(header, "leg1_symbol")
-	iL2 := colIndex(header, "leg2_symbol")
-	iL3 := colIndex(header, "leg3_symbol")
-	if iL1 < 0 || iL2 < 0 || iL3 < 0 {
-		log.Fatalf("ERR: нет колонок leg1_symbol/leg2_symbol/leg3_symbol в CSV")
+	t.mu.Lock()
+	t.rules[symbol] = r
+	t.mu.Unlock()
+
+	return r, true, nil
+}
+
+func sampleKeys(m map[string]SymbolRules, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if len(keys) > n {
+		keys = keys[:n]
+	}
+	return keys
+}
+
+// SmartMarketBuyUSDT:
+// Backward-compatible wrapper around SmartMarketBuyQuote.
+// Покупка по USDT (quote), предпочитает quoteOrderQty.
+func (t *Trader) SmartMarketBuyUSDT(ctx context.Context, symbol string, usdt float64, ask float64) (string, error) {
+	return t.SmartMarketBuyQuote(ctx, symbol, usdt, ask)
+}
+
+// SmartMarketBuyQuote:
+// MARKET BUY с использованием quoteOrderQty (сумма в quote) — это то, что нужно для маленьких депозитов.
+// Логика:
+//   1) TRY: BUY через quoteOrderQty (округляем по quoteAmountPrecisionMarket если есть)
+//   2) FALLBACK: если биржа ругается на quoteOrderQty — BUY через quantity (нужен ask)
+func (t *Trader) SmartMarketBuyQuote(ctx context.Context, symbol string, quoteAmount float64, ask float64) (string, error) {
+	symbol = strings.TrimSpace(symbol)
+	if quoteAmount <= 0 {
+		return "", fmt.Errorf("quoteAmount<=0")
 	}
 
-	// Добавляем два вида точности:
-	// qty_dp (по baseSizePrecision) и quote_dp_market (по quoteAmountPrecisionMarket / fallback quoteAmountPrecision)
-	header = append(header,
-		"leg1_qty_dp", "leg2_qty_dp", "leg3_qty_dp",
-		"leg1_quote_dp_market", "leg2_quote_dp_market", "leg3_quote_dp_market",
-	)
-
-	out, err := os.Create(OutputCSV)
+	r, ok, err := t.ensureRules(ctx, symbol)
 	if err != nil {
-		log.Fatalf("ERR: create %s: %v", OutputCSV, err)
+		return "", err
 	}
-	defer out.Close()
-
-	cw := csv.NewWriter(out)
-	defer cw.Flush()
-
-	if err := cw.Write(header); err != nil {
-		log.Fatalf("ERR: write header: %v", err)
+	if !ok {
+		return "", fmt.Errorf("no rules for symbol=%s", symbol)
+	}
+	if !r.IsSpotTradingAllowed {
+		return "", fmt.Errorf("symbol not allowed for spot MARKET/api: %s", symbol)
 	}
 
-	read := 0
-	written := 0
-	skippedNoSymbol := 0
-	skippedNotEligible := 0
+	// 1) TRY quoteOrderQty
+	dec := r.QuoteMarketDecimals
+	if dec < 0 {
+		dec = r.QuoteAssetPrecision
+		if dec <= 0 {
+			dec = 2
+		}
+	}
+	amount := truncToDecimals(quoteAmount, dec)
+	if amount <= 0 {
+		return "", fmt.Errorf("amount<=0 after trunc (dec=%d)", dec)
+	}
+
+	t.logf("BUY TRY by QUOTE: symbol=%s quoteAmount=%.8f amount=%.8f dec=%d (qmStep=%q)",
+		symbol, quoteAmount, amount, dec, r.QuoteMarketStepStr)
+
+	id, err := t.placeMarket(ctx, symbol, "BUY", 0, amount)
+	if err == nil {
+		return id, nil
+	}
+
+	// 2) FALLBACK to qty if quoteOrderQty not supported / rejected as param
+	if ask <= 0 {
+		return "", err
+	}
+	if !isQuoteOrderQtyParamError(err) {
+		// если ошибка не похожа на "quoteOrderQty не поддерживается" — не делаем второй ордер автоматически
+		return "", err
+	}
+
+	qtyRaw := quoteAmount / ask
+	qty := qtyRaw
+	if r.BaseStep > 0 {
+		qty = floorToStep(qtyRaw, r.BaseStep)
+	} else if r.QtyDecimals >= 0 {
+		qty = truncToDecimals(qtyRaw, r.QtyDecimals)
+	}
+	if qty <= 0 {
+		needQuote := 0.0
+		if r.MinQty > 0 {
+			needQuote = r.MinQty * ask
+		}
+		return "", fmt.Errorf(
+			"quoteOrderQty rejected, and qty<=0 after normalize (raw=%.12f norm=%.12f step=%.12f minQty=%.12f ask=%.10f tradeQuote=%.6f needQuote>=%.6f): firstErr=%v",
+			qtyRaw, qty, r.BaseStep, r.MinQty, ask, quoteAmount, needQuote, err,
+		)
+	}
+	if r.MinQty > 0 && qty < r.MinQty {
+		needQuote := r.MinQty * ask
+		return "", fmt.Errorf(
+			"quoteOrderQty rejected, and qty<minQty (raw=%.12f norm=%.12f minQty=%.12f step=%.12f ask=%.10f tradeQuote=%.6f needQuote>=%.6f): firstErr=%v",
+			qtyRaw, qty, r.MinQty, r.BaseStep, ask, quoteAmount, needQuote, err,
+		)
+	}
+
+	t.logf("BUY FALLBACK by QTY: symbol=%s quote=%.8f ask=%.10f qtyRaw=%.12f qty=%.12f step=%.12f minQty=%.12f firstErr=%v",
+		symbol, quoteAmount, ask, qtyRaw, qty, r.BaseStep, r.MinQty, err)
+
+	return t.placeMarket(ctx, symbol, "BUY", qty, 0)
+}
+
+func isQuoteOrderQtyParamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	// Варианты сообщений от MEXC бывают разные, поэтому матчим грубо.
+	if !strings.Contains(s, "quoteorderqty") {
+		return false
+	}
+	// типичные формулировки
+	badHints := []string{
+		"not support",
+		"not supported",
+		"illegal",
+		"invalid",
+		"parameter",
+		"mandatory",
+		"required",
+	}
+	for _, h := range badHints {
+		if strings.Contains(s, h) {
+			return true
+		}
+	}
+	// если уже содержит quoteOrderQty — почти наверняка параметрная проблема
+	return true
+}
+
+// SmartMarketSellQty:
+// Продажа base quantity, нормализует по step/precision.
+func (t *Trader) SmartMarketSellQty(ctx context.Context, symbol string, qtyRaw float64) (string, error) {
+	symbol = strings.TrimSpace(symbol)
+	if qtyRaw <= 0 {
+		return "", fmt.Errorf("qty<=0")
+	}
+
+	r, ok, err := t.ensureRules(ctx, symbol)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("no rules for symbol=%s", symbol)
+	}
+	if !r.IsSpotTradingAllowed {
+		return "", fmt.Errorf("symbol not allowed for spot/api: %s", symbol)
+	}
+
+	qty := qtyRaw
+	if r.BaseStep > 0 {
+		qty = floorToStep(qtyRaw, r.BaseStep)
+	} else if r.QtyDecimals >= 0 {
+		qty = truncToDecimals(qtyRaw, r.QtyDecimals)
+	}
+
+	if qty <= 0 {
+		return "", fmt.Errorf("qty<=0 after normalize (raw=%.12f norm=%.12f step=%.12f minQty=%.12f)", qtyRaw, qty, r.BaseStep, r.MinQty)
+	}
+	if r.MinQty > 0 && qty < r.MinQty {
+		return "", fmt.Errorf("qty<minQty (raw=%.12f norm=%.12f minQty=%.12f step=%.12f)", qtyRaw, qty, r.MinQty, r.BaseStep)
+	}
+
+	t.logf("SELL: symbol=%s qtyRaw=%.12f qty=%.12f step=%.12f minQty=%.12f", symbol, qtyRaw, qty, r.BaseStep, r.MinQty)
+	return t.placeMarket(ctx, symbol, "SELL", qty, 0)
+}
+
+func (t *Trader) placeMarket(ctx context.Context, symbol, side string, quantity, quoteOrderQty float64) (string, error) {
+	side = strings.ToUpper(strings.TrimSpace(side))
+
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	params.Set("side", side)
+	params.Set("type", "MARKET")
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+
+	if side == "BUY" {
+		if quoteOrderQty > 0 {
+			params.Set("quoteOrderQty", stripZeros(quoteOrderQty))
+		} else {
+			params.Set("quantity", stripZeros(quantity))
+		}
+	} else {
+		params.Set("quantity", stripZeros(quantity))
+	}
+
+	queryToSign := params.Encode()
+	params.Set("signature", t.sign(queryToSign))
+
+	reqURL := t.baseURL + "/api/v3/order" + "?" + params.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("mexc order error: status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	if v, ok := m["orderId"]; ok {
+		return fmt.Sprintf("%v", v), nil
+	}
+	if v, ok := m["orderIdStr"]; ok {
+		return fmt.Sprintf("%v", v), nil
+	}
+	t.logf("placeMarket ok but no orderId in body=%s", string(b))
+	return "", nil
+}
+
+func (t *Trader) GetBalance(ctx context.Context, asset string) (float64, error) {
+	asset = strings.ToUpper(strings.TrimSpace(asset))
+	if asset == "" {
+		return 0, fmt.Errorf("empty asset")
+	}
+
+	params := url.Values{}
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+
+	queryToSign := params.Encode()
+	params.Set("signature", t.sign(queryToSign))
+
+	reqURL := t.baseURL + "/api/v3/account" + "?" + params.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return 0, fmt.Errorf("mexc account error: status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return 0, err
+	}
+
+	balAny, _ := root["balances"].([]any)
+	for _, it := range balAny {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		a, _ := m["asset"].(string)
+		if strings.ToUpper(strings.TrimSpace(a)) != asset {
+			continue
+		}
+
+		if s, ok := m["free"].(string); ok {
+			v, _ := strconv.ParseFloat(s, 64)
+			return v, nil
+		}
+		if f, ok := m["free"].(float64); ok {
+			return f, nil
+		}
+		return 0, nil
+	}
+
+	return 0, nil
+}
+
+func (t *Trader) sign(query string) string {
+	mac := hmac.New(sha256.New, []byte(t.apiSecret))
+	_, _ = mac.Write([]byte(query))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func stripZeros(v float64) string {
+	s := strconv.FormatFloat(v, 'f', 12, 64)
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	if s == "" {
+		return "0"
+	}
+	return s
+}
+
+// fetchRulesForSymbol вытягивает exchangeInfo по одному символу и строит SymbolRules.
+func (t *Trader) fetchRulesForSymbol(ctx context.Context, symbol string) (SymbolRules, error) {
+	u := t.baseURL + "/api/v3/exchangeInfo?symbol=" + url.QueryEscape(symbol)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return SymbolRules{}, err
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return SymbolRules{}, err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return SymbolRules{}, fmt.Errorf("exchangeInfo error: status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return SymbolRules{}, fmt.Errorf("exchangeInfo unmarshal: %w body=%s", err, string(b))
+	}
+
+	syms, _ := root["symbols"].([]any)
+	if len(syms) == 0 {
+		return SymbolRules{}, fmt.Errorf("exchangeInfo: no symbols in response for %s body=%s", symbol, string(b))
+	}
+
+	m, ok := syms[0].(map[string]any)
+	if !ok {
+		return SymbolRules{}, fmt.Errorf("exchangeInfo: invalid symbol format for %s", symbol)
+	}
+
+	r := SymbolRules{Symbol: symbol}
+
+	// ---- Eligibility (как в rules.go) ----
+	status, _ := m["status"].(string)
+	st, _ := m["st"].(bool)
+	var perms []string
+	if arr, ok := m["permissions"].([]any); ok {
+		for _, it := range arr {
+			if s, ok := it.(string); ok {
+				perms = append(perms, s)
+			}
+		}
+	}
+	var orderTypes []string
+	if arr, ok := m["orderTypes"].([]any); ok {
+		for _, it := range arr {
+			if s, ok := it.(string); ok {
+				orderTypes = append(orderTypes, s)
+			}
+		}
+	}
+	r.IsSpotTradingAllowed = (strings.TrimSpace(status) == "1") && !st && hasStr(perms, "SPOT") && hasStr(orderTypes, "MARKET")
+
+	// ---- Steps / decimals ----
+	if s, ok := m["baseSizePrecision"].(string); ok {
+		r.BaseStepStr = s
+		r.BaseStep = parseStep(s)
+		r.QtyDecimals = decimalsFromStepStr(s)
+	}
+
+	// quote precisions
+	if v, ok := asInt(m["quoteAssetPrecision"]); ok {
+		r.QuoteAssetPrecision = v
+	}
+	if v, ok := asInt(m["quotePrecision"]); ok {
+		r.QuotePrecision = v
+	}
+	if s, ok := m["quoteAmountPrecisionMarket"].(string); ok {
+		r.QuoteMarketStepStr = strings.TrimSpace(s)
+		r.QuoteMarketStep = parseStep(r.QuoteMarketStepStr)
+		r.QuoteMarketDecimals = decimalsFromStepStr(r.QuoteMarketStepStr)
+	}
+	if r.QuoteMarketStepStr == "" {
+		r.QuoteMarketDecimals = -1
+	}
+
+	// минималки (если есть в корне)
+	if s, ok := m["minQty"].(string); ok {
+		r.MinQty = parseFloatSafe(s)
+	}
+	if s, ok := m["minNotional"].(string); ok {
+		r.MinNotional = parseFloatSafe(s)
+	}
+	if s, ok := m["quoteAmountPrecision"].(string); ok {
+		r.MinOrderAmount = parseFloatSafe(s)
+	}
+	if v, ok := m["quoteOrderQtyMarketAllowed"].(bool); ok {
+		r.QuoteOrderQtyMarketAllowed = v
+	}
+
+	t.logf("rules loaded: symbol=%s eligible=%v status=%q st=%v perms=%v orderTypes=%v baseStep=%q qmStep=%q",
+		symbol, r.IsSpotTradingAllowed, status, st, perms, orderTypes, r.BaseStepStr, r.QuoteMarketStepStr)
+
+	return r, nil
+}
+
+func asInt(v any) (int, bool) {
+	switch x := v.(type) {
+	case float64:
+		return int(x), true
+	case int:
+		return x, true
+	case int64:
+		return int(x), true
+	case string:
+		i, err := strconv.Atoi(x)
+		if err != nil {
+			return 0, false
+		}
+		return i, true
+	default:
+		return 0, false
+	}
+}
+
+
+
+executor_real.go
+
+package arb
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"math"
+	"strings"
+	"sync"
+	"time"
+
+	"crypt_proto/domain"
+)
+
+// SpotTrader — минимальный интерфейс торгового клиента, который нужен REAL executor.
+// BUY делаем через quoteOrderQty (суммой в quote), SELL — через quantity.
+type SpotTrader interface {
+	// SmartMarketBuyUSDT оставлен для совместимости, но executor использует SmartMarketBuyQuote.
+	SmartMarketBuyUSDT(ctx context.Context, symbol string, usdt float64, ask float64) (string, error)
+	SmartMarketBuyQuote(ctx context.Context, symbol string, quoteAmount float64, ask float64) (string, error)
+	SmartMarketSellQty(ctx context.Context, symbol string, qty float64) (string, error)
+	GetBalance(ctx context.Context, asset string) (float64, error)
+}
+
+type execReq struct {
+	ctx       context.Context
+	t         domain.Triangle
+	quotes    map[string]domain.Quote // snapshot только нужных символов
+	startUSDT float64
+	triName   string
+}
+
+type RealExecutor struct {
+	trader SpotTrader
+	out    io.Writer
+
+	StartUSDT float64
+
+	// Safety коэффициенты:
+	//  - для SELL: продаём чуть меньше баланса, чтобы избежать "insufficient balance" из-за комиссии/округления.
+	SellSafety float64
+	//  - для BUY через quoteOrderQty: мы тратим quoteAmount ровно, поэтому safety обычно не нужен,
+	//    но его можно поставить <1, если ты хочешь оставлять "хвост" в quote-валюте.
+	BuySafety float64
+
+	// cooldown по треугольнику (по имени)
+	Cooldown time.Duration
+
+	mu       sync.Mutex
+	lastExec map[string]time.Time
+
+	// Очередь (строго последовательное исполнение)
+	queue chan execReq
+	wg    sync.WaitGroup
+}
+
+func NewRealExecutor(tr SpotTrader, out io.Writer, startUSDT float64) *RealExecutor {
+	e := &RealExecutor{
+		trader:     tr,
+		out:        out,
+		StartUSDT:  startUSDT,
+		SellSafety: 0.995,
+		BuySafety:  1.000,
+		Cooldown:   500 * time.Millisecond,
+		lastExec:   make(map[string]time.Time),
+		queue:      make(chan execReq, 16),
+	}
+
+	// worker: исполняет строго по одному
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		for req := range e.queue {
+			_ = e.executeOnce(req)
+		}
+	}()
+
+	return e
+}
+
+func (e *RealExecutor) Name() string { return "REAL" }
+
+type flusher interface{ Flush() error }
+
+func (e *RealExecutor) logf(format string, args ...any) {
+	fmt.Fprintf(e.out, format+"\n", args...)
+	if f, ok := e.out.(flusher); ok {
+		_ = f.Flush()
+	}
+}
+
+func (e *RealExecutor) step(name string) func() {
+	start := time.Now()
+	e.logf("    [REAL EXEC] >>> %s", name)
+	return func() {
+		e.logf("    [REAL EXEC] <<< %s (%s)", name, time.Since(start).Truncate(time.Millisecond))
+	}
+}
+
+// Execute НЕ исполняет сразу — кладёт треугольник в очередь со снапшотом котировок.
+func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes map[string]domain.Quote, startUSDT float64) error {
+	triName := strings.TrimSpace(t.Name)
+	if triName == "" {
+		triName = "triangle"
+	}
+
+	if startUSDT <= 0 {
+		startUSDT = e.StartUSDT
+	}
+	if startUSDT <= 0 {
+		return fmt.Errorf("startUSDT<=0 (startUSDT=%.6f, StartUSDT=%.6f)", startUSDT, e.StartUSDT)
+	}
+
+	// 3 символа из ног
+	if len(t.Legs) < 3 {
+		return fmt.Errorf("triangle %s has <3 legs", triName)
+	}
+	sym1 := strings.TrimSpace(t.Legs[0].Symbol)
+	sym2 := strings.TrimSpace(t.Legs[1].Symbol)
+	sym3 := strings.TrimSpace(t.Legs[2].Symbol)
+	if sym1 == "" || sym2 == "" || sym3 == "" {
+		return fmt.Errorf("triangle %s has empty leg symbols: [%q, %q, %q]", triName, sym1, sym2, sym3)
+	}
+
+	// СНАПШОТ котировок только по нужным символам
+	snap := make(map[string]domain.Quote, 3)
+	if q, ok := quotes[sym1]; ok {
+		snap[sym1] = q
+	}
+	if q, ok := quotes[sym2]; ok {
+		snap[sym2] = q
+	}
+	if q, ok := quotes[sym3]; ok {
+		snap[sym3] = q
+	}
+
+	req := execReq{
+		ctx:       ctx,
+		t:         t,
+		quotes:    snap,
+		startUSDT: startUSDT,
+		triName:   triName,
+	}
+
+	select {
+	case e.queue <- req:
+		e.logf("  [REAL EXEC] QUEUED: start=%.6f USDT triangle=%s", startUSDT, triName)
+		return nil
+	default:
+		e.logf("  [REAL EXEC] SKIP: queue full (triangle=%s)", triName)
+		return nil
+	}
+}
+
+func (e *RealExecutor) executeOnce(req execReq) error {
+	now := time.Now()
+
+	// cooldown по имени треугольника
+	e.mu.Lock()
+	if last, ok := e.lastExec[req.triName]; ok && e.Cooldown > 0 && now.Sub(last) < e.Cooldown {
+		left := (e.Cooldown - now.Sub(last)).Truncate(time.Millisecond)
+		e.mu.Unlock()
+		e.logf("  [REAL EXEC] SKIP cooldown triangle=%s left=%s", req.triName, left)
+		return nil
+	}
+	e.mu.Unlock()
+
+	t := req.t
+	quotes := req.quotes
+	startUSDT := req.startUSDT
+	triName := req.triName
+
+	e.logf("  [REAL EXEC] start=%.6f USDT triangle=%s", startUSDT, triName)
+	for i, leg := range t.Legs {
+		e.logf("    [REAL EXEC] leg%d: %s -> %s | sym=%s dir=%d", i+1, leg.From, leg.To, leg.Symbol, leg.Dir)
+	}
+
+	// ===== balances before =====
+	usdt0, err := e.trader.GetBalance(req.ctx, "USDT")
+	if err != nil {
+		return fmt.Errorf("get USDT before: %w", err)
+	}
+	e.logf("    [REAL EXEC] BAL before: USDT=%.12f", usdt0)
+	if usdt0+1e-9 < startUSDT {
+		return fmt.Errorf("insufficient USDT: have=%.12f need=%.12f", usdt0, startUSDT)
+	}
+
+	curAsset := "USDT"
+	curAmount := startUSDT
+
+	for i := 0; i < 3; i++ {
+		leg := t.Legs[i]
+		sym := strings.TrimSpace(leg.Symbol)
+		if sym == "" {
+			return fmt.Errorf("leg%d: empty symbol", i+1)
+		}
+		q, ok := quotes[sym]
+		if !ok {
+			return fmt.Errorf("leg%d: no quote snapshot for %s", i+1, sym)
+		}
+		if q.Bid <= 0 || q.Ask <= 0 {
+			return fmt.Errorf("leg%d: bad quote for %s (bid=%.10f ask=%.10f)", i+1, sym, q.Bid, q.Ask)
+		}
+
+		from := strings.ToUpper(strings.TrimSpace(leg.From))
+		to := strings.ToUpper(strings.TrimSpace(leg.To))
+		if from == "" || to == "" {
+			return fmt.Errorf("leg%d: empty from/to (from=%q to=%q)", i+1, leg.From, leg.To)
+		}
+		if curAsset != from {
+			// не фейлим жёстко: баланс берём по from, но залогируем рассинхрон
+			e.logf("    [REAL EXEC] WARN leg%d: curAsset=%s but leg.From=%s (curAmount=%.12f)", i+1, curAsset, from, curAmount)
+		}
+
+		// Балансы до
+		fromBefore, err := e.trader.GetBalance(req.ctx, from)
+		if err != nil {
+			return fmt.Errorf("leg%d: get balance %s before: %w", i+1, from, err)
+		}
+		toBefore, err := e.trader.GetBalance(req.ctx, to)
+		if err != nil {
+			return fmt.Errorf("leg%d: get balance %s before: %w", i+1, to, err)
+		}
+
+		if leg.Dir < 0 {
+			// BUY: тратим quoteAmount (from) и получаем base (to)
+			spend := curAmount
+			if e.BuySafety > 0 && e.BuySafety < 1 {
+				spend *= e.BuySafety
+			}
+			if spend <= 0 {
+				return fmt.Errorf("leg%d BUY: spend<=0 (%s)", i+1, from)
+			}
+			if fromBefore+1e-9 < spend {
+				return fmt.Errorf("leg%d BUY: insufficient %s balance: have=%.12f need=%.12f", i+1, from, fromBefore, spend)
+			}
+
+			e.logf("    [REAL EXEC] leg%d PRE: BUY %s spend=%.12f %s | ask=%.10f bid=%.10f | %s before=%.12f %s before=%.12f",
+				i+1, sym, spend, from, q.Ask, q.Bid, from, fromBefore, to, toBefore)
+
+			var orderID string
+			{
+				orderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+
+				done := e.step(fmt.Sprintf("SmartMarketBuyQuote leg%d", i+1))
+				id, err := e.trader.SmartMarketBuyQuote(orderCtx, sym, spend, q.Ask)
+				done()
+				if err != nil {
+					e.logf("    [REAL EXEC] leg%d PLACE ERR (BUY): %v", i+1, err)
+					return err
+				}
+				orderID = id
+			}
+			e.logf("    [REAL EXEC] leg%d PLACE OK: orderId=%s", i+1, orderID)
+
+			// ждём рост баланса to
+			toAfter, err := e.waitBalanceChange(req.ctx, to, toBefore, 3*time.Second, 150*time.Millisecond)
+			if err != nil {
+				return fmt.Errorf("leg%d BUY: wait balance change %s: %w", i+1, to, err)
+			}
+			delta := toAfter - toBefore
+			e.logf("    [REAL EXEC] leg%d BAL after: %s=%.12f delta=%.12f", i+1, to, toAfter, delta)
+			if delta <= 0 {
+				return fmt.Errorf("leg%d BUY: %s did not increase (before=%.12f after=%.12f)", i+1, to, toBefore, toAfter)
+			}
+			curAsset = to
+			curAmount = delta
+			continue
+		}
+
+		// SELL: продаём qty (from) и получаем quote (to)
+		qty := fromBefore
+		if e.SellSafety > 0 && e.SellSafety < 1 {
+			qty *= e.SellSafety
+		}
+		if qty <= 0 {
+			return fmt.Errorf("leg%d SELL: qty<=0 (%s=%.12f)", i+1, from, fromBefore)
+		}
+
+		e.logf("    [REAL EXEC] leg%d PRE: SELL %s qty=%.12f %s | bid=%.10f ask=%.10f | %s before=%.12f %s before=%.12f",
+			i+1, sym, qty, from, q.Bid, q.Ask, from, fromBefore, to, toBefore)
+
+		var orderID string
+		{
+			orderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			done := e.step(fmt.Sprintf("SmartMarketSellQty leg%d", i+1))
+			id, err := e.trader.SmartMarketSellQty(orderCtx, sym, qty)
+			done()
+			if err != nil {
+				e.logf("    [REAL EXEC] leg%d PLACE ERR (SELL): %v", i+1, err)
+				return err
+			}
+			orderID = id
+		}
+		e.logf("    [REAL EXEC] leg%d PLACE OK: orderId=%s", i+1, orderID)
+
+		toAfter, err := e.waitBalanceChange(req.ctx, to, toBefore, 3*time.Second, 150*time.Millisecond)
+		if err != nil {
+			return fmt.Errorf("leg%d SELL: wait balance change %s: %w", i+1, to, err)
+		}
+		delta := toAfter - toBefore
+		e.logf("    [REAL EXEC] leg%d BAL after: %s=%.12f delta=%.12f", i+1, to, toAfter, delta)
+		if delta <= 0 {
+			return fmt.Errorf("leg%d SELL: %s did not increase (before=%.12f after=%.12f)", i+1, to, toBefore, toAfter)
+		}
+		curAsset = to
+		curAmount = delta
+	}
+
+	usdtAfter, err := e.trader.GetBalance(req.ctx, "USDT")
+	if err != nil {
+		return fmt.Errorf("get USDT after: %w", err)
+	}
+	dUSDTTotal := usdtAfter - usdt0
+
+	e.logf("    [REAL EXEC] DONE: asset=%s amount=%.12f", curAsset, curAmount)
+	e.logf("    [REAL EXEC] DONE: USDT start=%.12f end=%.12f pnl(total)=%.12f (%.4f%%)",
+		usdt0, usdtAfter, dUSDTTotal, pct(dUSDTTotal, startUSDT))
+
+	e.mu.Lock()
+	e.lastExec[triName] = time.Now()
+	e.mu.Unlock()
+
+	return nil
+}
+
+// waitBalanceChange ждёт, пока баланс станет отличаться от baseline.
+func (e *RealExecutor) waitBalanceChange(ctx context.Context, asset string, baseline float64, timeout, interval time.Duration) (float64, error) {
+	const tol = 1e-12
+
+	deadline := time.NewTimer(timeout)
+	tick := time.NewTicker(interval)
+	defer deadline.Stop()
+	defer tick.Stop()
+
+	cur, err := e.trader.GetBalance(ctx, asset)
+	if err == nil && math.Abs(cur-baseline) > tol {
+		return cur, nil
+	}
 
 	for {
-		row, err := cr.Read()
-		if err == io.EOF {
-			break
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-deadline.C:
+			last, err := e.trader.GetBalance(ctx, asset)
+			if err != nil {
+				return 0, fmt.Errorf("timeout, last balance read error for %s: %v", asset, err)
+			}
+			return 0, fmt.Errorf("timeout waiting %s balance change: baseline=%.12f last=%.12f", asset, baseline, last)
+		case <-tick.C:
+			cur, err := e.trader.GetBalance(ctx, asset)
+			if err != nil {
+				continue
+			}
+			if math.Abs(cur-baseline) > tol {
+				return cur, nil
+			}
 		}
-		if err != nil {
-			log.Fatalf("ERR: read csv: %v", err)
-		}
-		read++
+	}
+}
 
-		s1 := strings.TrimSpace(row[iL1])
-		s2 := strings.TrimSpace(row[iL2])
-		s3 := strings.TrimSpace(row[iL3])
-		if s1 == "" || s2 == "" || s3 == "" {
-			skippedNoSymbol++
-			continue
-		}
+func pct(delta, denom float64) float64 {
+	if denom == 0 {
+		return 0
+	}
+	return (delta / denom) * 100
+}
 
-		r1, ok1 := rules[s1]
-		r2, ok2 := rules[s2]
-		r3, ok3 := rules[s3]
-		if !ok1 || !ok2 || !ok3 {
-			skippedNoSymbol++
-			continue
-		}
 
-		if !marketOk(r1) || !marketOk(r2) || !marketOk(r3) {
-			skippedNotEligible++
-			continue
-		}
 
-		// qty precision (base)
-		dpQty1 := decimalsFromStep(r1.BaseSizePrec)
-		dpQty2 := decimalsFromStep(r2.BaseSizePrec)
-		dpQty3 := decimalsFromStep(r3.BaseSizePrec)
+execut
 
-		// quoteAmount precision for MARKET (quote)
-		dpQm1 := decimalsFromStep(quoteMarketStep(r1))
-		dpQm2 := decimalsFromStep(quoteMarketStep(r2))
-		dpQm3 := decimalsFromStep(quoteMarketStep(r3))
+package mexc
 
-		row = append(row,
-			fmt.Sprintf("%d", dpQty1), fmt.Sprintf("%d", dpQty2), fmt.Sprintf("%d", dpQty3),
-			fmt.Sprintf("%d", dpQm1), fmt.Sprintf("%d", dpQm2), fmt.Sprintf("%d", dpQm3),
-		)
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
 
-		if err := cw.Write(row); err != nil {
-			log.Fatalf("ERR: write row: %v", err)
-		}
-		written++
+type Trader struct {
+	apiKey    string
+	apiSecret string
+	debug     bool
+	baseURL   string
+	client    *http.Client
+
+	mu    sync.RWMutex
+	rules map[string]SymbolRules
+}
+
+func NewTrader(apiKey, apiSecret string, debug bool) *Trader {
+	return &Trader{
+		apiKey:    strings.TrimSpace(apiKey),
+		apiSecret: strings.TrimSpace(apiSecret),
+		debug:     debug,
+		baseURL:   "https://api.mexc.com",
+		client:    &http.Client{Timeout: 10 * time.Second},
+		rules:     map[string]SymbolRules{},
+	}
+}
+
+func (t *Trader) logf(format string, args ...any) {
+	if !t.debug {
+		return
+	}
+	fmt.Printf(time.Now().Format("2006-01-02 15:04:05.000 ")+"[MEXC TRADER] "+format+"\n", args...)
+}
+
+func (t *Trader) SetRules(r map[string]SymbolRules) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if r == nil {
+		t.rules = map[string]SymbolRules{}
+		return
+	}
+	t.rules = r
+}
+
+func (t *Trader) Rules(symbol string) (SymbolRules, bool) {
+	symbol = strings.TrimSpace(symbol)
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	r, ok := t.rules[symbol]
+	return r, ok
+}
+
+func (t *Trader) ensureRules(ctx context.Context, symbol string) (SymbolRules, bool, error) {
+	symbol = strings.TrimSpace(symbol)
+
+	if r, ok := t.Rules(symbol); ok {
+		return r, true, nil
 	}
 
-	log.Printf("OK: read=%d written=%d skippedNoSymbol=%d skippedNotEligible=%d -> %s",
-		read, written, skippedNoSymbol, skippedNotEligible, OutputCSV)
+	t.mu.RLock()
+	cnt := len(t.rules)
+	sample := sampleKeys(t.rules, 10)
+	t.mu.RUnlock()
+	t.logf("rules miss: symbol=%s rules_count=%d sample_keys=%v", symbol, cnt, sample)
+
+	r, err := t.fetchRulesForSymbol(ctx, symbol)
+	if err != nil {
+		t.logf("fetchRulesForSymbol err: symbol=%s err=%v", symbol, err)
+		return SymbolRules{}, false, err
+	}
+
+	t.mu.Lock()
+	t.rules[symbol] = r
+	t.mu.Unlock()
+
+	return r, true, nil
 }
+
+func sampleKeys(m map[string]SymbolRules, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if len(keys) > n {
+		keys = keys[:n]
+	}
+	return keys
+}
+
+// SmartMarketBuyUSDT:
+// Backward-compatible wrapper around SmartMarketBuyQuote.
+// Покупка по USDT (quote), предпочитает quoteOrderQty.
+func (t *Trader) SmartMarketBuyUSDT(ctx context.Context, symbol string, usdt float64, ask float64) (string, error) {
+	return t.SmartMarketBuyQuote(ctx, symbol, usdt, ask)
+}
+
+// SmartMarketBuyQuote:
+// MARKET BUY с использованием quoteOrderQty (сумма в quote) — это то, что нужно для маленьких депозитов.
+// Логика:
+//   1) TRY: BUY через quoteOrderQty (округляем по quoteAmountPrecisionMarket если есть)
+//   2) FALLBACK: если биржа ругается на quoteOrderQty — BUY через quantity (нужен ask)
+func (t *Trader) SmartMarketBuyQuote(ctx context.Context, symbol string, quoteAmount float64, ask float64) (string, error) {
+	symbol = strings.TrimSpace(symbol)
+	if quoteAmount <= 0 {
+		return "", fmt.Errorf("quoteAmount<=0")
+	}
+
+	r, ok, err := t.ensureRules(ctx, symbol)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("no rules for symbol=%s", symbol)
+	}
+	if !r.IsSpotTradingAllowed {
+		return "", fmt.Errorf("symbol not allowed for spot MARKET/api: %s", symbol)
+	}
+
+	// 1) TRY quoteOrderQty
+	dec := r.QuoteMarketDecimals
+	if dec < 0 {
+		dec = r.QuoteAssetPrecision
+		if dec <= 0 {
+			dec = 2
+		}
+	}
+	amount := truncToDecimals(quoteAmount, dec)
+	if amount <= 0 {
+		return "", fmt.Errorf("amount<=0 after trunc (dec=%d)", dec)
+	}
+
+	t.logf("BUY TRY by QUOTE: symbol=%s quoteAmount=%.8f amount=%.8f dec=%d (qmStep=%q)",
+		symbol, quoteAmount, amount, dec, r.QuoteMarketStepStr)
+
+	id, err := t.placeMarket(ctx, symbol, "BUY", 0, amount)
+	if err == nil {
+		return id, nil
+	}
+
+	// 2) FALLBACK to qty if quoteOrderQty not supported / rejected as param
+	if ask <= 0 {
+		return "", err
+	}
+	if !isQuoteOrderQtyParamError(err) {
+		// если ошибка не похожа на "quoteOrderQty не поддерживается" — не делаем второй ордер автоматически
+		return "", err
+	}
+
+	qtyRaw := quoteAmount / ask
+	qty := qtyRaw
+	if r.BaseStep > 0 {
+		qty = floorToStep(qtyRaw, r.BaseStep)
+	} else if r.QtyDecimals >= 0 {
+		qty = truncToDecimals(qtyRaw, r.QtyDecimals)
+	}
+	if qty <= 0 {
+		needQuote := 0.0
+		if r.MinQty > 0 {
+			needQuote = r.MinQty * ask
+		}
+		return "", fmt.Errorf(
+			"quoteOrderQty rejected, and qty<=0 after normalize (raw=%.12f norm=%.12f step=%.12f minQty=%.12f ask=%.10f tradeQuote=%.6f needQuote>=%.6f): firstErr=%v",
+			qtyRaw, qty, r.BaseStep, r.MinQty, ask, quoteAmount, needQuote, err,
+		)
+	}
+	if r.MinQty > 0 && qty < r.MinQty {
+		needQuote := r.MinQty * ask
+		return "", fmt.Errorf(
+			"quoteOrderQty rejected, and qty<minQty (raw=%.12f norm=%.12f minQty=%.12f step=%.12f ask=%.10f tradeQuote=%.6f needQuote>=%.6f): firstErr=%v",
+			qtyRaw, qty, r.MinQty, r.BaseStep, ask, quoteAmount, needQuote, err,
+		)
+	}
+
+	t.logf("BUY FALLBACK by QTY: symbol=%s quote=%.8f ask=%.10f qtyRaw=%.12f qty=%.12f step=%.12f minQty=%.12f firstErr=%v",
+		symbol, quoteAmount, ask, qtyRaw, qty, r.BaseStep, r.MinQty, err)
+
+	return t.placeMarket(ctx, symbol, "BUY", qty, 0)
+}
+
+func isQuoteOrderQtyParamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	// Варианты сообщений от MEXC бывают разные, поэтому матчим грубо.
+	if !strings.Contains(s, "quoteorderqty") {
+		return false
+	}
+	// типичные формулировки
+	badHints := []string{
+		"not support",
+		"not supported",
+		"illegal",
+		"invalid",
+		"parameter",
+		"mandatory",
+		"required",
+	}
+	for _, h := range badHints {
+		if strings.Contains(s, h) {
+			return true
+		}
+	}
+	// если уже содержит quoteOrderQty — почти наверняка параметрная проблема
+	return true
+}
+
+// SmartMarketSellQty:
+// Продажа base quantity, нормализует по step/precision.
+func (t *Trader) SmartMarketSellQty(ctx context.Context, symbol string, qtyRaw float64) (string, error) {
+	symbol = strings.TrimSpace(symbol)
+	if qtyRaw <= 0 {
+		return "", fmt.Errorf("qty<=0")
+	}
+
+	r, ok, err := t.ensureRules(ctx, symbol)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("no rules for symbol=%s", symbol)
+	}
+	if !r.IsSpotTradingAllowed {
+		return "", fmt.Errorf("symbol not allowed for spot/api: %s", symbol)
+	}
+
+	qty := qtyRaw
+	if r.BaseStep > 0 {
+		qty = floorToStep(qtyRaw, r.BaseStep)
+	} else if r.QtyDecimals >= 0 {
+		qty = truncToDecimals(qtyRaw, r.QtyDecimals)
+	}
+
+	if qty <= 0 {
+		return "", fmt.Errorf("qty<=0 after normalize (raw=%.12f norm=%.12f step=%.12f minQty=%.12f)", qtyRaw, qty, r.BaseStep, r.MinQty)
+	}
+	if r.MinQty > 0 && qty < r.MinQty {
+		return "", fmt.Errorf("qty<minQty (raw=%.12f norm=%.12f minQty=%.12f step=%.12f)", qtyRaw, qty, r.MinQty, r.BaseStep)
+	}
+
+	t.logf("SELL: symbol=%s qtyRaw=%.12f qty=%.12f step=%.12f minQty=%.12f", symbol, qtyRaw, qty, r.BaseStep, r.MinQty)
+	return t.placeMarket(ctx, symbol, "SELL", qty, 0)
+}
+
+func (t *Trader) placeMarket(ctx context.Context, symbol, side string, quantity, quoteOrderQty float64) (string, error) {
+	side = strings.ToUpper(strings.TrimSpace(side))
+
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	params.Set("side", side)
+	params.Set("type", "MARKET")
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+
+	if side == "BUY" {
+		if quoteOrderQty > 0 {
+			params.Set("quoteOrderQty", stripZeros(quoteOrderQty))
+		} else {
+			params.Set("quantity", stripZeros(quantity))
+		}
+	} else {
+		params.Set("quantity", stripZeros(quantity))
+	}
+
+	queryToSign := params.Encode()
+	params.Set("signature", t.sign(queryToSign))
+
+	reqURL := t.baseURL + "/api/v3/order" + "?" + params.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("mexc order error: status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	if v, ok := m["orderId"]; ok {
+		return fmt.Sprintf("%v", v), nil
+	}
+	if v, ok := m["orderIdStr"]; ok {
+		return fmt.Sprintf("%v", v), nil
+	}
+	t.logf("placeMarket ok but no orderId in body=%s", string(b))
+	return "", nil
+}
+
+func (t *Trader) GetBalance(ctx context.Context, asset string) (float64, error) {
+	asset = strings.ToUpper(strings.TrimSpace(asset))
+	if asset == "" {
+		return 0, fmt.Errorf("empty asset")
+	}
+
+	params := url.Values{}
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+
+	queryToSign := params.Encode()
+	params.Set("signature", t.sign(queryToSign))
+
+	reqURL := t.baseURL + "/api/v3/account" + "?" + params.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("X-MEXC-APIKEY", t.apiKey)
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return 0, fmt.Errorf("mexc account error: status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return 0, err
+	}
+
+	balAny, _ := root["balances"].([]any)
+	for _, it := range balAny {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		a, _ := m["asset"].(string)
+		if strings.ToUpper(strings.TrimSpace(a)) != asset {
+			continue
+		}
+
+		if s, ok := m["free"].(string); ok {
+			v, _ := strconv.ParseFloat(s, 64)
+			return v, nil
+		}
+		if f, ok := m["free"].(float64); ok {
+			return f, nil
+		}
+		return 0, nil
+	}
+
+	return 0, nil
+}
+
+func (t *Trader) sign(query string) string {
+	mac := hmac.New(sha256.New, []byte(t.apiSecret))
+	_, _ = mac.Write([]byte(query))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func stripZeros(v float64) string {
+	s := strconv.FormatFloat(v, 'f', 12, 64)
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	if s == "" {
+		return "0"
+	}
+	return s
+}
+
+// fetchRulesForSymbol вытягивает exchangeInfo по одному символу и строит SymbolRules.
+func (t *Trader) fetchRulesForSymbol(ctx context.Context, symbol string) (SymbolRules, error) {
+	u := t.baseURL + "/api/v3/exchangeInfo?symbol=" + url.QueryEscape(symbol)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return SymbolRules{}, err
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return SymbolRules{}, err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return SymbolRules{}, fmt.Errorf("exchangeInfo error: status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return SymbolRules{}, fmt.Errorf("exchangeInfo unmarshal: %w body=%s", err, string(b))
+	}
+
+	syms, _ := root["symbols"].([]any)
+	if len(syms) == 0 {
+		return SymbolRules{}, fmt.Errorf("exchangeInfo: no symbols in response for %s body=%s", symbol, string(b))
+	}
+
+	m, ok := syms[0].(map[string]any)
+	if !ok {
+		return SymbolRules{}, fmt.Errorf("exchangeInfo: invalid symbol format for %s", symbol)
+	}
+
+	r := SymbolRules{Symbol: symbol}
+
+	// ---- Eligibility (как в rules.go) ----
+	status, _ := m["status"].(string)
+	st, _ := m["st"].(bool)
+	var perms []string
+	if arr, ok := m["permissions"].([]any); ok {
+		for _, it := range arr {
+			if s, ok := it.(string); ok {
+				perms = append(perms, s)
+			}
+		}
+	}
+	var orderTypes []string
+	if arr, ok := m["orderTypes"].([]any); ok {
+		for _, it := range arr {
+			if s, ok := it.(string); ok {
+				orderTypes = append(orderTypes, s)
+			}
+		}
+	}
+	r.IsSpotTradingAllowed = (strings.TrimSpace(status) == "1") && !st && hasStr(perms, "SPOT") && hasStr(orderTypes, "MARKET")
+
+	// ---- Steps / decimals ----
+	if s, ok := m["baseSizePrecision"].(string); ok {
+		r.BaseStepStr = s
+		r.BaseStep = parseStep(s)
+		r.QtyDecimals = decimalsFromStepStr(s)
+	}
+
+	// quote precisions
+	if v, ok := asInt(m["quoteAssetPrecision"]); ok {
+		r.QuoteAssetPrecision = v
+	}
+	if v, ok := asInt(m["quotePrecision"]); ok {
+		r.QuotePrecision = v
+	}
+	if s, ok := m["quoteAmountPrecisionMarket"].(string); ok {
+		r.QuoteMarketStepStr = strings.TrimSpace(s)
+		r.QuoteMarketStep = parseStep(r.QuoteMarketStepStr)
+		r.QuoteMarketDecimals = decimalsFromStepStr(r.QuoteMarketStepStr)
+	}
+	if r.QuoteMarketStepStr == "" {
+		r.QuoteMarketDecimals = -1
+	}
+
+	// минималки (если есть в корне)
+	if s, ok := m["minQty"].(string); ok {
+		r.MinQty = parseFloatSafe(s)
+	}
+	if s, ok := m["minNotional"].(string); ok {
+		r.MinNotional = parseFloatSafe(s)
+	}
+	if s, ok := m["quoteAmountPrecision"].(string); ok {
+		r.MinOrderAmount = parseFloatSafe(s)
+	}
+	if v, ok := m["quoteOrderQtyMarketAllowed"].(bool); ok {
+		r.QuoteOrderQtyMarketAllowed = v
+	}
+
+	t.logf("rules loaded: symbol=%s eligible=%v status=%q st=%v perms=%v orderTypes=%v baseStep=%q qmStep=%q",
+		symbol, r.IsSpotTradingAllowed, status, st, perms, orderTypes, r.BaseStepStr, r.QuoteMarketStepStr)
+
+	return r, nil
+}
+
+func asInt(v any) (int, bool) {
+	switch x := v.(type) {
+	case float64:
+		return int(x), true
+	case int:
+		return x, true
+	case int64:
+		return int(x), true
+	case string:
+		i, err := strconv.Atoi(x)
+		if err != nil {
+			return 0, false
+		}
+		return i, true
+	default:
+		return 0, false
+	}
+}
+
 
 
 
