@@ -377,4 +377,5 @@ func main() {
 		total, parsed, eligible, pairs, written, OutputCSV)
 }
 
-
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/cryptarb$ go run .
+2025/12/18 17:33:34.899074 OK: read=764 parsedUSDT=0 marketEligible=0 paired=0 writtenRows=0 -> triangles_usdt_routes_market.csv
