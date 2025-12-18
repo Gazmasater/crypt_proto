@@ -89,7 +89,7 @@ import (
 
 const (
 	InputCSV  = "triangles_markets_usdt_routes.csv"
-	OutputCSV = "triangles_markets_usdt_routes_market.csv"
+	OutputCSV = "triangles_usdt_routes_market.csv"
 	BaseURL   = "https://api.mexc.com"
 )
 
@@ -108,15 +108,28 @@ type symbolInfo struct {
 
 func hasMarket(orderTypes []string) bool {
 	for _, t := range orderTypes {
-		if strings.EqualFold(t, "MARKET") {
+		if strings.EqualFold(strings.TrimSpace(t), "MARKET") {
 			return true
 		}
 	}
 	return false
 }
 
+func marketOk(r symbolInfo) bool {
+	if strings.ToUpper(r.Status) != "TRADING" {
+		return false
+	}
+	if !r.IsSpotTradingAllowed {
+		return false
+	}
+	if !hasMarket(r.OrderTypes) {
+		return false
+	}
+	return true
+}
+
 func loadRules() (map[string]symbolInfo, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Get(BaseURL + "/api/v3/exchangeInfo")
 	if err != nil {
 		return nil, err
@@ -150,8 +163,8 @@ func colIndex(header []string, name string) int {
 	return -1
 }
 
+// Достаём 3 символа из строки: либо symbol1..3, либо base/quote -> symbol
 func getSymbolsFromRow(header, row []string) (string, string, string, error) {
-	// вариант 1: symbol1,symbol2,symbol3
 	iS1 := colIndex(header, "symbol1")
 	iS2 := colIndex(header, "symbol2")
 	iS3 := colIndex(header, "symbol3")
@@ -165,7 +178,6 @@ func getSymbolsFromRow(header, row []string) (string, string, string, error) {
 		return s1, s2, s3, nil
 	}
 
-	// вариант 2: base/quote пары
 	iB1 := colIndex(header, "base1")
 	iQ1 := colIndex(header, "quote1")
 	iB2 := colIndex(header, "base2")
@@ -185,57 +197,57 @@ func getSymbolsFromRow(header, row []string) (string, string, string, error) {
 	return "", "", "", fmt.Errorf("CSV must have either symbol1..3 or base1..quote3")
 }
 
-func marketOk(r symbolInfo) bool {
-	if strings.ToUpper(r.Status) != "TRADING" {
-		return false
+// Переход по маркету: если curr совпал с base или quote, вернём вторую валюту
+func nextAsset(curr, base, quote string) (string, bool) {
+	if curr == quote {
+		return base, true
 	}
-	if !r.IsSpotTradingAllowed {
-		return false
+	if curr == base {
+		return quote, true
 	}
-	if !hasMarket(r.OrderTypes) {
-		return false
-	}
-	return true
+	return "", false
 }
 
-// восстановим маршрут по базам/квотам: стартуем с USDT, идём 3 ноги, должны вернуться в USDT
-// возвращаем X, Y и признак ориентации (XY или YX относительно USDT)
-func routeXY(r1, r2, r3 symbolInfo) (x string, y string, ok bool) {
-	curr := "USDT"
-	next := func(curr string, base string, quote string) (string, bool) {
-		if curr == quote {
-			return base, true
-		}
-		if curr == base {
-			return quote, true
-		}
-		return "", false
+// Ищем любую перестановку 3 ног, которая даёт цикл USDT->X->Y->USDT.
+// Возвращаем X,Y и найденный порядок индексов.
+func findUSDTcycle(legs [3]symbolInfo) (x, y string, order [3]int, ok bool) {
+	perms := [][3]int{
+		{0, 1, 2},
+		{0, 2, 1},
+		{1, 0, 2},
+		{1, 2, 0},
+		{2, 0, 1},
+		{2, 1, 0},
 	}
 
-	a1, ok1 := next(curr, r1.BaseAsset, r1.QuoteAsset)
-	if !ok1 {
-		return "", "", false
-	}
-	a2, ok2 := next(a1, r2.BaseAsset, r2.QuoteAsset)
-	if !ok2 {
-		return "", "", false
-	}
-	a3, ok3 := next(a2, r3.BaseAsset, r3.QuoteAsset)
-	if !ok3 || a3 != "USDT" {
-		return "", "", false
-	}
+	for _, p := range perms {
+		curr := "USDT"
 
-	// curr=USDT -> a1=X -> a2=Y -> USDT
-	if a1 == "USDT" || a2 == "USDT" || a1 == "" || a2 == "" {
-		return "", "", false
+		a1, ok1 := nextAsset(curr, legs[p[0]].BaseAsset, legs[p[0]].QuoteAsset)
+		if !ok1 {
+			continue
+		}
+		a2, ok2 := nextAsset(a1, legs[p[1]].BaseAsset, legs[p[1]].QuoteAsset)
+		if !ok2 {
+			continue
+		}
+		a3, ok3 := nextAsset(a2, legs[p[2]].BaseAsset, legs[p[2]].QuoteAsset)
+		if !ok3 || a3 != "USDT" {
+			continue
+		}
+
+		if a1 == "" || a2 == "" || a1 == "USDT" || a2 == "USDT" {
+			continue
+		}
+
+		return a1, a2, p, true
 	}
-	return a1, a2, true
+	return "", "", [3]int{}, false
 }
 
 type triRow struct {
-	row     []string
-	s1, s2, s3 string
-	x, y    string // ориентация USDT->x->y->USDT
+	row   []string
+	x, y  string // ориентация USDT->x->y->USDT
 }
 
 func main() {
@@ -253,14 +265,12 @@ func main() {
 	defer in.Close()
 
 	cr := csv.NewReader(in)
-
 	header, err := cr.Read()
 	if err != nil {
 		log.Fatalf("ERR: read header: %v", err)
 	}
 
 	// key = sorted(X,Y) -> map[orientation]triRow
-	// orientation: "X->Y" or "Y->X" (строго по тому, что восстановили)
 	type orientMap map[string]triRow
 	groups := map[string]orientMap{}
 
@@ -290,18 +300,20 @@ func main() {
 			continue
 		}
 
-		x, y, ok := routeXY(r1, r2, r3)
-		if !ok {
-			continue
-		}
-		parsed++
-
-		// фильтр MARKET по 3 символам (в обе стороны торговля маркетом подразумевается самим наличием MARKET)
+		// MARKET/spot/trading фильтр на все 3 ноги
 		if !marketOk(r1) || !marketOk(r2) || !marketOk(r3) {
 			continue
 		}
 		eligible++
 
+		legs := [3]symbolInfo{r1, r2, r3}
+		x, y, _, ok := findUSDTcycle(legs)
+		if !ok {
+			continue
+		}
+		parsed++
+
+		// группировка по паре монет X/Y
 		a := []string{x, y}
 		sort.Strings(a)
 		key := a[0] + "|" + a[1]
@@ -310,9 +322,8 @@ func main() {
 		if groups[key] == nil {
 			groups[key] = orientMap{}
 		}
-		// сохраняем первую встреченную строку на эту ориентацию
 		if _, exists := groups[key][orient]; !exists {
-			groups[key][orient] = triRow{row: row, s1: s1, s2: s2, s3: s3, x: x, y: y}
+			groups[key][orient] = triRow{row: row, x: x, y: y}
 		}
 	}
 
@@ -333,23 +344,17 @@ func main() {
 	pairs := 0
 
 	for _, om := range groups {
-		// хотим именно обе ориентации
-		// (внутри om ключи типа "X->Y" и "Y->X")
 		if len(om) < 2 {
 			continue
 		}
 
-		// найдём две разные ориентации
+		// найдём разворот X<->Y
 		var rows []triRow
 		for _, tr := range om {
 			rows = append(rows, tr)
 		}
-		if len(rows) < 2 {
-			continue
-		}
 
-		// на всякий: убедимся что это ровно X<->Y разворот
-		// берём первые две уникальные
+		// выбираем пару tr1/tr2 где tr2 = (y->x)
 		tr1 := rows[0]
 		var tr2 *triRow
 		for i := 1; i < len(rows); i++ {
@@ -362,7 +367,6 @@ func main() {
 			continue
 		}
 
-		// пишем обе строки
 		if err := cw.Write(tr1.row); err != nil {
 			log.Fatalf("ERR: write csv: %v", err)
 		}
@@ -373,9 +377,7 @@ func main() {
 		pairs++
 	}
 
-	log.Printf("OK: read=%d parsedUSDT=%d marketEligible=%d paired=%d writtenRows=%d -> %s",
-		total, parsed, eligible, pairs, written, OutputCSV)
+	log.Printf("OK: read=%d marketEligible=%d parsedUSDT=%d paired=%d writtenRows=%d -> %s",
+		total, eligible, parsed, pairs, written, OutputCSV)
 }
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/cryptarb$ go run .
-2025/12/18 17:33:34.899074 OK: read=764 parsedUSDT=0 marketEligible=0 paired=0 writtenRows=0 -> triangles_usdt_routes_market.csv
