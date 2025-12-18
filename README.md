@@ -245,3 +245,5 @@ func main() {
 	log.Printf("OK: read=%d written=%d skippedNoSymbol=%d skippedNotEligible=%d -> %s",
 		read, written, skippedNoSymbol, skippedNotEligible, OutputCSV)
 }
+
+2025/12/18 18:30:28.226847 OK: read=764 written=0 skippedNoSymbol=0 skippedNotEligible=764 -> triangles_usdt_routes_market.csv
