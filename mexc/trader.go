@@ -107,11 +107,21 @@ func sampleKeys(m map[string]SymbolRules, n int) []string {
 }
 
 // SmartMarketBuyUSDT:
-// Покупка по USDT (quote), нормализует amount/qty по правилам symbol.
+// Backward-compatible wrapper around SmartMarketBuyQuote.
+// Покупка по USDT (quote), предпочитает quoteOrderQty.
 func (t *Trader) SmartMarketBuyUSDT(ctx context.Context, symbol string, usdt float64, ask float64) (string, error) {
+	return t.SmartMarketBuyQuote(ctx, symbol, usdt, ask)
+}
+
+// SmartMarketBuyQuote:
+// MARKET BUY с использованием quoteOrderQty (сумма в quote) — это то, что нужно для маленьких депозитов.
+// Логика:
+//  1. TRY: BUY через quoteOrderQty (округляем по quoteAmountPrecisionMarket если есть)
+//  2. FALLBACK: если биржа ругается на quoteOrderQty — BUY через quantity (нужен ask)
+func (t *Trader) SmartMarketBuyQuote(ctx context.Context, symbol string, quoteAmount float64, ask float64) (string, error) {
 	symbol = strings.TrimSpace(symbol)
-	if usdt <= 0 {
-		return "", fmt.Errorf("usdt<=0")
+	if quoteAmount <= 0 {
+		return "", fmt.Errorf("quoteAmount<=0")
 	}
 
 	r, ok, err := t.ensureRules(ctx, symbol)
@@ -122,60 +132,96 @@ func (t *Trader) SmartMarketBuyUSDT(ctx context.Context, symbol string, usdt flo
 		return "", fmt.Errorf("no rules for symbol=%s", symbol)
 	}
 	if !r.IsSpotTradingAllowed {
-		return "", fmt.Errorf("symbol not allowed for spot/api: %s", symbol)
+		return "", fmt.Errorf("symbol not allowed for spot MARKET/api: %s", symbol)
 	}
 
-	// Если биржа разрешает quoteOrderQty — используем amount (и режем precision)
-	if r.QuoteOrderQtyMarketAllowed {
-		dec := r.QuoteAssetPrecision
+	// 1) TRY quoteOrderQty
+	dec := r.QuoteMarketDecimals
+	if dec < 0 {
+		dec = r.QuoteAssetPrecision
 		if dec <= 0 {
 			dec = 2
 		}
-		amount := truncToDecimals(usdt, dec)
-		if amount <= 0 {
-			return "", fmt.Errorf("amount<=0 after trunc (dec=%d)", dec)
-		}
-		t.logf("BUY by QUOTE: symbol=%s usdt=%.8f amount=%.8f dec=%d", symbol, usdt, amount, dec)
-		return t.placeMarket(ctx, symbol, "BUY", 0, amount)
+	}
+	amount := truncToDecimals(quoteAmount, dec)
+	if amount <= 0 {
+		return "", fmt.Errorf("amount<=0 after trunc (dec=%d)", dec)
 	}
 
-	// Иначе — покупаем quantity по ask и режем step
+	t.logf("BUY TRY by QUOTE: symbol=%s quoteAmount=%.8f amount=%.8f dec=%d (qmStep=%q)",
+		symbol, quoteAmount, amount, dec, r.QuoteMarketStepStr)
+
+	id, err := t.placeMarket(ctx, symbol, "BUY", 0, amount)
+	if err == nil {
+		return id, nil
+	}
+
+	// 2) FALLBACK to qty if quoteOrderQty not supported / rejected as param
 	if ask <= 0 {
-		return "", fmt.Errorf("ask<=0 for %s", symbol)
+		return "", err
+	}
+	if !isQuoteOrderQtyParamError(err) {
+		// если ошибка не похожа на "quoteOrderQty не поддерживается" — не делаем второй ордер автоматически
+		return "", err
 	}
 
-	qtyRaw := usdt / ask
+	qtyRaw := quoteAmount / ask
 	qty := qtyRaw
 	if r.BaseStep > 0 {
 		qty = floorToStep(qtyRaw, r.BaseStep)
 	} else if r.QtyDecimals >= 0 {
 		qty = truncToDecimals(qtyRaw, r.QtyDecimals)
 	}
-
-	// ВАЖНО: сначала проверим qty<=0 (после floor может стать 0)
 	if qty <= 0 {
-		needUSDT := 0.0
+		needQuote := 0.0
 		if r.MinQty > 0 {
-			needUSDT = r.MinQty * ask
+			needQuote = r.MinQty * ask
 		}
 		return "", fmt.Errorf(
-			"qty<=0 after normalize (raw=%.12f norm=%.12f step=%.12f minQty=%.12f ask=%.10f tradeUSDT=%.6f needUSDT>=%.6f)",
-			qtyRaw, qty, r.BaseStep, r.MinQty, ask, usdt, needUSDT,
+			"quoteOrderQty rejected, and qty<=0 after normalize (raw=%.12f norm=%.12f step=%.12f minQty=%.12f ask=%.10f tradeQuote=%.6f needQuote>=%.6f): firstErr=%v",
+			qtyRaw, qty, r.BaseStep, r.MinQty, ask, quoteAmount, needQuote, err,
 		)
 	}
-
 	if r.MinQty > 0 && qty < r.MinQty {
-		needUSDT := r.MinQty * ask
+		needQuote := r.MinQty * ask
 		return "", fmt.Errorf(
-			"qty<minQty (raw=%.12f norm=%.12f minQty=%.12f step=%.12f ask=%.10f tradeUSDT=%.6f needUSDT>=%.6f)",
-			qtyRaw, qty, r.MinQty, r.BaseStep, ask, usdt, needUSDT,
+			"quoteOrderQty rejected, and qty<minQty (raw=%.12f norm=%.12f minQty=%.12f step=%.12f ask=%.10f tradeQuote=%.6f needQuote>=%.6f): firstErr=%v",
+			qtyRaw, qty, r.MinQty, r.BaseStep, ask, quoteAmount, needQuote, err,
 		)
 	}
 
-	t.logf("BUY by QTY: symbol=%s usdt=%.8f ask=%.10f qtyRaw=%.12f qty=%.12f step=%.12f minQty=%.12f",
-		symbol, usdt, ask, qtyRaw, qty, r.BaseStep, r.MinQty)
+	t.logf("BUY FALLBACK by QTY: symbol=%s quote=%.8f ask=%.10f qtyRaw=%.12f qty=%.12f step=%.12f minQty=%.12f firstErr=%v",
+		symbol, quoteAmount, ask, qtyRaw, qty, r.BaseStep, r.MinQty, err)
 
 	return t.placeMarket(ctx, symbol, "BUY", qty, 0)
+}
+
+func isQuoteOrderQtyParamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	// Варианты сообщений от MEXC бывают разные, поэтому матчим грубо.
+	if !strings.Contains(s, "quoteorderqty") {
+		return false
+	}
+	// типичные формулировки
+	badHints := []string{
+		"not support",
+		"not supported",
+		"illegal",
+		"invalid",
+		"parameter",
+		"mandatory",
+		"required",
+	}
+	for _, h := range badHints {
+		if strings.Contains(s, h) {
+			return true
+		}
+	}
+	// если уже содержит quoteOrderQty — почти наверняка параметрная проблема
+	return true
 }
 
 // SmartMarketSellQty:
@@ -376,64 +422,68 @@ func (t *Trader) fetchRulesForSymbol(ctx context.Context, symbol string) (Symbol
 		return SymbolRules{}, fmt.Errorf("exchangeInfo: invalid symbol format for %s", symbol)
 	}
 
-	r := SymbolRules{}
+	r := SymbolRules{Symbol: symbol}
 
-	// spot/api разрешение
-	if v, ok := m["isSpotTradingAllowed"].(bool); ok {
-		r.IsSpotTradingAllowed = v
-	}
-	if r.IsSpotTradingAllowed == false {
-		if ots, ok := m["orderTypes"].([]any); ok {
-			hasMarket := false
-			for _, it := range ots {
-				if s, ok := it.(string); ok && strings.ToUpper(s) == "MARKET" {
-					hasMarket = true
-					break
-				}
-			}
-			if hasMarket {
-				r.IsSpotTradingAllowed = true
+	// ---- Eligibility (как в rules.go) ----
+	status, _ := m["status"].(string)
+	st, _ := m["st"].(bool)
+	var perms []string
+	if arr, ok := m["permissions"].([]any); ok {
+		for _, it := range arr {
+			if s, ok := it.(string); ok {
+				perms = append(perms, s)
 			}
 		}
 	}
+	var orderTypes []string
+	if arr, ok := m["orderTypes"].([]any); ok {
+		for _, it := range arr {
+			if s, ok := it.(string); ok {
+				orderTypes = append(orderTypes, s)
+			}
+		}
+	}
+	r.IsSpotTradingAllowed = (strings.TrimSpace(status) == "1") && !st && hasStr(perms, "SPOT") && hasStr(orderTypes, "MARKET")
 
-	// precision
+	// ---- Steps / decimals ----
+	if s, ok := m["baseSizePrecision"].(string); ok {
+		r.BaseStepStr = s
+		r.BaseStep = parseStep(s)
+		r.QtyDecimals = decimalsFromStepStr(s)
+	}
+
+	// quote precisions
 	if v, ok := asInt(m["quoteAssetPrecision"]); ok {
 		r.QuoteAssetPrecision = v
 	}
-
-	// filters
-	if flt, ok := m["filters"].([]any); ok {
-		for _, it := range flt {
-			fm, ok := it.(map[string]any)
-			if !ok {
-				continue
-			}
-			ft, _ := fm["filterType"].(string)
-			ft = strings.ToUpper(strings.TrimSpace(ft))
-
-			switch ft {
-			case "LOT_SIZE", "MARKET_LOT_SIZE":
-				if s, ok := fm["stepSize"].(string); ok {
-					if v, err := strconv.ParseFloat(s, 64); err == nil {
-						r.BaseStep = v
-					}
-				}
-				if s, ok := fm["minQty"].(string); ok {
-					if v, err := strconv.ParseFloat(s, 64); err == nil {
-						r.MinQty = v
-					}
-				}
-			}
-		}
+	if v, ok := asInt(m["quotePrecision"]); ok {
+		r.QuotePrecision = v
+	}
+	if s, ok := m["quoteAmountPrecisionMarket"].(string); ok {
+		r.QuoteMarketStepStr = strings.TrimSpace(s)
+		r.QuoteMarketStep = parseStep(r.QuoteMarketStepStr)
+		r.QuoteMarketDecimals = decimalsFromStepStr(r.QuoteMarketStepStr)
+	}
+	if r.QuoteMarketStepStr == "" {
+		r.QuoteMarketDecimals = -1
 	}
 
+	// минималки (если есть в корне)
+	if s, ok := m["minQty"].(string); ok {
+		r.MinQty = parseFloatSafe(s)
+	}
+	if s, ok := m["minNotional"].(string); ok {
+		r.MinNotional = parseFloatSafe(s)
+	}
+	if s, ok := m["quoteAmountPrecision"].(string); ok {
+		r.MinOrderAmount = parseFloatSafe(s)
+	}
 	if v, ok := m["quoteOrderQtyMarketAllowed"].(bool); ok {
 		r.QuoteOrderQtyMarketAllowed = v
 	}
 
-	t.logf("rules loaded: symbol=%s spotAllowed=%v quoteOrderQtyMarketAllowed=%v quotePrec=%d step=%.12f minQty=%.12f",
-		symbol, r.IsSpotTradingAllowed, r.QuoteOrderQtyMarketAllowed, r.QuoteAssetPrecision, r.BaseStep, r.MinQty)
+	t.logf("rules loaded: symbol=%s eligible=%v status=%q st=%v perms=%v orderTypes=%v baseStep=%q qmStep=%q",
+		symbol, r.IsSpotTradingAllowed, status, st, perms, orderTypes, r.BaseStepStr, r.QuoteMarketStepStr)
 
 	return r, nil
 }
