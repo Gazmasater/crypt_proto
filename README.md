@@ -120,3 +120,11 @@ USDC,USDT,USDCUSDT,0,0.000000000000,0.000000000000,1,1,0,2,4,XMR,USDT,XMRUSDT,0,
 
 
 
+2025/12/18 02:43:16.261048 input=triangles_markets.csv output=triangles_markets_enriched.csv TRADE_AMOUNT_USDT=1000.000000 FEE_PCT=0.040000 SELL_SAFETY=0.995000
+2025/12/18 02:43:16.261304 triangles rows: 415
+2025/12/18 02:43:16.501084 rules loaded: 2538 symbols
+2025/12/18 02:43:16.534821 bookTicker loaded: 2533 symbols
+2025/12/18 02:43:16.536706 DONE: wrote ok triangles: 44 (skipped=371)
+Готово, файл: triangles_markets_enriched.csv
+
+
