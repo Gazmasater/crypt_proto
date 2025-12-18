@@ -394,3 +394,7 @@ func fatalf(format string, args ...any) {
 	os.Exit(1)
 }
 
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/cryptarb$ go run .
+OK: triangles=467 -> triangles_markets.csv
+
