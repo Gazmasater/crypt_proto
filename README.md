@@ -71,354 +71,511 @@ go run ./cmd/triangles_enrich_mexc
 
 
 
-package domain
+package arb
 
 import (
-	"bufio"
-	"encoding/csv"
+	"context"
 	"fmt"
-	"log"
-	"os"
-	"strconv"
+	"io"
+	"math"
 	"strings"
+	"sync"
+	"time"
+
+	"crypt_proto/domain"
 )
 
-const BaseAsset = "USDT"
-
-// ==============================
-// Базовые структуры
-// ==============================
-
-type Leg struct {
-	From   string
-	To     string
-	Symbol string
-	Dir    int8 // +1 SELL, -1 BUY
-
-	// Опционально (если есть в CSV)
-	QtyDP      int // знаков qty
-	QuoteDPMkt int // знаков quoteQty для MARKET
+type SpotTrader interface {
+	SmartMarketBuyUSDT(ctx context.Context, symbol string, usdt float64, ask float64) (string, error)
+	SmartMarketSellQty(ctx context.Context, symbol string, qty float64) (string, error)
+	GetBalance(ctx context.Context, asset string) (float64, error)
 }
 
-type Triangle struct {
-	Legs [3]Leg
-	Name string // USDT→A→B→USDT
+type execReq struct {
+	ctx       context.Context
+	t         domain.Triangle
+	quotes    map[string]domain.Quote // snapshot только нужных символов
+	startUSDT float64
+	triName   string
 }
 
-type Quote struct {
-	Bid, Ask, BidQty, AskQty float64
+type RealExecutor struct {
+	trader SpotTrader
+	out    io.Writer
+
+	StartUSDT  float64
+	SellSafety float64
+
+	// cooldown по треугольнику (по имени)
+	Cooldown time.Duration
+
+	mu       sync.Mutex
+	lastExec map[string]time.Time
+
+	// Очередь (строго последовательное исполнение)
+	queue chan execReq
+	wg    sync.WaitGroup
+
+	// STOP logic
+	StopAfterOne bool // остановить программу после первого треугольника (успех или ошибка)
+	stopOnce     sync.Once
+	onStop       func()
 }
 
-type Event struct {
-	Symbol                   string
-	Bid, Ask, BidQty, AskQty float64
+func NewRealExecutor(tr SpotTrader, out io.Writer, startUSDT float64) *RealExecutor {
+	e := &RealExecutor{
+		trader:     tr,
+		out:        out,
+		StartUSDT:  startUSDT,
+		SellSafety: 0.995,
+		Cooldown:   500 * time.Millisecond,
+		lastExec:   make(map[string]time.Time),
+
+		// буфер можно увеличить, но лучше небольшой, чтобы не копить “устаревшие” сделки
+		queue: make(chan execReq, 16),
+	}
+
+	// worker: исполняет строго по одному
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		for req := range e.queue {
+			if err := e.executeOnce(req); err != nil {
+				// ВАЖНО: логируем ошибки исполнения здесь тоже, чтобы не потерять их
+				e.logf("  [REAL EXEC] EXEC ERROR: triangle=%s err=%v", req.triName, err)
+			}
+		}
+	}()
+
+	return e
 }
 
-// ==============================
-// Загрузка из CSV (routes формат)
-// ==============================
+func (e *RealExecutor) Name() string { return "REAL" }
 
-// LoadTriangles читает triangles_usdt_routes_market.csv (и совместимые),
-// где есть колонки start/mid1/mid2/end и leg{1..3}_*.
-// ВАЖНО: пока используем BUY только за USDT -> фильтруем треугольники,
-// где любая BUY-нога имеет From != USDT.
-func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	defer f.Close()
+type flusher interface{ Flush() error }
 
-	r := csv.NewReader(bufio.NewReader(f))
-	r.TrimLeadingSpace = true
-	r.Comma = ','
+func (e *RealExecutor) logf(format string, args ...any) {
+	fmt.Fprintf(e.out, format+"\n", args...)
+	if f, ok := e.out.(flusher); ok {
+		_ = f.Flush()
+	}
+}
 
-	// header
-	header, err := r.Read()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("read header: %w", err)
+func (e *RealExecutor) step(name string) func() {
+	start := time.Now()
+	e.logf("    [REAL EXEC] >>> %s", name)
+	return func() {
+		e.logf("    [REAL EXEC] <<< %s (%s)", name, time.Since(start).Truncate(time.Millisecond))
 	}
-	h := make(map[string]int, len(header))
-	for i, col := range header {
-		h[strings.ToLower(strings.TrimSpace(col))] = i
+}
+
+// SetStopFunc задаёт функцию остановки (обычно cancel() из main)
+func (e *RealExecutor) SetStopFunc(fn func()) {
+	e.onStop = fn
+}
+
+func (e *RealExecutor) requestStop(reason string) {
+	if !e.StopAfterOne || e.onStop == nil {
+		return
+	}
+	e.stopOnce.Do(func() {
+		e.logf("  [REAL EXEC] STOP_AFTER_ONE: %s", reason)
+		e.onStop()
+	})
+}
+
+// Execute теперь НЕ исполняет сразу.
+// Он кладёт треугольник в очередь со снапшотом котировок и возвращает.
+func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes map[string]domain.Quote, startUSDT float64) error {
+	triName := strings.TrimSpace(t.Name)
+	if triName == "" {
+		triName = "triangle"
 	}
 
-	need := []string{
-		"start", "mid1", "mid2", "end",
-		"leg1_symbol", "leg1_action", "leg1_from", "leg1_to",
-		"leg2_symbol", "leg2_action", "leg2_from", "leg2_to",
-		"leg3_symbol", "leg3_action", "leg3_from", "leg3_to",
+	if startUSDT <= 0 {
+		startUSDT = e.StartUSDT
 	}
-	for _, k := range need {
-		if _, ok := h[k]; !ok {
-			return nil, nil, nil, fmt.Errorf("CSV missing required column: %s", k)
+	if startUSDT <= 0 {
+		return fmt.Errorf("startUSDT<=0 (startUSDT=%.6f, StartUSDT=%.6f)", startUSDT, e.StartUSDT)
+	}
+
+	// 3 символа из ног
+	if len(t.Legs) < 3 {
+		return fmt.Errorf("triangle %s has <3 legs", triName)
+	}
+	sym1 := strings.TrimSpace(t.Legs[0].Symbol)
+	sym2 := strings.TrimSpace(t.Legs[1].Symbol)
+	sym3 := strings.TrimSpace(t.Legs[2].Symbol)
+	if sym1 == "" || sym2 == "" || sym3 == "" {
+		return fmt.Errorf("triangle %s has empty leg symbols: [%q, %q, %q]", triName, sym1, sym2, sym3)
+	}
+
+	// СНАПШОТ котировок только по нужным символам
+	snap := make(map[string]domain.Quote, 3)
+	if q, ok := quotes[sym1]; ok {
+		snap[sym1] = q
+	}
+	if q, ok := quotes[sym2]; ok {
+		snap[sym2] = q
+	}
+	if q, ok := quotes[sym3]; ok {
+		snap[sym3] = q
+	}
+
+	req := execReq{
+		ctx:       ctx,
+		t:         t,
+		quotes:    snap,
+		startUSDT: startUSDT,
+		triName:   triName,
+	}
+
+	select {
+	case e.queue <- req:
+		e.logf("  [REAL EXEC] QUEUED: start=%.6f USDT triangle=%s", startUSDT, triName)
+		return nil
+	default:
+		e.logf("  [REAL EXEC] SKIP: queue full (triangle=%s)", triName)
+		return nil
+	}
+}
+
+func (e *RealExecutor) executeOnce(req execReq) (retErr error) {
+	now := time.Now()
+
+	// cooldown по имени треугольника
+	e.mu.Lock()
+	if last, ok := e.lastExec[req.triName]; ok && e.Cooldown > 0 && now.Sub(last) < e.Cooldown {
+		left := (e.Cooldown - now.Sub(last)).Truncate(time.Millisecond)
+		e.mu.Unlock()
+		e.logf("  [REAL EXEC] SKIP cooldown triangle=%s left=%s", req.triName, left)
+		return nil
+	}
+	e.mu.Unlock()
+
+	triName := req.triName
+	t := req.t
+	quotes := req.quotes
+	startUSDT := req.startUSDT
+
+	// Обязательная остановка после первого треугольника:
+	// - при успехе: остановить
+	// - при любой ошибке: тоже остановить
+	defer func() {
+		if retErr != nil {
+			e.logf("  [REAL EXEC] TRIANGLE FAILED: %s err=%v", triName, retErr)
+			e.requestStop(fmt.Sprintf("triangle=%s failed: %v", triName, retErr))
+			return
+		}
+		e.logf("  [REAL EXEC] TRIANGLE SUCCESS: %s", triName)
+		e.requestStop(fmt.Sprintf("triangle=%s done (stop after one)", triName))
+	}()
+
+	// 3 символа из ног
+	sym1 := strings.TrimSpace(t.Legs[0].Symbol)
+	sym2 := strings.TrimSpace(t.Legs[1].Symbol)
+	sym3 := strings.TrimSpace(t.Legs[2].Symbol)
+
+	e.logf("  [REAL EXEC] start=%.6f USDT triangle=%s", startUSDT, triName)
+	e.logf("    [REAL EXEC] legs: sym1=%s sym2=%s sym3=%s", sym1, sym2, sym3)
+
+	// base/quote для логов
+	base1, quote1 := parseBaseQuote(sym1)
+	base2, quote2 := parseBaseQuote(sym2)
+	base3, quote3 := parseBaseQuote(sym3)
+	e.logf("    [REAL EXEC] parsed: sym1=%s (%s/%s) sym2=%s (%s/%s) sym3=%s (%s/%s)",
+		sym1, base1, quote1,
+		sym2, base2, quote2,
+		sym3, base3, quote3,
+	)
+
+	// ===== balances before =====
+	var usdt0 float64
+	{
+		done := e.step("GetBalance USDT (before)")
+		v, err := e.trader.GetBalance(req.ctx, "USDT")
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] BAL ERR: get USDT before: %v", err)
+			return err
+		}
+		usdt0 = v
+		e.logf("    [REAL EXEC] BAL before: USDT=%.12f", usdt0)
+		if usdt0+1e-9 < startUSDT {
+			return fmt.Errorf("insufficient USDT: have=%.12f need=%.12f", usdt0, startUSDT)
 		}
 	}
 
-	// optional dp columns
-	opt := func(name string) int {
-		if i, ok := h[name]; ok {
-			return i
-		}
-		return -1
+	// ===== LEG 1: BUY sym1 by USDT =====
+	q1, ok := quotes[sym1]
+	if !ok {
+		return fmt.Errorf("no quote snapshot for sym1=%s", sym1)
 	}
-	iL1Qty := opt("leg1_qty_dp")
-	iL2Qty := opt("leg2_qty_dp")
-	iL3Qty := opt("leg3_qty_dp")
-	iL1Qm := opt("leg1_quote_dp_market")
-	iL2Qm := opt("leg2_quote_dp_market")
-	iL3Qm := opt("leg3_quote_dp_market")
 
-	var tris []Triangle
-	symbolSet := make(map[string]struct{})
+	var aBefore1 float64
+	{
+		done := e.step(fmt.Sprintf("GetBalance %s (before leg1)", base1))
+		v, err := e.trader.GetBalance(req.ctx, base1)
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] BAL ERR: get %s before leg1: %v", base1, err)
+			return err
+		}
+		aBefore1 = v
+	}
 
-	rowNum := 1 // header already read
+	e.logf("    [REAL EXEC] leg1 PRE: BUY %s by %s=%.6f ask=%.10f bid=%.10f | %s before=%.12f",
+		sym1, quote1, startUSDT, q1.Ask, q1.Bid, base1, aBefore1)
 
-	// stats
-	var total, kept int
-	var droppedBadLeg int
-	var droppedNotUsdtCycle int
-	var droppedBuyNotUSDT int
+	var ord1 string
+	{
+		orderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		done := e.step("SmartMarketBuyUSDT leg1")
+		id, err := e.trader.SmartMarketBuyUSDT(orderCtx, sym1, startUSDT, q1.Ask)
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] leg1 PLACE ERR: %v", err)
+			return err
+		}
+		ord1 = id
+	}
+	e.logf("    [REAL EXEC] leg1 PLACE OK: orderId=%s", ord1)
+
+	var aAfter1 float64
+	{
+		done := e.step(fmt.Sprintf("waitBalanceChange %s (after leg1)", base1))
+		v, err := e.waitBalanceChange(req.ctx, base1, aBefore1, 3*time.Second, 150*time.Millisecond)
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] leg1 WAIT BAL ERR (%s): %v", base1, err)
+			return err
+		}
+		aAfter1 = v
+	}
+	dA := aAfter1 - aBefore1
+	e.logf("    [REAL EXEC] leg1 BAL after: %s=%.12f delta=%.12f", base1, aAfter1, dA)
+	if dA <= 0 {
+		return fmt.Errorf("leg1: %s did not increase (before=%.12f after=%.12f)", base1, aBefore1, aAfter1)
+	}
+
+	// ===== LEG 2: SELL sym2 =====
+	q2, ok := quotes[sym2]
+	if !ok {
+		return fmt.Errorf("no quote snapshot for sym2=%s", sym2)
+	}
+
+	var base2Bal float64
+	{
+		done := e.step(fmt.Sprintf("GetBalance %s (before leg2)", base2))
+		v, err := e.trader.GetBalance(req.ctx, base2)
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] BAL ERR: get %s before leg2: %v", base2, err)
+			return err
+		}
+		base2Bal = v
+	}
+
+	sellA := base2Bal * e.SellSafety
+	if sellA <= 0 {
+		return fmt.Errorf("leg2: sell qty <=0 (%s=%.12f safety=%.6f)", base2, base2Bal, e.SellSafety)
+	}
+
+	var bBefore2 float64
+	{
+		done := e.step(fmt.Sprintf("GetBalance %s (before leg2)", quote2))
+		v, err := e.trader.GetBalance(req.ctx, quote2)
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] BAL ERR: get %s before leg2: %v", quote2, err)
+			return err
+		}
+		bBefore2 = v
+	}
+
+	e.logf("    [REAL EXEC] leg2 PRE: SELL %s qty=%s=%.12f (safety x%.6f) bid=%.10f ask=%.10f | %s before=%.12f %s before=%.12f",
+		sym2, base2, sellA, e.SellSafety, q2.Bid, q2.Ask,
+		base2, base2Bal,
+		quote2, bBefore2,
+	)
+
+	var ord2 string
+	{
+		orderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		done := e.step("SmartMarketSellQty leg2")
+		id, err := e.trader.SmartMarketSellQty(orderCtx, sym2, sellA)
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] leg2 PLACE ERR: %v", err)
+			return err
+		}
+		ord2 = id
+	}
+	e.logf("    [REAL EXEC] leg2 PLACE OK: orderId=%s", ord2)
+
+	var bAfter2 float64
+	{
+		done := e.step(fmt.Sprintf("waitBalanceChange %s (after leg2)", quote2))
+		v, err := e.waitBalanceChange(req.ctx, quote2, bBefore2, 3*time.Second, 150*time.Millisecond)
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] leg2 WAIT BAL ERR (%s): %v", quote2, err)
+			return err
+		}
+		bAfter2 = v
+	}
+	dB := bAfter2 - bBefore2
+	e.logf("    [REAL EXEC] leg2 BAL after: %s=%.12f delta=%.12f", quote2, bAfter2, dB)
+	if dB <= 0 {
+		return fmt.Errorf("leg2: %s did not increase (before=%.12f after=%.12f)", quote2, bBefore2, bAfter2)
+	}
+
+	// ===== LEG 3: SELL sym3 (base3 -> USDT) =====
+	q3, ok := quotes[sym3]
+	if !ok {
+		return fmt.Errorf("no quote snapshot for sym3=%s", sym3)
+	}
+
+	var base3Bal float64
+	{
+		done := e.step(fmt.Sprintf("GetBalance %s (before leg3)", base3))
+		v, err := e.trader.GetBalance(req.ctx, base3)
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] BAL ERR: get %s before leg3: %v", base3, err)
+			return err
+		}
+		base3Bal = v
+	}
+
+	sellB := base3Bal * e.SellSafety
+	if sellB <= 0 {
+		return fmt.Errorf("leg3: sell qty <=0 (%s=%.12f safety=%.6f)", base3, base3Bal, e.SellSafety)
+	}
+
+	var usdtBefore3 float64
+	{
+		done := e.step("GetBalance USDT (before leg3)")
+		v, err := e.trader.GetBalance(req.ctx, "USDT")
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] BAL ERR: get USDT before leg3: %v", err)
+			return err
+		}
+		usdtBefore3 = v
+	}
+
+	e.logf("    [REAL EXEC] leg3 PRE: SELL %s qty=%s=%.12f (safety x%.6f) bid=%.10f ask=%.10f | %s before=%.12f USDT before=%.12f",
+		sym3, base3, sellB, e.SellSafety, q3.Bid, q3.Ask,
+		base3, base3Bal, usdtBefore3)
+
+	var ord3 string
+	{
+		orderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		done := e.step("SmartMarketSellQty leg3")
+		id, err := e.trader.SmartMarketSellQty(orderCtx, sym3, sellB)
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] leg3 PLACE ERR: %v", err)
+			return err
+		}
+		ord3 = id
+	}
+	e.logf("    [REAL EXEC] leg3 PLACE OK: orderId=%s", ord3)
+
+	var usdtAfter float64
+	{
+		done := e.step("waitBalanceChange USDT (after leg3)")
+		v, err := e.waitBalanceChange(req.ctx, "USDT", usdtBefore3, 3*time.Second, 150*time.Millisecond)
+		done()
+		if err != nil {
+			e.logf("    [REAL EXEC] leg3 WAIT BAL ERR (USDT): %v", err)
+			return err
+		}
+		usdtAfter = v
+	}
+
+	dUSDT3 := usdtAfter - usdtBefore3
+	dUSDTTotal := usdtAfter - usdt0
+
+	e.logf("    [REAL EXEC] leg3 BAL after: USDT=%.12f delta=%.12f", usdtAfter, dUSDT3)
+	e.logf("    [REAL EXEC] DONE: USDT start=%.12f end=%.12f pnl(total)=%.12f (%.4f%%)",
+		usdt0, usdtAfter, dUSDTTotal, pct(dUSDTTotal, startUSDT))
+
+	e.mu.Lock()
+	e.lastExec[triName] = time.Now()
+	e.mu.Unlock()
+
+	return nil
+}
+
+// waitBalanceChange ждёт, пока баланс станет отличаться от baseline.
+func (e *RealExecutor) waitBalanceChange(ctx context.Context, asset string, baseline float64, timeout, interval time.Duration) (float64, error) {
+	const tol = 1e-12
+
+	deadline := time.NewTimer(timeout)
+	tick := time.NewTicker(interval)
+	defer deadline.Stop()
+	defer tick.Stop()
+
+	cur, err := e.trader.GetBalance(ctx, asset)
+	if err == nil && math.Abs(cur-baseline) > tol {
+		return cur, nil
+	}
 
 	for {
-		rec, err := r.Read()
-		if err != nil {
-			break
-		}
-		rowNum++
-		total++
-
-		get := func(key string) string {
-			idx := h[key]
-			if idx < 0 || idx >= len(rec) {
-				return ""
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-deadline.C:
+			last, err := e.trader.GetBalance(ctx, asset)
+			if err != nil {
+				return 0, fmt.Errorf("timeout, last balance read error for %s: %v", asset, err)
 			}
-			return strings.TrimSpace(rec[idx])
-		}
-
-		start := strings.ToUpper(get("start"))
-		mid1 := strings.ToUpper(get("mid1"))
-		mid2 := strings.ToUpper(get("mid2"))
-		end := strings.ToUpper(get("end"))
-
-		if start == "" || mid1 == "" || mid2 == "" || end == "" {
-			continue
-		}
-		// строго USDT→...→USDT
-		if start != BaseAsset || end != BaseAsset {
-			droppedNotUsdtCycle++
-			continue
-		}
-
-		legs := [3]Leg{
-			parseLeg(rec, h, 1, iL1Qty, iL1Qm),
-			parseLeg(rec, h, 2, iL2Qty, iL2Qm),
-			parseLeg(rec, h, 3, iL3Qty, iL3Qm),
-		}
-
-		ok := true
-		for i := 0; i < 3; i++ {
-			if legs[i].Symbol == "" || legs[i].From == "" || legs[i].To == "" || legs[i].Dir == 0 {
-				ok = false
-				break
+			return 0, fmt.Errorf("timeout waiting %s balance change: baseline=%.12f last=%.12f", asset, baseline, last)
+		case <-tick.C:
+			cur, err := e.trader.GetBalance(ctx, asset)
+			if err != nil {
+				continue
+			}
+			if math.Abs(cur-baseline) > tol {
+				return cur, nil
 			}
 		}
-		if !ok {
-			droppedBadLeg++
-			continue
-		}
-
-		// связность по активам
-		if legs[0].From != start || legs[0].To != mid1 ||
-			legs[1].From != mid1 || legs[1].To != mid2 ||
-			legs[2].From != mid2 || legs[2].To != end {
-			droppedBadLeg++
-			continue
-		}
-
-		// КРИТИЧНО: пока BUY только за USDT
-		buyOk := true
-		for i := 0; i < 3; i++ {
-			if legs[i].Dir < 0 && legs[i].From != BaseAsset {
-				buyOk = false
-				break
-			}
-		}
-		if !buyOk {
-			droppedBuyNotUSDT++
-			continue
-		}
-
-		name := fmt.Sprintf("%s→%s→%s→%s", start, mid1, mid2, end)
-		t := Triangle{Legs: legs, Name: name}
-		tris = append(tris, t)
-		kept++
-
-		for _, leg := range t.Legs {
-			symbolSet[leg.Symbol] = struct{}{}
-		}
 	}
-
-	symbols := make([]string, 0, len(symbolSet))
-	for s := range symbolSet {
-		symbols = append(symbols, s)
-	}
-
-	index := make(map[string][]int)
-	for i, t := range tris {
-		for _, leg := range t.Legs {
-			index[leg.Symbol] = append(index[leg.Symbol], i)
-		}
-	}
-
-	log.Printf("triangles loaded: total=%d kept=%d droppedNotUsdtCycle=%d droppedBadLeg=%d droppedBuyNotUSDT=%d file=%s",
-		total, kept, droppedNotUsdtCycle, droppedBadLeg, droppedBuyNotUSDT, path,
-	)
-	log.Printf("unique symbols: %d", len(symbols))
-	return tris, symbols, index, nil
 }
 
-func parseLeg(rec []string, h map[string]int, n int, idxQtyDP, idxQuoteDPMkt int) Leg {
-	idx := func(s string) int {
-		return h[strings.ToLower(fmt.Sprintf("leg%d_%s", n, s))]
-	}
-	get := func(i int) string {
-		if i < 0 || i >= len(rec) {
-			return ""
+// parseBaseQuote — простой парсер BASE/QUOTE по суффиксу.
+func parseBaseQuote(symbol string) (base, quote string) {
+	quotes := []string{"USDT", "USDC", "BTC", "ETH", "EUR", "TRY", "BRL", "RUB"}
+	for _, q := range quotes {
+		if strings.HasSuffix(symbol, q) && len(symbol) > len(q) {
+			return symbol[:len(symbol)-len(q)], q
 		}
-		return strings.TrimSpace(rec[i])
 	}
-
-	symbol := strings.ToUpper(get(idx("symbol")))
-	action := strings.ToUpper(get(idx("action")))
-	from := strings.ToUpper(get(idx("from")))
-	to := strings.ToUpper(get(idx("to")))
-
-	var dir int8
-	switch action {
-	case "BUY":
-		dir = -1
-	case "SELL":
-		dir = +1
-	default:
-		dir = 0
-	}
-
-	leg := Leg{
-		From:       from,
-		To:         to,
-		Symbol:     symbol,
-		Dir:        dir,
-		QtyDP:      -1,
-		QuoteDPMkt: -1,
-	}
-	if idxQtyDP >= 0 && idxQtyDP < len(rec) {
-		leg.QtyDP = parseIntSafe(get(idxQtyDP), -1)
-	}
-	if idxQuoteDPMkt >= 0 && idxQuoteDPMkt < len(rec) {
-		leg.QuoteDPMkt = parseIntSafe(get(idxQuoteDPMkt), -1)
-	}
-	return leg
+	return symbol, ""
 }
 
-func parseIntSafe(s string, def int) int {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return def
+func pct(delta, denom float64) float64 {
+	if denom == 0 {
+		return 0
 	}
-	v, err := strconv.Atoi(s)
-	if err != nil {
-		return def
-	}
-	return v
+	return (delta / denom) * 100
 }
 
-// ==============================
-// Расчёт доходности
-// ==============================
 
-func EvalTriangle(t Triangle, quotes map[string]Quote, fee float64) (float64, bool) {
-	amt := 1.0
-	for _, leg := range t.Legs {
-		q, ok := quotes[leg.Symbol]
-		if !ok || q.Bid <= 0 || q.Ask <= 0 {
-			return 0, false
-		}
-		if leg.Dir > 0 {
-			amt *= q.Bid
-		} else {
-			amt /= q.Ask
-		}
-		amt *= (1 - fee)
-		if amt <= 0 {
-			return 0, false
-		}
-	}
-	return amt - 1, true
-}
 
-// ==============================
-// Диагностика лимитов (Top-of-book)
-// ==============================
 
-type MaxStartInfo struct {
-	StartAsset    string
-	MaxStart      float64
-	BottleneckLeg int
-	LimitIn       [3]float64
-	KIn           [3]float64
-	MaxStartByLeg [3]float64
-}
+// main.go (фрагмент, там где создаёшь executor)
 
-func ComputeMaxStartTopOfBook(t Triangle, quotes map[string]Quote, fee float64) (MaxStartInfo, bool) {
-	var info MaxStartInfo
-	info.StartAsset = BaseAsset
-
-	kIn := 1.0
-	maxStart := 1e308
-	info.BottleneckLeg = -1
-
-	for i, leg := range t.Legs {
-		q, ok := quotes[leg.Symbol]
-		if !ok || q.Bid <= 0 || q.Ask <= 0 {
-			return MaxStartInfo{}, false
-		}
-		info.KIn[i] = kIn
-
-		var limitIn, ratio float64
-		if leg.Dir > 0 {
-			if q.BidQty <= 0 {
-				return MaxStartInfo{}, false
-			}
-			limitIn = q.BidQty
-			ratio = q.Bid
-		} else {
-			if q.AskQty <= 0 {
-				return MaxStartInfo{}, false
-			}
-			limitIn = q.AskQty * q.Ask
-			ratio = 1 / q.Ask
-		}
-		info.LimitIn[i] = limitIn
-		if kIn <= 0 {
-			return MaxStartInfo{}, false
-		}
-		maxByThis := limitIn / kIn
-		info.MaxStartByLeg[i] = maxByThis
-		if maxByThis < maxStart {
-			maxStart = maxByThis
-			info.BottleneckLeg = i
-		}
-		kIn *= ratio * (1 - fee)
-		if kIn <= 0 {
-			return MaxStartInfo{}, false
-		}
-	}
-
-	if info.BottleneckLeg < 0 || maxStart <= 0 || maxStart > 1e307 {
-		return MaxStartInfo{}, false
-	}
-	info.MaxStart = maxStart
-	return info, true
-}
-
+re := arb.NewRealExecutor(tr, arbOut, startUSDT)
+re.StopAfterOne = true
+re.SetStopFunc(cancel)
+consumer.Executor = re
+log.Printf("Executor: REAL (startUSDT=%.6f) STOP_AFTER_ONE=true", startUSDT)
