@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -19,7 +20,11 @@ type Leg struct {
 	From   string
 	To     string
 	Symbol string
-	Dir    int8
+	Dir    int8 // +1 SELL, -1 BUY
+
+	// Опционально (если есть в CSV)
+	QtyDP      int // знаков qty
+	QuoteDPMkt int // знаков quoteQty для MARKET
 }
 
 type Triangle struct {
@@ -36,87 +41,14 @@ type Event struct {
 	Bid, Ask, BidQty, AskQty float64
 }
 
-type Pair struct {
-	Base, Quote, Symbol string
-}
-
 // ==============================
-// Построение треугольников
+// Загрузка из CSV (routes формат)
 // ==============================
 
-func buildTriangleFromPairs(p1, p2, p3 Pair) (Triangle, bool) {
-	pairs := []Pair{p1, p2, p3}
-	set := map[string]struct{}{
-		p1.Base: {}, p1.Quote: {},
-		p2.Base: {}, p2.Quote: {},
-		p3.Base: {}, p3.Quote: {},
-	}
-	if len(set) != 3 {
-		return Triangle{}, false
-	}
-
-	// Берём все валюты
-	var assets []string
-	for k := range set {
-		assets = append(assets, k)
-	}
-
-	// если в тройке нет USDT — пропускаем
-	if _, ok := set[BaseAsset]; !ok {
-		return Triangle{}, false
-	}
-
-	// Две прочие валюты
-	var others []string
-	for _, a := range assets {
-		if a != BaseAsset {
-			others = append(others, a)
-		}
-	}
-	if len(others) != 2 {
-		return Triangle{}, false
-	}
-	A, B := others[0], others[1]
-
-	// Пробуем два направления: USDT→A→B→USDT и USDT→B→A→USDT
-	orders := [][]string{
-		{BaseAsset, A, B, BaseAsset},
-		{BaseAsset, B, A, BaseAsset},
-	}
-
-	for _, order := range orders {
-		var legs [3]Leg
-		okAll := true
-		for i := 0; i < 3; i++ {
-			from, to := order[i], order[i+1]
-			var found bool
-			for _, p := range pairs {
-				switch {
-				case p.Base == from && p.Quote == to:
-					legs[i] = Leg{From: from, To: to, Symbol: p.Symbol, Dir: +1}
-					found = true
-				case p.Base == to && p.Quote == from:
-					legs[i] = Leg{From: from, To: to, Symbol: p.Symbol, Dir: -1}
-					found = true
-				}
-			}
-			if !found {
-				okAll = false
-				break
-			}
-		}
-		if okAll {
-			name := fmt.Sprintf("%s→%s→%s→%s", order[0], order[1], order[2], order[3])
-			return Triangle{Legs: legs, Name: name}, true
-		}
-	}
-	return Triangle{}, false
-}
-
-// ==============================
-// Загрузка из CSV
-// ==============================
-
+// LoadTriangles читает triangles_usdt_routes_market.csv (и совместимые),
+// где есть колонки start/mid1/mid2/end и leg{1..3}_*.
+// ВАЖНО: пока используем BUY только за USDT -> фильтруем треугольники,
+// где любая BUY-нога имеет From != USDT.
 func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -128,35 +60,127 @@ func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) 
 	r.TrimLeadingSpace = true
 	r.Comma = ','
 
+	// header
+	header, err := r.Read()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read header: %w", err)
+	}
+	h := make(map[string]int, len(header))
+	for i, col := range header {
+		h[strings.ToLower(strings.TrimSpace(col))] = i
+	}
+
+	need := []string{
+		"start", "mid1", "mid2", "end",
+		"leg1_symbol", "leg1_action", "leg1_from", "leg1_to",
+		"leg2_symbol", "leg2_action", "leg2_from", "leg2_to",
+		"leg3_symbol", "leg3_action", "leg3_from", "leg3_to",
+	}
+	for _, k := range need {
+		if _, ok := h[k]; !ok {
+			return nil, nil, nil, fmt.Errorf("CSV missing required column: %s", k)
+		}
+	}
+
+	// optional dp columns
+	opt := func(name string) int {
+		if i, ok := h[name]; ok {
+			return i
+		}
+		return -1
+	}
+	iL1Qty := opt("leg1_qty_dp")
+	iL2Qty := opt("leg2_qty_dp")
+	iL3Qty := opt("leg3_qty_dp")
+	iL1Qm := opt("leg1_quote_dp_market")
+	iL2Qm := opt("leg2_quote_dp_market")
+	iL3Qm := opt("leg3_quote_dp_market")
+
 	var tris []Triangle
 	symbolSet := make(map[string]struct{})
+
+	rowNum := 1 // header already read
+
+	// stats
+	var total, kept int
+	var droppedBadLeg int
+	var droppedNotUsdtCycle int
+	var droppedBuyNotUSDT int
 
 	for {
 		rec, err := r.Read()
 		if err != nil {
 			break
 		}
-		var fields []string
-		for _, v := range rec {
-			v = strings.TrimSpace(v)
-			if v != "" {
-				fields = append(fields, v)
+		rowNum++
+		total++
+
+		get := func(key string) string {
+			idx := h[key]
+			if idx < 0 || idx >= len(rec) {
+				return ""
+			}
+			return strings.TrimSpace(rec[idx])
+		}
+
+		start := strings.ToUpper(get("start"))
+		mid1 := strings.ToUpper(get("mid1"))
+		mid2 := strings.ToUpper(get("mid2"))
+		end := strings.ToUpper(get("end"))
+
+		if start == "" || mid1 == "" || mid2 == "" || end == "" {
+			continue
+		}
+		// строго USDT→...→USDT
+		if start != BaseAsset || end != BaseAsset {
+			droppedNotUsdtCycle++
+			continue
+		}
+
+		legs := [3]Leg{
+			parseLeg(rec, h, 1, iL1Qty, iL1Qm),
+			parseLeg(rec, h, 2, iL2Qty, iL2Qm),
+			parseLeg(rec, h, 3, iL3Qty, iL3Qm),
+		}
+
+		ok := true
+		for i := 0; i < 3; i++ {
+			if legs[i].Symbol == "" || legs[i].From == "" || legs[i].To == "" || legs[i].Dir == 0 {
+				ok = false
+				break
 			}
 		}
-		if len(fields) != 6 || strings.HasPrefix(fields[0], "#") {
-			continue
-		}
-
-		p1 := Pair{Base: fields[0], Quote: fields[1], Symbol: fields[0] + fields[1]}
-		p2 := Pair{Base: fields[2], Quote: fields[3], Symbol: fields[2] + fields[3]}
-		p3 := Pair{Base: fields[4], Quote: fields[5], Symbol: fields[4] + fields[5]}
-
-		t, ok := buildTriangleFromPairs(p1, p2, p3)
 		if !ok {
+			droppedBadLeg++
 			continue
 		}
 
+		// связность по активам
+		if legs[0].From != start || legs[0].To != mid1 ||
+			legs[1].From != mid1 || legs[1].To != mid2 ||
+			legs[2].From != mid2 || legs[2].To != end {
+			droppedBadLeg++
+			continue
+		}
+
+		// КРИТИЧНО: пока BUY только за USDT
+		buyOk := true
+		for i := 0; i < 3; i++ {
+			if legs[i].Dir < 0 && legs[i].From != BaseAsset {
+				buyOk = false
+				break
+			}
+		}
+		if !buyOk {
+			droppedBuyNotUSDT++
+			continue
+		}
+
+		name := fmt.Sprintf("%s→%s→%s→%s", start, mid1, mid2, end)
+		t := Triangle{Legs: legs, Name: name}
 		tris = append(tris, t)
+		kept++
+
 		for _, leg := range t.Legs {
 			symbolSet[leg.Symbol] = struct{}{}
 		}
@@ -174,9 +198,66 @@ func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) 
 		}
 	}
 
-	log.Printf("треугольников (USDT→...→USDT): %d", len(tris))
-	log.Printf("уникальных символов: %d", len(symbols))
+	log.Printf("triangles loaded: total=%d kept=%d droppedNotUsdtCycle=%d droppedBadLeg=%d droppedBuyNotUSDT=%d file=%s",
+		total, kept, droppedNotUsdtCycle, droppedBadLeg, droppedBuyNotUSDT, path,
+	)
+	log.Printf("unique symbols: %d", len(symbols))
 	return tris, symbols, index, nil
+}
+
+func parseLeg(rec []string, h map[string]int, n int, idxQtyDP, idxQuoteDPMkt int) Leg {
+	idx := func(s string) int {
+		return h[strings.ToLower(fmt.Sprintf("leg%d_%s", n, s))]
+	}
+	get := func(i int) string {
+		if i < 0 || i >= len(rec) {
+			return ""
+		}
+		return strings.TrimSpace(rec[i])
+	}
+
+	symbol := strings.ToUpper(get(idx("symbol")))
+	action := strings.ToUpper(get(idx("action")))
+	from := strings.ToUpper(get(idx("from")))
+	to := strings.ToUpper(get(idx("to")))
+
+	var dir int8
+	switch action {
+	case "BUY":
+		dir = -1
+	case "SELL":
+		dir = +1
+	default:
+		dir = 0
+	}
+
+	leg := Leg{
+		From:       from,
+		To:         to,
+		Symbol:     symbol,
+		Dir:        dir,
+		QtyDP:      -1,
+		QuoteDPMkt: -1,
+	}
+	if idxQtyDP >= 0 && idxQtyDP < len(rec) {
+		leg.QtyDP = parseIntSafe(get(idxQtyDP), -1)
+	}
+	if idxQuoteDPMkt >= 0 && idxQuoteDPMkt < len(rec) {
+		leg.QuoteDPMkt = parseIntSafe(get(idxQuoteDPMkt), -1)
+	}
+	return leg
+}
+
+func parseIntSafe(s string, def int) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return v
 }
 
 // ==============================
@@ -204,7 +285,7 @@ func EvalTriangle(t Triangle, quotes map[string]Quote, fee float64) (float64, bo
 }
 
 // ==============================
-// Диагностика лимитов
+// Диагностика лимитов (Top-of-book)
 // ==============================
 
 type MaxStartInfo struct {

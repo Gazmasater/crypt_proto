@@ -74,26 +74,43 @@ func main() {
 	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStart, arbOut)
 	consumer.StartFraction = cfg.StartFraction
 
-	// Trading toggles (если в твоём Config этих полей нет — добавь их в config.go)
+	// Trading toggles
 	consumer.TradeEnabled = cfg.TradeEnabled
 	consumer.TradeAmountUSDT = cfg.TradeAmountUSDT
 	consumer.TradeCooldown = time.Duration(cfg.TradeCooldownMs) * time.Millisecond
+
+	log.Printf(
+		"TRADE: enabled=%v amountUSDT=%.6f cooldown=%s feePerLeg=%.6f minProfit=%.6f minStart=%.6f startFraction=%.4f exchange=%s debug=%v",
+		consumer.TradeEnabled,
+		consumer.TradeAmountUSDT,
+		consumer.TradeCooldown,
+		cfg.FeePerLeg,
+		cfg.MinProfit,
+		cfg.MinStart,
+		consumer.StartFraction,
+		cfg.Exchange,
+		cfg.Debug,
+	)
 
 	// Executor
 	if cfg.Exchange == "MEXC" && cfg.TradeEnabled && cfg.APIKey != "" && cfg.APISecret != "" {
 		tr := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
 
-		// startUSDT — фиксированная сумма на сделку (например 2)
+		// startUSDT — фиксированная сумма на сделку
 		startUSDT := cfg.TradeAmountUSDT
 		if startUSDT <= 0 {
-			startUSDT = 2.0
+			startUSDT = 35.0
 		}
 
-		consumer.Executor = arb.NewRealExecutor(tr, arbOut, startUSDT)
-		log.Printf("Executor: REAL (startUSDT=%.6f)", startUSDT)
+		re := arb.NewRealExecutor(tr, arbOut, startUSDT)
+		re.StopAfterOne = true
+		re.SetStopFunc(cancel)
+
+		consumer.Executor = re
+		log.Printf("Executor: REAL (startUSDT=%.6f) STOP_AFTER_ONE=true", startUSDT)
 	} else {
-		consumer.Executor = arb.NewNoopExecutor() // безопаснее, чем несуществующий DryRun
-		log.Printf("Executor: NOOP (trade disabled or missing keys)")
+		consumer.Executor = arb.NewNoopExecutor()
+		log.Printf("Executor: NOOP (trade disabled, non-MEXC exchange, or missing keys)")
 	}
 
 	// Start consumer
