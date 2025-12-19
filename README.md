@@ -71,181 +71,354 @@ go run ./cmd/triangles_enrich_mexc
 
 
 
-package main
+package domain
 
 import (
-	"context"
+	"bufio"
+	"encoding/csv"
+	"fmt"
 	"log"
-	"net/http"
-	"os/signal"
-	"sync"
-	"syscall"
-	"time"
-
-	"crypt_proto/arb"
-	"crypt_proto/config"
-	"crypt_proto/domain"
-	"crypt_proto/exchange"
-	"crypt_proto/kucoin"
-	"crypt_proto/mexc"
-
-	_ "net/http/pprof"
+	"os"
+	"strconv"
+	"strings"
 )
 
-func main() {
-	// pprof
-	go func() {
-		log.Println("pprof on http://localhost:6060/debug/pprof/")
-		_ = http.ListenAndServe("localhost:6060", nil)
-	}()
+const BaseAsset = "USDT"
 
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+// ==============================
+// Базовые структуры
+// ==============================
 
-	cfg := config.Load()
+type Leg struct {
+	From   string
+	To     string
+	Symbol string
+	Dir    int8 // +1 SELL, -1 BUY
 
-	// Context / signals
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	// Triangles
-	triangles, symbols, indexBySymbol, err := domain.LoadTriangles(cfg.TrianglesFile)
-	if err != nil {
-		log.Fatalf("load triangles: %v", err)
-	}
-	if len(triangles) == 0 {
-		log.Fatal("нет треугольников, нечего мониторить")
-	}
-	if len(symbols) == 0 {
-		log.Fatal("нет символов для подписки")
-	}
-	log.Printf("треугольников: %d", len(triangles))
-	log.Printf("символов для подписки: %d", len(symbols))
-
-	// Exchange feed
-	var feed exchange.MarketDataFeed
-	switch cfg.Exchange {
-	case "MEXC":
-		feed = mexc.NewFeed(cfg.Debug)
-	case "KUCOIN":
-		feed = kucoin.NewFeed(cfg.Debug)
-	default:
-		log.Fatalf("unknown EXCHANGE=%q (expected MEXC or KUCOIN)", cfg.Exchange)
-	}
-	log.Printf("Using exchange: %s", feed.Name())
-
-	// Log output
-	logFile, logBuf, arbOut := arb.OpenLogWriter("arbitrage.log")
-	defer logFile.Close()
-	defer logBuf.Flush()
-
-	// Events channel
-	events := make(chan domain.Event, 8192)
-
-	var wg sync.WaitGroup
-
-	// Consumer
-	consumer := arb.NewConsumer(cfg.FeePerLeg, cfg.MinProfit, cfg.MinStart, arbOut)
-	consumer.StartFraction = cfg.StartFraction
-
-	// Trading toggles
-	consumer.TradeEnabled = cfg.TradeEnabled
-	consumer.TradeAmountUSDT = cfg.TradeAmountUSDT
-	consumer.TradeCooldown = time.Duration(cfg.TradeCooldownMs) * time.Millisecond
-
-	log.Printf(
-		"TRADE: enabled=%v amountUSDT=%.6f cooldown=%s feePerLeg=%.6f minProfit=%.6f minStart=%.6f startFraction=%.4f exchange=%s debug=%v",
-		consumer.TradeEnabled,
-		consumer.TradeAmountUSDT,
-		consumer.TradeCooldown,
-		cfg.FeePerLeg,
-		cfg.MinProfit,
-		cfg.MinStart,
-		consumer.StartFraction,
-		cfg.Exchange,
-		cfg.Debug,
-	)
-
-	// Executor
-	if cfg.Exchange == "MEXC" && cfg.TradeEnabled && cfg.APIKey != "" && cfg.APISecret != "" {
-		tr := mexc.NewTrader(cfg.APIKey, cfg.APISecret, cfg.Debug)
-
-		// startUSDT — фиксированная сумма на сделку
-		startUSDT := cfg.TradeAmountUSDT
-		if startUSDT <= 0 {
-			startUSDT = 35.0
-		}
-
-		consumer.Executor = arb.NewRealExecutor(tr, arbOut, startUSDT)
-		log.Printf("Executor: REAL (startUSDT=%.6f) NOTE: BUY uses quoteQty; if triangle has BUY with quote!=USDT, extend SpotTrader with SmartMarketBuyQuote",
-			startUSDT,
-		)
-	} else {
-		consumer.Executor = arb.NewNoopExecutor()
-		log.Printf("Executor: NOOP (trade disabled, non-MEXC exchange, or missing keys)")
-	}
-
-	// Start consumer
-	consumer.Start(ctx, events, triangles, indexBySymbol, &wg)
-
-	// Start feed
-	feed.Start(ctx, &wg, symbols, cfg.BookInterval, events)
-
-	// Wait stop
-	<-ctx.Done()
-	log.Println("shutting down...")
-
-	// ВАЖНО: events не закрываем — WS-горутин(ы) могут ещё писать и словить panic
-	wg.Wait()
-	log.Println("bye")
+	// Опционально (если есть в CSV)
+	QtyDP      int // знаков qty
+	QuoteDPMkt int // знаков quoteQty для MARKET
 }
 
+type Triangle struct {
+	Legs [3]Leg
+	Name string // USDT→A→B→USDT
+}
 
+type Quote struct {
+	Bid, Ask, BidQty, AskQty float64
+}
 
+type Event struct {
+	Symbol                   string
+	Bid, Ask, BidQty, AskQty float64
+}
 
+// ==============================
+// Загрузка из CSV (routes формат)
+// ==============================
 
-# ======================
-# EXCHANGE
-# ======================
-EXCHANGE=MEXC
-TRIANGLES_FILE=triangles_usdt_routes_market.csv
-BOOK_INTERVAL=10ms
+// LoadTriangles читает triangles_usdt_routes_market.csv (и совместимые),
+// где есть колонки start/mid1/mid2/end и leg{1..3}_*.
+// ВАЖНО: пока используем BUY только за USDT -> фильтруем треугольники,
+// где любая BUY-нога имеет From != USDT.
+func LoadTriangles(path string) ([]Triangle, []string, map[string][]int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer f.Close()
 
-# ======================
-# ARBITRAGE LOGIC
-# ======================
-# комиссия одной ноги (%)
-# 0.04 = 0.04%
-FEE_PCT=0.04
+	r := csv.NewReader(bufio.NewReader(f))
+	r.TrimLeadingSpace = true
+	r.Comma = ','
 
-# минимальная прибыль треугольника (%)
-# Для 35 USDT лучше 1.5%, иначе округление/проскальзывание часто съедает профит
-MIN_PROFIT_PCT=1.5
+	// header
+	header, err := r.Read()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read header: %w", err)
+	}
+	h := make(map[string]int, len(header))
+	for i, col := range header {
+		h[strings.ToLower(strings.TrimSpace(col))] = i
+	}
 
-# минимальный старт (в USDT)
-MIN_START_USDT=35
+	need := []string{
+		"start", "mid1", "mid2", "end",
+		"leg1_symbol", "leg1_action", "leg1_from", "leg1_to",
+		"leg2_symbol", "leg2_action", "leg2_from", "leg2_to",
+		"leg3_symbol", "leg3_action", "leg3_from", "leg3_to",
+	}
+	for _, k := range need {
+		if _, ok := h[k]; !ok {
+			return nil, nil, nil, fmt.Errorf("CSV missing required column: %s", k)
+		}
+	}
 
-# доля от maxStart (1 = брать максимум)
-# На 35 USDT безопаснее меньше, чтобы не ловить проскальзывание
-START_FRACTION=0.3
+	// optional dp columns
+	opt := func(name string) int {
+		if i, ok := h[name]; ok {
+			return i
+		}
+		return -1
+	}
+	iL1Qty := opt("leg1_qty_dp")
+	iL2Qty := opt("leg2_qty_dp")
+	iL3Qty := opt("leg3_qty_dp")
+	iL1Qm := opt("leg1_quote_dp_market")
+	iL2Qm := opt("leg2_quote_dp_market")
+	iL3Qm := opt("leg3_quote_dp_market")
 
-# ======================
-# TRADING
-# ======================
-TRADE_ENABLED=true
-TRADE_AMOUNT_USDT=35
+	var tris []Triangle
+	symbolSet := make(map[string]struct{})
 
-# анти-флуд между сделками (мс)
-TRADE_COOLDOWN_MS=2000
+	rowNum := 1 // header already read
 
-# ======================
-# MEXC API
-# ======================
-MEXC_API_KEY=ВАШ_РЕАЛЬНЫЙ_KEY
-MEXC_API_SECRET=ВАШ_РЕАЛЬНЫЙ_SECRET
+	// stats
+	var total, kept int
+	var droppedBadLeg int
+	var droppedNotUsdtCycle int
+	var droppedBuyNotUSDT int
 
-# ======================
-# DEBUG
-# ======================
-DEBUG=false
+	for {
+		rec, err := r.Read()
+		if err != nil {
+			break
+		}
+		rowNum++
+		total++
 
+		get := func(key string) string {
+			idx := h[key]
+			if idx < 0 || idx >= len(rec) {
+				return ""
+			}
+			return strings.TrimSpace(rec[idx])
+		}
+
+		start := strings.ToUpper(get("start"))
+		mid1 := strings.ToUpper(get("mid1"))
+		mid2 := strings.ToUpper(get("mid2"))
+		end := strings.ToUpper(get("end"))
+
+		if start == "" || mid1 == "" || mid2 == "" || end == "" {
+			continue
+		}
+		// строго USDT→...→USDT
+		if start != BaseAsset || end != BaseAsset {
+			droppedNotUsdtCycle++
+			continue
+		}
+
+		legs := [3]Leg{
+			parseLeg(rec, h, 1, iL1Qty, iL1Qm),
+			parseLeg(rec, h, 2, iL2Qty, iL2Qm),
+			parseLeg(rec, h, 3, iL3Qty, iL3Qm),
+		}
+
+		ok := true
+		for i := 0; i < 3; i++ {
+			if legs[i].Symbol == "" || legs[i].From == "" || legs[i].To == "" || legs[i].Dir == 0 {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			droppedBadLeg++
+			continue
+		}
+
+		// связность по активам
+		if legs[0].From != start || legs[0].To != mid1 ||
+			legs[1].From != mid1 || legs[1].To != mid2 ||
+			legs[2].From != mid2 || legs[2].To != end {
+			droppedBadLeg++
+			continue
+		}
+
+		// КРИТИЧНО: пока BUY только за USDT
+		buyOk := true
+		for i := 0; i < 3; i++ {
+			if legs[i].Dir < 0 && legs[i].From != BaseAsset {
+				buyOk = false
+				break
+			}
+		}
+		if !buyOk {
+			droppedBuyNotUSDT++
+			continue
+		}
+
+		name := fmt.Sprintf("%s→%s→%s→%s", start, mid1, mid2, end)
+		t := Triangle{Legs: legs, Name: name}
+		tris = append(tris, t)
+		kept++
+
+		for _, leg := range t.Legs {
+			symbolSet[leg.Symbol] = struct{}{}
+		}
+	}
+
+	symbols := make([]string, 0, len(symbolSet))
+	for s := range symbolSet {
+		symbols = append(symbols, s)
+	}
+
+	index := make(map[string][]int)
+	for i, t := range tris {
+		for _, leg := range t.Legs {
+			index[leg.Symbol] = append(index[leg.Symbol], i)
+		}
+	}
+
+	log.Printf("triangles loaded: total=%d kept=%d droppedNotUsdtCycle=%d droppedBadLeg=%d droppedBuyNotUSDT=%d file=%s",
+		total, kept, droppedNotUsdtCycle, droppedBadLeg, droppedBuyNotUSDT, path,
+	)
+	log.Printf("unique symbols: %d", len(symbols))
+	return tris, symbols, index, nil
+}
+
+func parseLeg(rec []string, h map[string]int, n int, idxQtyDP, idxQuoteDPMkt int) Leg {
+	idx := func(s string) int {
+		return h[strings.ToLower(fmt.Sprintf("leg%d_%s", n, s))]
+	}
+	get := func(i int) string {
+		if i < 0 || i >= len(rec) {
+			return ""
+		}
+		return strings.TrimSpace(rec[i])
+	}
+
+	symbol := strings.ToUpper(get(idx("symbol")))
+	action := strings.ToUpper(get(idx("action")))
+	from := strings.ToUpper(get(idx("from")))
+	to := strings.ToUpper(get(idx("to")))
+
+	var dir int8
+	switch action {
+	case "BUY":
+		dir = -1
+	case "SELL":
+		dir = +1
+	default:
+		dir = 0
+	}
+
+	leg := Leg{
+		From:       from,
+		To:         to,
+		Symbol:     symbol,
+		Dir:        dir,
+		QtyDP:      -1,
+		QuoteDPMkt: -1,
+	}
+	if idxQtyDP >= 0 && idxQtyDP < len(rec) {
+		leg.QtyDP = parseIntSafe(get(idxQtyDP), -1)
+	}
+	if idxQuoteDPMkt >= 0 && idxQuoteDPMkt < len(rec) {
+		leg.QuoteDPMkt = parseIntSafe(get(idxQuoteDPMkt), -1)
+	}
+	return leg
+}
+
+func parseIntSafe(s string, def int) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+// ==============================
+// Расчёт доходности
+// ==============================
+
+func EvalTriangle(t Triangle, quotes map[string]Quote, fee float64) (float64, bool) {
+	amt := 1.0
+	for _, leg := range t.Legs {
+		q, ok := quotes[leg.Symbol]
+		if !ok || q.Bid <= 0 || q.Ask <= 0 {
+			return 0, false
+		}
+		if leg.Dir > 0 {
+			amt *= q.Bid
+		} else {
+			amt /= q.Ask
+		}
+		amt *= (1 - fee)
+		if amt <= 0 {
+			return 0, false
+		}
+	}
+	return amt - 1, true
+}
+
+// ==============================
+// Диагностика лимитов (Top-of-book)
+// ==============================
+
+type MaxStartInfo struct {
+	StartAsset    string
+	MaxStart      float64
+	BottleneckLeg int
+	LimitIn       [3]float64
+	KIn           [3]float64
+	MaxStartByLeg [3]float64
+}
+
+func ComputeMaxStartTopOfBook(t Triangle, quotes map[string]Quote, fee float64) (MaxStartInfo, bool) {
+	var info MaxStartInfo
+	info.StartAsset = BaseAsset
+
+	kIn := 1.0
+	maxStart := 1e308
+	info.BottleneckLeg = -1
+
+	for i, leg := range t.Legs {
+		q, ok := quotes[leg.Symbol]
+		if !ok || q.Bid <= 0 || q.Ask <= 0 {
+			return MaxStartInfo{}, false
+		}
+		info.KIn[i] = kIn
+
+		var limitIn, ratio float64
+		if leg.Dir > 0 {
+			if q.BidQty <= 0 {
+				return MaxStartInfo{}, false
+			}
+			limitIn = q.BidQty
+			ratio = q.Bid
+		} else {
+			if q.AskQty <= 0 {
+				return MaxStartInfo{}, false
+			}
+			limitIn = q.AskQty * q.Ask
+			ratio = 1 / q.Ask
+		}
+		info.LimitIn[i] = limitIn
+		if kIn <= 0 {
+			return MaxStartInfo{}, false
+		}
+		maxByThis := limitIn / kIn
+		info.MaxStartByLeg[i] = maxByThis
+		if maxByThis < maxStart {
+			maxStart = maxByThis
+			info.BottleneckLeg = i
+		}
+		kIn *= ratio * (1 - fee)
+		if kIn <= 0 {
+			return MaxStartInfo{}, false
+		}
+	}
+
+	if info.BottleneckLeg < 0 || maxStart <= 0 || maxStart > 1e307 {
+		return MaxStartInfo{}, false
+	}
+	info.MaxStart = maxStart
+	return info, true
+}
 
