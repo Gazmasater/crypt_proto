@@ -833,6 +833,8 @@ import (
 )
 
 type SpotTrader interface {
+	// ВНИМАНИЕ: в текущем интерфейсе BUY поддержан только "на сумму USDT".
+	// Executor ниже использует BUY через quoteQty, но если leg.From != USDT — он вернёт ошибку.
 	SmartMarketBuyUSDT(ctx context.Context, symbol string, usdt float64, ask float64) (string, error)
 	SmartMarketSellQty(ctx context.Context, symbol string, qty float64) (string, error)
 	GetBalance(ctx context.Context, asset string) (float64, error)
@@ -923,7 +925,6 @@ func (e *RealExecutor) Execute(ctx context.Context, t domain.Triangle, quotes ma
 		return fmt.Errorf("startUSDT<=0 (startUSDT=%.6f, StartUSDT=%.6f)", startUSDT, e.StartUSDT)
 	}
 
-	// 3 символа из ног
 	if len(t.Legs) < 3 {
 		return fmt.Errorf("triangle %s has <3 legs", triName)
 	}
@@ -982,23 +983,12 @@ func (e *RealExecutor) executeOnce(req execReq) error {
 	startUSDT := req.startUSDT
 	triName := req.triName
 
-	// 3 символа из ног
-	sym1 := strings.TrimSpace(t.Legs[0].Symbol)
-	sym2 := strings.TrimSpace(t.Legs[1].Symbol)
-	sym3 := strings.TrimSpace(t.Legs[2].Symbol)
-
 	e.logf("  [REAL EXEC] start=%.6f USDT triangle=%s", startUSDT, triName)
-	e.logf("    [REAL EXEC] legs: sym1=%s sym2=%s sym3=%s", sym1, sym2, sym3)
 
-	// base/quote для логов
-	base1, quote1 := parseBaseQuote(sym1)
-	base2, quote2 := parseBaseQuote(sym2)
-	base3, quote3 := parseBaseQuote(sym3)
-	e.logf("    [REAL EXEC] parsed: sym1=%s (%s/%s) sym2=%s (%s/%s) sym3=%s (%s/%s)",
-		sym1, base1, quote1,
-		sym2, base2, quote2,
-		sym3, base3, quote3,
-	)
+	// Покажем ноги
+	for i, leg := range t.Legs {
+		e.logf("    [REAL EXEC] leg%d: sym=%s dir=%d from=%s to=%s", i+1, leg.Symbol, leg.Dir, leg.From, leg.To)
+	}
 
 	// ===== balances before =====
 	var usdt0 float64
@@ -1017,206 +1007,184 @@ func (e *RealExecutor) executeOnce(req execReq) error {
 		}
 	}
 
-	// ===== LEG 1: BUY sym1 by USDT =====
-	q1, ok := quotes[sym1]
-	if !ok {
-		return fmt.Errorf("no quote snapshot for sym1=%s", sym1)
-	}
+	// Текущий “поток”: с какой валютой и суммой идём по ногам.
+	curAsset := "USDT"
+	curAmount := startUSDT
 
-	var aBefore1 float64
-	{
-		done := e.step(fmt.Sprintf("GetBalance %s (before leg1)", base1))
-		v, err := e.trader.GetBalance(req.ctx, base1)
-		done()
-		if err != nil {
-			e.logf("    [REAL EXEC] BAL ERR: get %s before leg1: %v", base1, err)
-			return err
+	// Исполняем 3 ноги по dir/from/to
+	for i := 0; i < 3; i++ {
+		leg := t.Legs[i]
+		sym := strings.TrimSpace(leg.Symbol)
+		if sym == "" {
+			return fmt.Errorf("leg%d: empty symbol", i+1)
 		}
-		aBefore1 = v
-	}
 
-	e.logf("    [REAL EXEC] leg1 PRE: BUY %s by %s=%.6f ask=%.10f bid=%.10f | %s before=%.12f",
-		sym1, quote1, startUSDT, q1.Ask, q1.Bid, base1, aBefore1)
-
-	var ord1 string
-	{
-		// отдельный контекст на ордер
-		orderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		done := e.step("SmartMarketBuyUSDT leg1")
-		id, err := e.trader.SmartMarketBuyUSDT(orderCtx, sym1, startUSDT, q1.Ask)
-		done()
-		if err != nil {
-			e.logf("    [REAL EXEC] leg1 PLACE ERR: %v", err)
-			return err
+		q, ok := quotes[sym]
+		if !ok {
+			return fmt.Errorf("leg%d: no quote snapshot for %s", i+1, sym)
 		}
-		ord1 = id
-	}
-	e.logf("    [REAL EXEC] leg1 PLACE OK: orderId=%s", ord1)
-
-	var aAfter1 float64
-	{
-		done := e.step(fmt.Sprintf("waitBalanceChange %s (after leg1)", base1))
-		v, err := e.waitBalanceChange(req.ctx, base1, aBefore1, 3*time.Second, 150*time.Millisecond)
-		done()
-		if err != nil {
-			e.logf("    [REAL EXEC] leg1 WAIT BAL ERR (%s): %v", base1, err)
-			return err
+		if q.Ask <= 0 || q.Bid <= 0 {
+			return fmt.Errorf("leg%d: bad quote for %s (ask=%.10f bid=%.10f)", i+1, sym, q.Ask, q.Bid)
 		}
-		aAfter1 = v
-	}
-	dA := aAfter1 - aBefore1
-	e.logf("    [REAL EXEC] leg1 BAL after: %s=%.12f delta=%.12f", base1, aAfter1, dA)
-	if dA <= 0 {
-		return fmt.Errorf("leg1: %s did not increase (before=%.12f after=%.12f)", base1, aBefore1, aAfter1)
-	}
 
-	// ===== LEG 2: SELL sym2 =====
-	q2, ok := quotes[sym2]
-	if !ok {
-		return fmt.Errorf("no quote snapshot for sym2=%s", sym2)
-	}
-
-	var base2Bal float64
-	{
-		done := e.step(fmt.Sprintf("GetBalance %s (before leg2)", base2))
-		v, err := e.trader.GetBalance(req.ctx, base2)
-		done()
-		if err != nil {
-			e.logf("    [REAL EXEC] BAL ERR: get %s before leg2: %v", base2, err)
-			return err
+		from := strings.ToUpper(strings.TrimSpace(leg.From))
+		to := strings.ToUpper(strings.TrimSpace(leg.To))
+		if from == "" || to == "" {
+			return fmt.Errorf("leg%d: empty from/to (from=%q to=%q)", i+1, leg.From, leg.To)
 		}
-		base2Bal = v
-	}
 
-	sellA := base2Bal * e.SellSafety
-	if sellA <= 0 {
-		return fmt.Errorf("leg2: sell qty <=0 (%s=%.12f safety=%.6f)", base2, base2Bal, e.SellSafety)
-	}
-
-	var bBefore2 float64
-	{
-		done := e.step(fmt.Sprintf("GetBalance %s (before leg2)", quote2))
-		v, err := e.trader.GetBalance(req.ctx, quote2)
-		done()
-		if err != nil {
-			e.logf("    [REAL EXEC] BAL ERR: get %s before leg2: %v", quote2, err)
-			return err
+		if curAsset != from {
+			// не фейлим сразу — но это почти всегда признак рассинхрона описания треугольника/исполнения
+			e.logf("    [REAL EXEC] WARN leg%d: curAsset=%s curAmount=%.12f but leg.From=%s",
+				i+1, curAsset, curAmount, from)
 		}
-		bBefore2 = v
-	}
 
-	e.logf("    [REAL EXEC] leg2 PRE: SELL %s qty=%s=%.12f (safety x%.6f) bid=%.10f ask=%.10f | %s before=%.12f %s before=%.12f",
-		sym2, base2, sellA, e.SellSafety, q2.Bid, q2.Ask,
-		base2, base2Bal,
-		quote2, bBefore2,
-	)
-
-	var ord2 string
-	{
-		orderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		done := e.step("SmartMarketSellQty leg2")
-		id, err := e.trader.SmartMarketSellQty(orderCtx, sym2, sellA)
-		done()
-		if err != nil {
-			e.logf("    [REAL EXEC] leg2 PLACE ERR: %v", err)
-			return err
+		// Балансы до
+		var fromBefore, toBefore float64
+		{
+			done := e.step(fmt.Sprintf("GetBalance %s (before leg%d)", from, i+1))
+			v, err := e.trader.GetBalance(req.ctx, from)
+			done()
+			if err != nil {
+				e.logf("    [REAL EXEC] BAL ERR: get %s before leg%d: %v", from, i+1, err)
+				return err
+			}
+			fromBefore = v
 		}
-		ord2 = id
-	}
-	e.logf("    [REAL EXEC] leg2 PLACE OK: orderId=%s", ord2)
-
-	var bAfter2 float64
-	{
-		done := e.step(fmt.Sprintf("waitBalanceChange %s (after leg2)", quote2))
-		v, err := e.waitBalanceChange(req.ctx, quote2, bBefore2, 3*time.Second, 150*time.Millisecond)
-		done()
-		if err != nil {
-			e.logf("    [REAL EXEC] leg2 WAIT BAL ERR (%s): %v", quote2, err)
-			return err
+		{
+			done := e.step(fmt.Sprintf("GetBalance %s (before leg%d)", to, i+1))
+			v, err := e.trader.GetBalance(req.ctx, to)
+			done()
+			if err != nil {
+				e.logf("    [REAL EXEC] BAL ERR: get %s before leg%d: %v", to, i+1, err)
+				return err
+			}
+			toBefore = v
 		}
-		bAfter2 = v
-	}
-	dB := bAfter2 - bBefore2
-	e.logf("    [REAL EXEC] leg2 BAL after: %s=%.12f delta=%.12f", quote2, bAfter2, dB)
-	if dB <= 0 {
-		return fmt.Errorf("leg2: %s did not increase (before=%.12f after=%.12f)", quote2, bBefore2, bAfter2)
-	}
 
-	// ===== LEG 3: SELL sym3 (base3 -> USDT) =====
-	q3, ok := quotes[sym3]
-	if !ok {
-		return fmt.Errorf("no quote snapshot for sym3=%s", sym3)
-	}
+		if leg.Dir < 0 {
+			// BUY: тратим quote (from), получаем base (to)
+			// В текущем интерфейсе SpotTrader BUY поддержан только в USDT.
+			spend := curAmount
+			if spend <= 0 {
+				return fmt.Errorf("leg%d BUY: spend<=0 (%s)", i+1, from)
+			}
+			if fromBefore+1e-9 < spend {
+				return fmt.Errorf("leg%d BUY: insufficient %s: have=%.12f need=%.12f", i+1, from, fromBefore, spend)
+			}
+			if from != "USDT" {
+				// ВАЖНО: пока твой трейдер умеет BUY только за USDT.
+				// Чтобы торговать BUY за USDC/прочее — надо расширить интерфейс на SmartMarketBuyQuote.
+				return fmt.Errorf("leg%d BUY: quote asset is %s, but SpotTrader supports BUY only by USDT (need SmartMarketBuyQuote)", i+1, from)
+			}
 
-	var base3Bal float64
-	{
-		done := e.step(fmt.Sprintf("GetBalance %s (before leg3)", base3))
-		v, err := e.trader.GetBalance(req.ctx, base3)
-		done()
-		if err != nil {
-			e.logf("    [REAL EXEC] BAL ERR: get %s before leg3: %v", base3, err)
-			return err
+			e.logf("    [REAL EXEC] leg%d PRE: BUY %s spend=%s=%.6f ask=%.10f bid=%.10f | %s before=%.12f %s before=%.12f",
+				i+1, sym, from, spend, q.Ask, q.Bid, from, fromBefore, to, toBefore)
+
+			var ord string
+			{
+				orderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+
+				done := e.step(fmt.Sprintf("SmartMarketBuyUSDT leg%d", i+1))
+				id, err := e.trader.SmartMarketBuyUSDT(orderCtx, sym, spend, q.Ask)
+				done()
+				if err != nil {
+					e.logf("    [REAL EXEC] leg%d PLACE ERR (BUY): %v", i+1, err)
+					return err
+				}
+				ord = id
+			}
+			e.logf("    [REAL EXEC] leg%d PLACE OK: orderId=%s", i+1, ord)
+
+			var toAfter float64
+			{
+				done := e.step(fmt.Sprintf("waitBalanceChange %s (after leg%d)", to, i+1))
+				v, err := e.waitBalanceChange(req.ctx, to, toBefore, 3*time.Second, 150*time.Millisecond)
+				done()
+				if err != nil {
+					e.logf("    [REAL EXEC] leg%d WAIT BAL ERR (%s): %v", i+1, to, err)
+					return err
+				}
+				toAfter = v
+			}
+
+			delta := toAfter - toBefore
+			e.logf("    [REAL EXEC] leg%d BAL after: %s=%.12f delta=%.12f", i+1, to, toAfter, delta)
+			if delta <= 0 {
+				return fmt.Errorf("leg%d BUY: %s did not increase (before=%.12f after=%.12f)", i+1, to, toBefore, toAfter)
+			}
+
+			curAsset = to
+			curAmount = delta
+			continue
 		}
-		base3Bal = v
+
+		// SELL: продаём base qty (from), получаем quote (to)
+		qtyRaw := curAmount
+		// На SELL берём баланс from, а не curAmount, потому что фактический qty после BUY может отличаться,
+		// и самый надёжный путь — продать то, что есть на балансе (с safety).
+		qty := fromBefore * e.SellSafety
+		if qty <= 0 {
+			return fmt.Errorf("leg%d SELL: qty<=0 (%s=%.12f safety=%.6f)", i+1, from, fromBefore, e.SellSafety)
+		}
+
+		e.logf("    [REAL EXEC] leg%d PRE: SELL %s qty=%s=%.12f (curAmount=%.12f raw=%.12f) bid=%.10f ask=%.10f | %s before=%.12f %s before=%.12f",
+			i+1, sym, from, qty, curAmount, qtyRaw, q.Bid, q.Ask, from, fromBefore, to, toBefore)
+
+		var ord string
+		{
+			orderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			done := e.step(fmt.Sprintf("SmartMarketSellQty leg%d", i+1))
+			id, err := e.trader.SmartMarketSellQty(orderCtx, sym, qty)
+			done()
+			if err != nil {
+				e.logf("    [REAL EXEC] leg%d PLACE ERR (SELL): %v", i+1, err)
+				return err
+			}
+			ord = id
+		}
+		e.logf("    [REAL EXEC] leg%d PLACE OK: orderId=%s", i+1, ord)
+
+		var toAfter float64
+		{
+			done := e.step(fmt.Sprintf("waitBalanceChange %s (after leg%d)", to, i+1))
+			v, err := e.waitBalanceChange(req.ctx, to, toBefore, 3*time.Second, 150*time.Millisecond)
+			done()
+			if err != nil {
+				e.logf("    [REAL EXEC] leg%d WAIT BAL ERR (%s): %v", i+1, to, err)
+				return err
+			}
+			toAfter = v
+		}
+
+		delta := toAfter - toBefore
+		e.logf("    [REAL EXEC] leg%d BAL after: %s=%.12f delta=%.12f", i+1, to, toAfter, delta)
+		if delta <= 0 {
+			return fmt.Errorf("leg%d SELL: %s did not increase (before=%.12f after=%.12f)", i+1, to, toBefore, toAfter)
+		}
+
+		curAsset = to
+		curAmount = delta
 	}
 
-	sellB := base3Bal * e.SellSafety
-	if sellB <= 0 {
-		return fmt.Errorf("leg3: sell qty <=0 (%s=%.12f safety=%.6f)", base3, base3Bal, e.SellSafety)
-	}
-
-	var usdtBefore3 float64
+	// Финальный баланс USDT
+	var usdtAfter float64
 	{
-		done := e.step("GetBalance USDT (before leg3)")
+		done := e.step("GetBalance USDT (after)")
 		v, err := e.trader.GetBalance(req.ctx, "USDT")
 		done()
 		if err != nil {
-			e.logf("    [REAL EXEC] BAL ERR: get USDT before leg3: %v", err)
-			return err
-		}
-		usdtBefore3 = v
-	}
-
-	e.logf("    [REAL EXEC] leg3 PRE: SELL %s qty=%s=%.12f (safety x%.6f) bid=%.10f ask=%.10f | %s before=%.12f USDT before=%.12f",
-		sym3, base3, sellB, e.SellSafety, q3.Bid, q3.Ask,
-		base3, base3Bal, usdtBefore3)
-
-	var ord3 string
-	{
-		orderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		done := e.step("SmartMarketSellQty leg3")
-		id, err := e.trader.SmartMarketSellQty(orderCtx, sym3, sellB)
-		done()
-		if err != nil {
-			e.logf("    [REAL EXEC] leg3 PLACE ERR: %v", err)
-			return err
-		}
-		ord3 = id
-	}
-	e.logf("    [REAL EXEC] leg3 PLACE OK: orderId=%s", ord3)
-
-	var usdtAfter float64
-	{
-		done := e.step("waitBalanceChange USDT (after leg3)")
-		v, err := e.waitBalanceChange(req.ctx, "USDT", usdtBefore3, 3*time.Second, 150*time.Millisecond)
-		done()
-		if err != nil {
-			e.logf("    [REAL EXEC] leg3 WAIT BAL ERR (USDT): %v", err)
+			e.logf("    [REAL EXEC] BAL ERR: get USDT after: %v", err)
 			return err
 		}
 		usdtAfter = v
 	}
 
-	dUSDT3 := usdtAfter - usdtBefore3
 	dUSDTTotal := usdtAfter - usdt0
-
-	e.logf("    [REAL EXEC] leg3 BAL after: USDT=%.12f delta=%.12f", usdtAfter, dUSDT3)
+	e.logf("    [REAL EXEC] DONE: curAsset=%s curAmount=%.12f", curAsset, curAmount)
 	e.logf("    [REAL EXEC] DONE: USDT start=%.12f end=%.12f pnl(total)=%.12f (%.4f%%)",
 		usdt0, usdtAfter, dUSDTTotal, pct(dUSDTTotal, startUSDT))
 
@@ -1280,6 +1248,4 @@ func pct(delta, denom float64) float64 {
 	}
 	return (delta / denom) * 100
 }
-
-
 
