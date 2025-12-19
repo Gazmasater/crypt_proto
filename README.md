@@ -199,3 +199,53 @@ func main() {
 	log.Println("bye")
 }
 
+
+
+
+
+# ======================
+# EXCHANGE
+# ======================
+EXCHANGE=MEXC
+TRIANGLES_FILE=triangles_usdt_routes_market.csv
+BOOK_INTERVAL=10ms
+
+# ======================
+# ARBITRAGE LOGIC
+# ======================
+# комиссия одной ноги (%)
+# 0.04 = 0.04%
+FEE_PCT=0.04
+
+# минимальная прибыль треугольника (%)
+# Для 35 USDT лучше 1.5%, иначе округление/проскальзывание часто съедает профит
+MIN_PROFIT_PCT=1.5
+
+# минимальный старт (в USDT)
+MIN_START_USDT=35
+
+# доля от maxStart (1 = брать максимум)
+# На 35 USDT безопаснее меньше, чтобы не ловить проскальзывание
+START_FRACTION=0.3
+
+# ======================
+# TRADING
+# ======================
+TRADE_ENABLED=true
+TRADE_AMOUNT_USDT=35
+
+# анти-флуд между сделками (мс)
+TRADE_COOLDOWN_MS=2000
+
+# ======================
+# MEXC API
+# ======================
+MEXC_API_KEY=ВАШ_РЕАЛЬНЫЙ_KEY
+MEXC_API_SECRET=ВАШ_РЕАЛЬНЫЙ_SECRET
+
+# ======================
+# DEBUG
+# ======================
+DEBUG=false
+
+
