@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -8,14 +9,17 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
 
 const (
-	InputCSV  = "triangles_usdt_routes.csv"
-	OutputCSV = "triangles_usdt_routes_market.csv"
-	BaseURL   = "https://api.mexc.com"
+	InputCSV    = "triangles_usdt_routes.csv"
+	OutputCSV   = "triangles_usdt_routes_market.csv"
+	Blacklist   = "blacklist_symbols.txt"
+	BaseURL     = "https://api.mexc.com"
+	HTTPTimeout = 25 * time.Second
 )
 
 type exchangeInfo struct {
@@ -26,14 +30,22 @@ type symbolInfo struct {
 	Symbol string `json:"symbol"`
 	Status string `json:"status"`
 
-	OrderTypes   []string `json:"orderTypes"`
-	Permissions  []string `json:"permissions"`
-	St           bool     `json:"st"`
-	BaseSizePrec string   `json:"baseSizePrecision"`
+	// фильтр "разрешено ли спот-торговать через API"
+	IsSpotTradingAllowed bool `json:"isSpotTradingAllowed"`
+
+	OrderTypes  []string `json:"orderTypes"`
+	Permissions []string `json:"permissions"`
+	St          bool     `json:"st"`
+
+	// точности
+	BaseSizePrec string `json:"baseSizePrecision"`
 
 	QuoteAmountPrecisionMarket string `json:"quoteAmountPrecisionMarket"`
-	// на всякий случай: иногда может быть полезно как fallback
-	QuoteAmountPrecision string `json:"quoteAmountPrecision"`
+	QuoteAmountPrecision       string `json:"quoteAmountPrecision"`
+
+	// Если ты BUY делаешь через quoteQty/quoteOrderQty на MARKET — это КРИТИЧНО:
+	// если false, то биржа может не принять quoteOrderQty.
+	QuoteOrderQtyMarketAllowed bool `json:"quoteOrderQtyMarketAllowed"`
 }
 
 func colIndex(header []string, name string) int {
@@ -87,8 +99,9 @@ func quoteMarketStep(s symbolInfo) string {
 	return s.QuoteAmountPrecision
 }
 
-// Фильтр "пара подходит для торговли MARKET" по твоему требованию:
-// status=="1", st==false, permissions содержит "SPOT", orderTypes содержит "MARKET"
+// ТВОИ условия + фильтр API.
+// И ещё важный флаг под BUY через quoteQty: QuoteOrderQtyMarketAllowed.
+// Если ты не используешь quoteQty для BUY — можешь убрать этот пункт.
 func marketOk(s symbolInfo) bool {
 	if strings.TrimSpace(s.Status) != "1" {
 		return false
@@ -102,11 +115,47 @@ func marketOk(s symbolInfo) bool {
 	if !hasMarket(s.OrderTypes) {
 		return false
 	}
+	if !s.IsSpotTradingAllowed {
+		return false
+	}
+	// BUY через quoteQty: чтобы реально работало без сюрпризов
+	if !s.QuoteOrderQtyMarketAllowed {
+		return false
+	}
 	return true
 }
 
+// Сформировать reason для блэклиста (почему НЕ подходит)
+func notOkReason(s symbolInfo) string {
+	var reasons []string
+
+	if strings.TrimSpace(s.Status) != "1" {
+		reasons = append(reasons, "status!=1")
+	}
+	if s.St {
+		reasons = append(reasons, "st=true")
+	}
+	if !hasPerm(s.Permissions, "SPOT") {
+		reasons = append(reasons, "no SPOT perm")
+	}
+	if !hasMarket(s.OrderTypes) {
+		reasons = append(reasons, "no MARKET type")
+	}
+	if !s.IsSpotTradingAllowed {
+		reasons = append(reasons, "isSpotTradingAllowed=false")
+	}
+	if !s.QuoteOrderQtyMarketAllowed {
+		reasons = append(reasons, "quoteOrderQtyMarketAllowed=false")
+	}
+
+	if len(reasons) == 0 {
+		return "unknown"
+	}
+	return strings.Join(reasons, ", ")
+}
+
 func loadRules() (map[string]symbolInfo, error) {
-	client := &http.Client{Timeout: 25 * time.Second}
+	client := &http.Client{Timeout: HTTPTimeout}
 	resp, err := client.Get(BaseURL + "/api/v3/exchangeInfo")
 	if err != nil {
 		return nil, err
@@ -125,19 +174,74 @@ func loadRules() (map[string]symbolInfo, error) {
 
 	m := make(map[string]symbolInfo, len(info.Symbols))
 	for _, s := range info.Symbols {
-		m[s.Symbol] = s
+		if s.Symbol == "" {
+			continue
+		}
+		m[strings.TrimSpace(s.Symbol)] = s
 	}
 	return m, nil
+}
+
+// Шаг 1: создать "стартовый" блэклист на основе exchangeInfo.
+// Возвращает map[symbol]reason и счётчики.
+func buildInitialBlacklist(rules map[string]symbolInfo, path string) (map[string]string, int, int, error) {
+	bl := make(map[string]string, 4096)
+
+	total := 0
+	bad := 0
+	for sym, s := range rules {
+		total++
+		if marketOk(s) {
+			continue
+		}
+		bad++
+		bl[sym] = notOkReason(s)
+	}
+
+	// Записываем файл с нуля (truncate), чтобы это был именно "стартовый" блэклист
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, total, bad, err
+	}
+	defer f.Close()
+
+	bw := bufio.NewWriter(f)
+	defer bw.Flush()
+
+	fmt.Fprintf(bw, "# generated: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(bw, "# format: SYMBOL<TAB>reason\n")
+
+	// чтобы было стабильно — отсортируем
+	keys := make([]string, 0, len(bl))
+	for sym := range bl {
+		keys = append(keys, sym)
+	}
+	sort.Strings(keys)
+
+	for _, sym := range keys {
+		fmt.Fprintf(bw, "%s\t%s\n", sym, bl[sym])
+	}
+
+	return bl, total, bad, nil
 }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
+	// 1) rules
 	rules, err := loadRules()
 	if err != nil {
 		log.Fatalf("ERR: load exchangeInfo: %v", err)
 	}
 
+	// 2) СНАЧАЛА: стартовый блэклист
+	bl, total, bad, err := buildInitialBlacklist(rules, Blacklist)
+	if err != nil {
+		log.Fatalf("ERR: build blacklist: %v", err)
+	}
+	log.Printf("OK: exchangeInfo symbols=%d blacklisted=%d -> %s", total, bad, Blacklist)
+
+	// 3) читаем входной CSV
 	in, err := os.Open(InputCSV)
 	if err != nil {
 		log.Fatalf("ERR: open %s: %v", InputCSV, err)
@@ -157,8 +261,7 @@ func main() {
 		log.Fatalf("ERR: нет колонок leg1_symbol/leg2_symbol/leg3_symbol в CSV")
 	}
 
-	// Добавляем два вида точности:
-	// qty_dp (по baseSizePrecision) и quote_dp_market (по quoteAmountPrecisionMarket / fallback quoteAmountPrecision)
+	// 4) готовим выход
 	header = append(header,
 		"leg1_qty_dp", "leg2_qty_dp", "leg3_qty_dp",
 		"leg1_quote_dp_market", "leg2_quote_dp_market", "leg3_quote_dp_market",
@@ -181,6 +284,7 @@ func main() {
 	written := 0
 	skippedNoSymbol := 0
 	skippedNotEligible := 0
+	skippedBlacklisted := 0
 
 	for {
 		row, err := cr.Read()
@@ -200,6 +304,7 @@ func main() {
 			continue
 		}
 
+		// если символа нет в exchangeInfo — пропускаем
 		r1, ok1 := rules[s1]
 		r2, ok2 := rules[s2]
 		r3, ok3 := rules[s3]
@@ -208,6 +313,21 @@ func main() {
 			continue
 		}
 
+		// если попал в стартовый блэклист хотя бы один символ — пропускаем треугольник
+		if _, ok := bl[s1]; ok {
+			skippedBlacklisted++
+			continue
+		}
+		if _, ok := bl[s2]; ok {
+			skippedBlacklisted++
+			continue
+		}
+		if _, ok := bl[s3]; ok {
+			skippedBlacklisted++
+			continue
+		}
+
+		// на всякий случай — повторно проверяем marketOk на 3 символа
 		if !marketOk(r1) || !marketOk(r2) || !marketOk(r3) {
 			skippedNotEligible++
 			continue
@@ -218,7 +338,7 @@ func main() {
 		dpQty2 := decimalsFromStep(r2.BaseSizePrec)
 		dpQty3 := decimalsFromStep(r3.BaseSizePrec)
 
-		// quoteAmount precision for MARKET (quote)
+		// quote precision for MARKET (quote)
 		dpQm1 := decimalsFromStep(quoteMarketStep(r1))
 		dpQm2 := decimalsFromStep(quoteMarketStep(r2))
 		dpQm3 := decimalsFromStep(quoteMarketStep(r3))
@@ -234,6 +354,8 @@ func main() {
 		written++
 	}
 
-	log.Printf("OK: read=%d written=%d skippedNoSymbol=%d skippedNotEligible=%d -> %s",
-		read, written, skippedNoSymbol, skippedNotEligible, OutputCSV)
+	log.Printf(
+		"OK: read=%d written=%d skippedNoSymbol=%d skippedBlacklisted=%d skippedNotEligible=%d -> %s",
+		read, written, skippedNoSymbol, skippedBlacklisted, skippedNotEligible, OutputCSV,
+	)
 }
