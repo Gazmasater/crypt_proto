@@ -735,3 +735,9 @@ func main() {
 }
 
 
+start,mid1,mid2,end,leg1_instId,leg1_action,leg1_price_side,leg1_from,leg1_to,leg1_mkt_limit_kind,leg1_has_max_mkt_amt,leg1_has_max_mkt_sz,leg1_mkt_limit_field,leg1_mkt_limit_value,leg1_qty_step,leg1_min_qty,leg1_price_step,leg1_base,leg1_quote,leg1_lotSz,leg1_minSz,leg1_tickSz,leg1_maxMktAmt,leg1_maxMktSz,leg1_qty_dp,leg1_price_dp,leg2_instId,leg2_action,leg2_price_side,leg2_from,leg2_to,leg2_mkt_limit_kind,leg2_has_max_mkt_amt,leg2_has_max_mkt_sz,leg2_mkt_limit_field,leg2_mkt_limit_value,leg2_qty_step,leg2_min_qty,leg2_price_step,leg2_base,leg2_quote,leg2_lotSz,leg2_minSz,leg2_tickSz,leg2_maxMktAmt,leg2_maxMktSz,leg2_qty_dp,leg2_price_dp,leg3_instId,leg3_action,leg3_price_side,leg3_from,leg3_to,leg3_mkt_limit_kind,leg3_has_max_mkt_amt,leg3_has_max_mkt_sz,leg3_mkt_limit_field,leg3_mkt_limit_value,leg3_qty_step,leg3_min_qty,leg3_price_step,leg3_base,leg3_quote,leg3_lotSz,leg3_minSz,leg3_tickSz,leg3_maxMktAmt,leg3_maxMktSz,leg3_qty_dp,leg3_price_dp
+USDT,1INCH,EUR,USDT,1INCH-USDT,BUY,ASK,USDT,1INCH,QUOTE,1,1,maxMktAmt,1000000,1e-06,10,0.0001,1INCH,USDT,0.000001,10,0.0001,1000000,1000000,6,4,1INCH-EUR,SELL,BID,1INCH,EUR,BASE,1,1,maxMktSz,1000000,1e-06,10,0.0001,1INCH,EUR,0.000001,10,0.0001,3000,1000000,6,4,USDT-EUR,BUY,ASK,EUR,USDT,QUOTE,1,1,maxMktAmt,150000,0.0001,1,0.0001,USDT,EUR,0.0001,1,0.0001,150000,1000000,4,4
+USDT,1INCH,USD,USDT,1INCH-USDT,BUY,ASK,USDT,1INCH,QUOTE,1,1,maxMktAmt,1000000,1e-06,10,0.0001,1INCH,USDT,0.000001,10,0.0001,1000000,1000000,6,4,1INCH-USD,SELL,BID,1INCH,USD,BASE,1,1,maxMktSz,1000000,1e-06,10,0.0001,1INCH,USD,0.000001,10,0.0001,3500,1000000,6,4,USDT-USD,BUY,ASK,USD,USDT,QUOTE,1,1,maxMktAmt,370000,0.0001,1,0.0001,USDT,USD,0.0001,1,0.0001,370000,1000000,4,4
+
+
+
