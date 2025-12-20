@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ const (
 	DefaultStartCcy = "USDT"
 )
 
-// ============ OKX API structs ============
+// ===================== OKX API =====================
 
 type okxInstrumentsResp struct {
 	Code string          `json:"code"`
@@ -45,9 +46,9 @@ type okxInstrument struct {
 	QuoteCcy string `json:"quoteCcy"`
 	State    string `json:"state"`
 
-	LotSz  string `json:"lotSz"`
-	MinSz  string `json:"minSz"`
-	TickSz string `json:"tickSz"`
+	LotSz  string `json:"lotSz"`  // base step
+	MinSz  string `json:"minSz"`  // base min
+	TickSz string `json:"tickSz"` // price step
 
 	MaxMktAmt string `json:"maxMktAmt"` // quote
 	MaxMktSz  string `json:"maxMktSz"`  // base
@@ -60,7 +61,7 @@ type okxBooksResp struct {
 }
 
 type okxBookData struct {
-	Asks [][]string `json:"asks"`
+	Asks [][]string `json:"asks"` // [price, size, ...]
 	Bids [][]string `json:"bids"`
 }
 
@@ -69,17 +70,7 @@ type Book struct {
 	Bid float64
 }
 
-// ============ Routes CSV leg ============
-
-type LegRow struct {
-	Symbol    string
-	Action    string // BUY/SELL
-	PriceSide string // ASK/BID (not used, just carried)
-	From      string
-	To        string
-}
-
-// ============ ENV helpers ============
+// ===================== ENV helpers =====================
 
 func getenv(key, def string) string {
 	v := strings.TrimSpace(os.Getenv(key))
@@ -87,6 +78,21 @@ func getenv(key, def string) string {
 		return def
 	}
 	return v
+}
+
+func getenvBool(key string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return def
+	}
 }
 
 func getenvDuration(key string, def time.Duration) time.Duration {
@@ -115,46 +121,8 @@ func getenvFloat(key string, def float64) float64 {
 	return f
 }
 
-// ============ Parsing helpers ============
+// ===================== Blacklist =====================
 
-func parseF(s string) (float64, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, false
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0, false
-	}
-	return v, true
-}
-
-// "0.001" -> 3, "1" -> 0, "" -> -1
-func decimalsFromStep(step string) int {
-	step = strings.TrimSpace(step)
-	if step == "" {
-		return -1
-	}
-	if !strings.Contains(step, ".") {
-		return 0
-	}
-	parts := strings.SplitN(step, ".", 2)
-	frac := strings.TrimRight(parts[1], "0")
-	return len(frac)
-}
-
-func floorByDP(x float64, dp int) float64 {
-	if dp <= 0 {
-		return math.Floor(x)
-	}
-	pow := math.Pow10(dp)
-	return math.Floor(x*pow) / pow
-}
-
-// ============ Blacklist I/O ============
-
-// File format: SYMBOL<TAB>reason
-// Lines starting with # are comments.
 func loadBlacklist(path string) (map[string]string, error) {
 	bl := make(map[string]string)
 
@@ -224,7 +192,7 @@ func isBlacklisted(bl map[string]string, sym string) bool {
 	return ok
 }
 
-// ============ FS helpers ============
+// ===================== Utils =====================
 
 func ensureDirForFile(path string) error {
 	dir := filepath.Dir(path)
@@ -234,7 +202,82 @@ func ensureDirForFile(path string) error {
 	return os.MkdirAll(dir, 0o755)
 }
 
-// ============ OKX instruments/rules ============
+func colIndex(header []string, name string) int {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for i, h := range header {
+		if strings.ToLower(strings.TrimSpace(h)) == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func parseF(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	return v, true
+}
+
+// ======= IMPORTANT FIX: quantize by exact step (lotSz), not by decimals =======
+
+// ratFromFloat makes decimal string without exponent for big.Rat.
+func ratFromFloat(x float64) (*big.Rat, bool) {
+	if math.IsNaN(x) || math.IsInf(x, 0) {
+		return nil, false
+	}
+	// fixed precision string; OKX steps usually fit well in 18 decimals
+	s := strconv.FormatFloat(x, 'f', 18, 64)
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	if s == "" {
+		s = "0"
+	}
+	r := new(big.Rat)
+	if _, ok := r.SetString(s); !ok {
+		return nil, false
+	}
+	return r, true
+}
+
+// quantizeDownStep returns floor(value/step)*step for positive numbers.
+func quantizeDownStep(value float64, stepStr string) (float64, bool) {
+	stepStr = strings.TrimSpace(stepStr)
+	if stepStr == "" {
+		return value, true
+	}
+
+	step := new(big.Rat)
+	if _, ok := step.SetString(stepStr); !ok {
+		return 0, false
+	}
+	if step.Sign() <= 0 {
+		return 0, false
+	}
+
+	v, ok := ratFromFloat(value)
+	if !ok {
+		return 0, false
+	}
+	if v.Sign() < 0 {
+		return 0, false
+	}
+
+	// q = floor(v/step)
+	qRat := new(big.Rat).Quo(v, step)
+	q := new(big.Int).Quo(qRat.Num(), qRat.Denom()) // floor for positive
+
+	res := new(big.Rat).Mul(new(big.Rat).SetInt(q), step)
+	f, _ := res.Float64()
+	return f, true
+}
+
+// ===================== OKX rules =====================
 
 func loadRulesOKX(url string, timeout time.Duration) (map[string]okxInstrument, error) {
 	client := &http.Client{Timeout: timeout}
@@ -276,11 +319,6 @@ func loadRulesOKX(url string, timeout time.Duration) (map[string]okxInstrument, 
 	return m, nil
 }
 
-// Eligibility:
-// instType==SPOT
-// state==live
-// lotSz/minSz/tickSz not empty
-// AND (maxMktAmt OR maxMktSz) not empty
 func marketOkOKX(s okxInstrument) bool {
 	if s.InstType != "" && !strings.EqualFold(strings.TrimSpace(s.InstType), "SPOT") {
 		return false
@@ -291,6 +329,7 @@ func marketOkOKX(s okxInstrument) bool {
 	if strings.TrimSpace(s.LotSz) == "" || strings.TrimSpace(s.MinSz) == "" || strings.TrimSpace(s.TickSz) == "" {
 		return false
 	}
+	// либо maxMktAmt, либо maxMktSz
 	if strings.TrimSpace(s.MaxMktAmt) == "" && strings.TrimSpace(s.MaxMktSz) == "" {
 		return false
 	}
@@ -320,7 +359,7 @@ func notOkReasonOKX(s okxInstrument) string {
 	return strings.Join(reasons, ", ")
 }
 
-// ============ OKX top-of-book ============
+// ===================== OKX books =====================
 
 func fetchTopBook(client *http.Client, booksBaseURL, instId string) (Book, error) {
 	url := fmt.Sprintf("%s?instId=%s&sz=1", strings.TrimRight(booksBaseURL, "/"), instId)
@@ -366,10 +405,27 @@ func fetchTopBook(client *http.Client, booksBaseURL, instId string) (Book, error
 	return Book{Ask: ask, Bid: bid}, nil
 }
 
-// ============ Route simulation for START_AMT (e.g. 25 USDT) ============
+// ===================== Simulation =====================
 
-// BUY: spend quote at ASK -> receive base (floor to lotSz), check minSz, check maxMktAmt/maxMktSz
-// SELL: sell base at BID (floor to lotSz), check minSz, check maxMktSz
+func legKind(from, to string, inst okxInstrument) (kind string, ok bool) {
+	from = strings.TrimSpace(from)
+	to = strings.TrimSpace(to)
+
+	if strings.EqualFold(from, inst.QuoteCcy) && strings.EqualFold(to, inst.BaseCcy) {
+		return "BUY", true
+	}
+	if strings.EqualFold(from, inst.BaseCcy) && strings.EqualFold(to, inst.QuoteCcy) {
+		return "SELL", true
+	}
+	return "", false
+}
+
+type LegRow struct {
+	Symbol string
+	From   string
+	To     string
+}
+
 func simulateRoute(
 	startAmt float64,
 	startCcy string,
@@ -394,6 +450,11 @@ func simulateRoute(
 			return 0, "not eligible"
 		}
 
+		kind, ok := legKind(leg.From, leg.To, inst)
+		if !ok {
+			return 0, "from/to mismatch instrument base/quote"
+		}
+
 		bk, ok := bookCache[leg.Symbol]
 		if !ok {
 			b, err := fetchTopBook(client, booksURL, leg.Symbol)
@@ -404,24 +465,24 @@ func simulateRoute(
 			bk = b
 		}
 
-		lotDP := decimalsFromStep(inst.LotSz)
 		minSz, okMin := parseF(inst.MinSz)
 		maxMktAmt, okMaxAmt := parseF(inst.MaxMktAmt)
 		maxMktSz, okMaxSz := parseF(inst.MaxMktSz)
 
-		switch strings.ToUpper(strings.TrimSpace(leg.Action)) {
+		switch kind {
 		case "BUY":
-			// Expect current currency to be quote
-			if ccy != inst.QuoteCcy {
+			if !strings.EqualFold(ccy, inst.QuoteCcy) {
 				return 0, "buy wrong ccy (need quote)"
 			}
-			// If OKX restricts market amount in quote
 			if okMaxAmt && amt > maxMktAmt {
 				return 0, "exceeds maxMktAmt"
 			}
 
-			base := amt / bk.Ask
-			base = floorByDP(base, lotDP)
+			baseRaw := amt / bk.Ask
+			base, okQ := quantizeDownStep(baseRaw, inst.LotSz)
+			if !okQ {
+				return 0, "quantize lotSz"
+			}
 
 			if !okMin {
 				return 0, "minSz parse"
@@ -437,15 +498,17 @@ func simulateRoute(
 			ccy = inst.BaseCcy
 
 		case "SELL":
-			// Expect current currency to be base
-			if ccy != inst.BaseCcy {
+			if !strings.EqualFold(ccy, inst.BaseCcy) {
 				return 0, "sell wrong ccy (need base)"
 			}
 			if !okMin {
 				return 0, "minSz parse"
 			}
 
-			base := floorByDP(amt, lotDP)
+			base, okQ := quantizeDownStep(amt, inst.LotSz)
+			if !okQ {
+				return 0, "quantize lotSz"
+			}
 			if base < minSz {
 				return 0, "below minSz"
 			}
@@ -456,40 +519,27 @@ func simulateRoute(
 			quote := base * bk.Bid
 			amt = quote
 			ccy = inst.QuoteCcy
-
-		default:
-			return 0, "bad action"
 		}
 	}
 
-	if ccy != startCcy {
+	if !strings.EqualFold(ccy, startCcy) {
 		return 0, "end ccy mismatch"
 	}
 	return amt, ""
 }
 
-// ============ CSV processing ============
-
-func colIndex(header []string, name string) int {
-	name = strings.ToLower(strings.TrimSpace(name))
-	for i, h := range header {
-		if strings.ToLower(strings.TrimSpace(h)) == name {
-			return i
-		}
-	}
-	return -1
-}
+// ===================== CSV filter =====================
 
 func buildOutputCSVOKX(
 	inputCSV, outputCSV string,
 	startAmt float64,
 	startCcy string,
+	keepFailed bool,
 	rules map[string]okxInstrument,
 	bl map[string]string,
 	booksURL string,
 	timeout time.Duration,
 ) error {
-
 	in, err := os.Open(inputCSV)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", inputCSV, err)
@@ -506,14 +556,6 @@ func buildOutputCSVOKX(
 	iL2 := colIndex(header, "leg2_symbol")
 	iL3 := colIndex(header, "leg3_symbol")
 
-	iA1 := colIndex(header, "leg1_action")
-	iA2 := colIndex(header, "leg2_action")
-	iA3 := colIndex(header, "leg3_action")
-
-	iP1 := colIndex(header, "leg1_price")
-	iP2 := colIndex(header, "leg2_price")
-	iP3 := colIndex(header, "leg3_price")
-
 	iF1 := colIndex(header, "leg1_from")
 	iF2 := colIndex(header, "leg2_from")
 	iF3 := colIndex(header, "leg3_from")
@@ -522,18 +564,12 @@ func buildOutputCSVOKX(
 	iT2 := colIndex(header, "leg2_to")
 	iT3 := colIndex(header, "leg3_to")
 
-	if iL1 < 0 || iL2 < 0 || iL3 < 0 ||
-		iA1 < 0 || iA2 < 0 || iA3 < 0 ||
-		iF1 < 0 || iF2 < 0 || iF3 < 0 ||
-		iT1 < 0 || iT2 < 0 || iT3 < 0 {
-		return fmt.Errorf("CSV must contain leg*_symbol, leg*_action, leg*_from, leg*_to")
+	if iL1 < 0 || iL2 < 0 || iL3 < 0 || iF1 < 0 || iF2 < 0 || iF3 < 0 || iT1 < 0 || iT2 < 0 || iT3 < 0 {
+		return fmt.Errorf("CSV must contain leg*_symbol, leg*_from, leg*_to")
 	}
-	_ = iP1
-	_ = iP2
-	_ = iP3
 
 	header = append(header,
-		"start_amt", "end_amt",
+		"start_amt", "end_amt", "fail_reason",
 		"leg1_lot_sz", "leg2_lot_sz", "leg3_lot_sz",
 		"leg1_min_sz", "leg2_min_sz", "leg3_min_sz",
 		"leg1_tick_sz", "leg2_tick_sz", "leg3_tick_sz",
@@ -587,7 +623,9 @@ func buildOutputCSVOKX(
 
 		if isBlacklisted(bl, s1) || isBlacklisted(bl, s2) || isBlacklisted(bl, s3) {
 			skippedBlacklisted++
-			continue
+			if !keepFailed {
+				continue
+			}
 		}
 
 		r1, ok1 := rules[s1]
@@ -595,53 +633,63 @@ func buildOutputCSVOKX(
 		r3, ok3 := rules[s3]
 		if !ok1 || !ok2 || !ok3 {
 			skippedNoSymbol++
-			continue
+			if !keepFailed {
+				continue
+			}
 		}
 
-		if !marketOkOKX(r1) || !marketOkOKX(r2) || !marketOkOKX(r3) {
+		eligible := ok1 && ok2 && ok3 && marketOkOKX(r1) && marketOkOKX(r2) && marketOkOKX(r3)
+		if !eligible {
 			skippedNotEligible++
-			continue
+			if !keepFailed {
+				continue
+			}
 		}
 
 		legs := [3]LegRow{
-			{
-				Symbol:    s1,
-				Action:    strings.TrimSpace(row[iA1]),
-				PriceSide: strings.TrimSpace(row[iP1]),
-				From:      strings.TrimSpace(row[iF1]),
-				To:        strings.TrimSpace(row[iT1]),
-			},
-			{
-				Symbol:    s2,
-				Action:    strings.TrimSpace(row[iA2]),
-				PriceSide: strings.TrimSpace(row[iP2]),
-				From:      strings.TrimSpace(row[iF2]),
-				To:        strings.TrimSpace(row[iT2]),
-			},
-			{
-				Symbol:    s3,
-				Action:    strings.TrimSpace(row[iA3]),
-				PriceSide: strings.TrimSpace(row[iP3]),
-				From:      strings.TrimSpace(row[iF3]),
-				To:        strings.TrimSpace(row[iT3]),
-			},
+			{Symbol: s1, From: strings.TrimSpace(row[iF1]), To: strings.TrimSpace(row[iT1])},
+			{Symbol: s2, From: strings.TrimSpace(row[iF2]), To: strings.TrimSpace(row[iT2])},
+			{Symbol: s3, From: strings.TrimSpace(row[iF3]), To: strings.TrimSpace(row[iT3])},
 		}
 
-		endAmt, fail := simulateRoute(startAmt, startCcy, legs, rules, bookCache, client, booksURL)
-		if fail != "" {
+		endAmt, fail := 0.0, ""
+		if eligible && !isBlacklisted(bl, s1) && !isBlacklisted(bl, s2) && !isBlacklisted(bl, s3) {
+			endAmt, fail = simulateRoute(startAmt, startCcy, legs, rules, bookCache, client, booksURL)
+		} else {
+			if isBlacklisted(bl, s1) || isBlacklisted(bl, s2) || isBlacklisted(bl, s3) {
+				fail = "blacklisted"
+			} else if !eligible {
+				fail = "not eligible"
+			} else {
+				fail = "no instrument"
+			}
+		}
+
+		if fail != "" && !keepFailed {
 			skippedNotFeasible++
 			continue
 		}
 
+		getOrEmpty := func(sym string) okxInstrument {
+			if v, ok := rules[sym]; ok {
+				return v
+			}
+			return okxInstrument{}
+		}
+		rr1 := getOrEmpty(s1)
+		rr2 := getOrEmpty(s2)
+		rr3 := getOrEmpty(s3)
+
 		row = append(row,
 			fmt.Sprintf("%.8f", startAmt),
 			fmt.Sprintf("%.8f", endAmt),
+			fail,
 
-			strings.TrimSpace(r1.LotSz), strings.TrimSpace(r2.LotSz), strings.TrimSpace(r3.LotSz),
-			strings.TrimSpace(r1.MinSz), strings.TrimSpace(r2.MinSz), strings.TrimSpace(r3.MinSz),
-			strings.TrimSpace(r1.TickSz), strings.TrimSpace(r2.TickSz), strings.TrimSpace(r3.TickSz),
-			strings.TrimSpace(r1.MaxMktAmt), strings.TrimSpace(r2.MaxMktAmt), strings.TrimSpace(r3.MaxMktAmt),
-			strings.TrimSpace(r1.MaxMktSz), strings.TrimSpace(r2.MaxMktSz), strings.TrimSpace(r3.MaxMktSz),
+			strings.TrimSpace(rr1.LotSz), strings.TrimSpace(rr2.LotSz), strings.TrimSpace(rr3.LotSz),
+			strings.TrimSpace(rr1.MinSz), strings.TrimSpace(rr2.MinSz), strings.TrimSpace(rr3.MinSz),
+			strings.TrimSpace(rr1.TickSz), strings.TrimSpace(rr2.TickSz), strings.TrimSpace(rr3.TickSz),
+			strings.TrimSpace(rr1.MaxMktAmt), strings.TrimSpace(rr2.MaxMktAmt), strings.TrimSpace(rr3.MaxMktAmt),
+			strings.TrimSpace(rr1.MaxMktSz), strings.TrimSpace(rr2.MaxMktSz), strings.TrimSpace(rr3.MaxMktSz),
 		)
 
 		if err := cw.Write(row); err != nil {
@@ -651,19 +699,18 @@ func buildOutputCSVOKX(
 	}
 
 	log.Printf(
-		"OK: read=%d written=%d skippedNoSymbol=%d skippedBlacklisted=%d skippedNotEligible=%d skippedNotFeasible(%.2f %s)=%d -> %s",
-		read, written, skippedNoSymbol, skippedBlacklisted, skippedNotEligible, startAmt, startCcy, skippedNotFeasible, outputCSV,
+		"OK: read=%d written=%d skippedNoSymbol=%d skippedBlacklisted=%d skippedNotEligible=%d skippedNotFeasible(start=%.2f %s)=%d keep_failed=%v -> %s",
+		read, written, skippedNoSymbol, skippedBlacklisted, skippedNotEligible, startAmt, startCcy, skippedNotFeasible, keepFailed, outputCSV,
 	)
 
 	return nil
 }
 
-// ============ main ============
+// ===================== main =====================
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	// Read from ENV
 	inputCSV := getenv("INPUT_CSV", DefaultInputCSV)
 	outputCSV := getenv("OUTPUT_CSV", DefaultOutputCSV)
 	blacklistFile := getenv("BLACKLIST_FILE", DefaultBlacklistFile)
@@ -675,6 +722,8 @@ func main() {
 	startAmt := getenvFloat("START_AMT", DefaultStartAmt)
 	startCcy := getenv("START_CCY", DefaultStartCcy)
 
+	keepFailed := getenvBool("KEEP_FAILED", false)
+
 	log.Printf("CFG: INPUT_CSV=%s", inputCSV)
 	log.Printf("CFG: OUTPUT_CSV=%s", outputCSV)
 	log.Printf("CFG: BLACKLIST_FILE=%s", blacklistFile)
@@ -683,22 +732,21 @@ func main() {
 	log.Printf("CFG: HTTP_TIMEOUT=%s", timeout)
 	log.Printf("CFG: START_AMT=%.8f", startAmt)
 	log.Printf("CFG: START_CCY=%s", startCcy)
+	log.Printf("CFG: KEEP_FAILED=%v", keepFailed)
 
-	// Load blacklist
 	bl, err := loadBlacklist(blacklistFile)
 	if err != nil {
 		log.Fatalf("ERR: load blacklist: %v", err)
 	}
 	log.Printf("OK: loaded blacklist: %d symbols", len(bl))
 
-	// Load OKX rules
 	rules, err := loadRulesOKX(instrumentsURL, timeout)
 	if err != nil {
 		log.Fatalf("ERR: load OKX instruments: %v", err)
 	}
 	log.Printf("OK: OKX instruments loaded: %d", len(rules))
 
-	// Build startup blacklist from reliable fields
+	// Startup blacklist
 	added := 0
 	for instID, s := range rules {
 		if marketOkOKX(s) {
@@ -720,8 +768,7 @@ func main() {
 	}
 	log.Printf("OK: saved blacklist -> %s", blacklistFile)
 
-	// Filter routes for START_AMT (e.g. 25 USDT)
-	if err := buildOutputCSVOKX(inputCSV, outputCSV, startAmt, strings.TrimSpace(startCcy), rules, bl, booksURL, timeout); err != nil {
+	if err := buildOutputCSVOKX(inputCSV, outputCSV, startAmt, strings.TrimSpace(startCcy), keepFailed, rules, bl, booksURL, timeout); err != nil {
 		log.Fatalf("ERR: build output csv: %v", err)
 	}
 
