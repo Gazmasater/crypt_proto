@@ -1002,3 +1002,18 @@ func main() {
 
 	log.Printf("DONE")
 }
+
+
+
+2025/12/20 14:15:16.883721 CFG: START_AMT=25.00000000
+2025/12/20 14:15:16.883724 CFG: START_CCY=USDT
+2025/12/20 14:15:16.883725 CFG: FEE_PCT=0.100000
+2025/12/20 14:15:16.883727 CFG: MIN_PROFIT_PCT=0.300000
+2025/12/20 14:15:16.883729 CFG: KEEP_FAILED=false
+2025/12/20 14:15:16.883731 CFG: BOOK_SZ=1
+2025/12/20 14:15:16.883865 OK: loaded blacklist: 0 symbols
+2025/12/20 14:15:17.290821 OK: OKX instruments loaded: 693
+2025/12/20 14:15:17.290934 OK: startup blacklist added=0 total=0
+2025/12/20 14:15:17.291277 OK: saved blacklist -> blacklist_symbols_okx.txt
+2025/12/20 14:18:40.034455 OK: read=788 written=0 skippedNoSymbol=0 skippedBlacklisted=0 skippedNotEligible=0 skippedNotFeasible=22 skippedBelowProfit=766 -> triangles_usdt_routes_market_okx.csv
+2025/12/20 14:18:40.034563 DONE
