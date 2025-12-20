@@ -1,5 +1,8 @@
-mx0vglmT3srN1IS19H
-135bb7a7509e4421bad692415c53753b
+apikey = "4333ed4b-cd83-49f5-97d1-c399e2349748"
+secretkey = "E3848531135EDB4CCFDA0F1BC14CD274"
+IP = ""
+Название API-ключа = "Arb"
+Доступы = "Чтение"
 
 
 
