@@ -77,344 +77,286 @@ go run ./cmd/triangles_enrich_mexc
 package main
 
 import (
-	"context"
 	"encoding/csv"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
-	"time"
 )
 
+type Tri struct {
+	Base1, Quote1, Base2, Quote2, Base3, Quote3 string
+	Sym1, Sym2, Sym3                            string
+}
+
 type Market struct {
-	Symbol string
-	Base   string
-	Quote  string
+	Symbol      string // OKX instId, напр. BTC-USDT
+	Base, Quote string // baseCcy / quoteCcy
 }
 
-type TriangleRow struct {
-	Base1, Quote1 string
-	Base2, Quote2 string
-	Base3, Quote3 string
-	Symbol1       string
-	Symbol2       string
-	Symbol3       string
+type Leg struct {
+	From, To  string
+	Symbol    string
+	Action    string // BUY or SELL
+	PriceSide string // ASK for BUY, BID for SELL
 }
 
-// OKX: GET /api/v5/public/instruments?instType=SPOT
-type okxInstrumentsResp struct {
-	Code string          `json:"code"`
-	Msg  string          `json:"msg"`
-	Data []okxInstrument `json:"data"`
+// BUY: quote -> base по ASK
+// SELL: base -> quote по BID
+func makeLeg(from, to string, m Market) (Leg, bool) {
+	if from == m.Quote && to == m.Base {
+		return Leg{From: from, To: to, Symbol: m.Symbol, Action: "BUY", PriceSide: "ASK"}, true
+	}
+	if from == m.Base && to == m.Quote {
+		return Leg{From: from, To: to, Symbol: m.Symbol, Action: "SELL", PriceSide: "BID"}, true
+	}
+	return Leg{}, false
 }
 
-type okxInstrument struct {
-	InstID   string `json:"instId"`
-	InstType string `json:"instType"`
-	BaseCcy  string `json:"baseCcy"`
-	QuoteCcy string `json:"quoteCcy"`
-	State    string `json:"state"`
-}
+// DFS по 3 ребрам (рынкам) без повторов ребер: START -> ? -> ? -> START
+func findRoutes3Legs(markets []Market, start string) [][]Leg {
+	var routes [][]Leg
 
-func main() {
-	var (
-		apiURL  = flag.String("api", "https://www.okx.com/api/v5/public/instruments?instType=SPOT", "OKX instruments endpoint (public)")
-		outPath = flag.String("out", "triangles_markets_okx.csv", "output csv path")
-		timeout = flag.Duration("timeout", 20*time.Second, "http timeout")
-		limitA  = flag.String("base", "", "optional: generate only for this base asset A (e.g. BTC)")
-		state   = flag.String("state", "", "optional: allow only this state (e.g. live). empty = allow common states")
-	)
-	flag.Parse()
+	used := make([]bool, len(markets))
+	var path []Leg
 
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-	defer cancel()
+	var dfs func(curr string, depth int)
+	dfs = func(curr string, depth int) {
+		if depth == 3 {
+			if curr == start {
+				cp := make([]Leg, len(path))
+				copy(cp, path)
+				routes = append(routes, cp)
+			}
+			return
+		}
 
-	markets, err := fetchMarketsOKX(ctx, *apiURL, *state, *timeout)
-	if err != nil {
-		fatalf("fetch OKX instruments: %v", err)
+		for i, mk := range markets {
+			if used[i] {
+				continue
+			}
+			// рынок должен включать curr
+			if mk.Base != curr && mk.Quote != curr {
+				continue
+			}
+
+			// next — второй актив в паре
+			var next string
+			if mk.Base == curr {
+				next = mk.Quote
+			} else {
+				next = mk.Base
+			}
+
+			leg, ok := makeLeg(curr, next, mk)
+			if !ok {
+				continue
+			}
+
+			used[i] = true
+			path = append(path, leg)
+			dfs(next, depth+1)
+			path = path[:len(path)-1]
+			used[i] = false
+		}
 	}
 
-	rows := buildTrianglesOKX(markets, strings.TrimSpace(*limitA))
-
-	if err := writeCSVAtomic(*outPath, rows); err != nil {
-		fatalf("write csv: %v", err)
-	}
-
-	fmt.Printf("OK: markets=%d triangles=%d -> %s\n", len(markets), len(rows), *outPath)
+	dfs(start, 0)
+	return routes
 }
 
-func fetchMarketsOKX(ctx context.Context, url string, onlyState string, timeout time.Duration) ([]Market, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func headerIndex(h []string) map[string]int {
+	m := map[string]int{}
+	for i, s := range h {
+		m[strings.ToLower(strings.TrimSpace(s))] = i
+	}
+	return m
+}
+
+func needCol(idx map[string]int, name string) (int, error) {
+	i, ok := idx[name]
+	if !ok {
+		return 0, fmt.Errorf("нет колонки %q в CSV", name)
+	}
+	return i, nil
+}
+
+func readTriangles(path string) ([]Tri, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
 
-	cl := &http.Client{Timeout: timeout}
-	resp, err := cl.Do(req)
+	r := csv.NewReader(f)
+	r.ReuseRecord = true
+
+	h, err := r.Read()
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	idx := headerIndex(h)
 
-	if resp.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	get := func(row []string, col string) (string, error) {
+		i, err := needCol(idx, col)
+		if err != nil {
+			return "", err
+		}
+		if i >= len(row) {
+			return "", fmt.Errorf("строка короче заголовка: col=%s", col)
+		}
+		return strings.TrimSpace(row[i]), nil
 	}
 
-	var r okxInstrumentsResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return nil, err
-	}
-
-	// OKX обычно: code="0" = success
-	if strings.TrimSpace(r.Code) != "" && strings.TrimSpace(r.Code) != "0" {
-		return nil, fmt.Errorf("okx code=%s msg=%s", strings.TrimSpace(r.Code), strings.TrimSpace(r.Msg))
-	}
-
-	allowState := func(s string) bool {
-		s = strings.TrimSpace(s)
-		if onlyState != "" {
-			return strings.EqualFold(s, onlyState)
+	var out []Tri
+	for {
+		row, err := r.Read()
+		if errors.Is(err, io.EOF) {
+			break
 		}
-		// чаще всего нужны только "live"
-		return s == "" || strings.EqualFold(s, "live")
-	}
-
-	out := make([]Market, 0, len(r.Data))
-	seen := make(map[string]struct{}, len(r.Data))
-
-	for _, it := range r.Data {
-		base := strings.TrimSpace(it.BaseCcy)
-		quote := strings.TrimSpace(it.QuoteCcy)
-		sym := strings.TrimSpace(it.InstID)
-
-		if sym == "" || base == "" || quote == "" {
-			continue
-		}
-		if !allowState(it.State) {
-			continue
-		}
-		// instType=SPOT уже в query, но на всякий случай:
-		if it.InstType != "" && !strings.EqualFold(it.InstType, "SPOT") {
-			continue
+		if err != nil {
+			return nil, err
 		}
 
-		// instId уникален
-		if _, ok := seen[sym]; ok {
-			continue
+		b1, err := get(row, "base1")
+		if err != nil {
+			return nil, err
 		}
-		seen[sym] = struct{}{}
+		q1, err := get(row, "quote1")
+		if err != nil {
+			return nil, err
+		}
+		b2, err := get(row, "base2")
+		if err != nil {
+			return nil, err
+		}
+		q2, err := get(row, "quote2")
+		if err != nil {
+			return nil, err
+		}
+		b3, err := get(row, "base3")
+		if err != nil {
+			return nil, err
+		}
+		q3, err := get(row, "quote3")
+		if err != nil {
+			return nil, err
+		}
 
-		out = append(out, Market{
-			Symbol: sym,   // например: BTC-USDT
-			Base:   base,  // BTC
-			Quote:  quote, // USDT
+		s1, err := get(row, "symbol1")
+		if err != nil {
+			return nil, err
+		}
+		s2, err := get(row, "symbol2")
+		if err != nil {
+			return nil, err
+		}
+		s3, err := get(row, "symbol3")
+		if err != nil {
+			return nil, err
+		}
+
+		out = append(out, Tri{
+			Base1: b1, Quote1: q1,
+			Base2: b2, Quote2: q2,
+			Base3: b3, Quote3: q3,
+			Sym1: s1, Sym2: s2, Sym3: s3,
 		})
 	}
-
 	return out, nil
 }
 
-// Как у тебя: base1==base3==A, а quote1/quote3 — две котировки,
-// между которыми должен существовать рынок (quote1/quote3) ИЛИ (quote3/quote1).
-func buildTrianglesOKX(markets []Market, onlyBaseA string) []TriangleRow {
-	// dir[base][quote] = Market  (ровно как на OKX: base-quote)
-	dir := make(map[string]map[string]Market, 4096)
-	quotesByBase := make(map[string][]string, 4096) // A -> list of quotes (A/quote)
-
-	for _, m := range markets {
-		if _, ok := dir[m.Base]; !ok {
-			dir[m.Base] = make(map[string]Market, 64)
-		}
-		// если внезапно дубликаты base/quote, оставим первый (детерминируем ниже сортировкой входа не будем)
-		if _, exists := dir[m.Base][m.Quote]; !exists {
-			dir[m.Base][m.Quote] = m
-			quotesByBase[m.Base] = append(quotesByBase[m.Base], m.Quote)
-		}
+func ensureDirForFile(path string) error {
+	dir := filepath.Dir(path)
+	if dir == "." || dir == "/" || dir == "" {
+		return nil
 	}
-
-	// unique + sort quotes
-	for base, qs := range quotesByBase {
-		sort.Strings(qs)
-		quotesByBase[base] = uniqueStrings(qs)
-	}
-
-	var bases []string
-	for b := range quotesByBase {
-		if onlyBaseA != "" && b != onlyBaseA {
-			continue
-		}
-		bases = append(bases, b)
-	}
-	sort.Strings(bases)
-
-	seen := make(map[string]struct{}, 4096)
-	rows := make([]TriangleRow, 0, 16384)
-
-	for _, A := range bases {
-		qs := quotesByBase[A]
-		if len(qs) < 2 {
-			continue
-		}
-
-		for i := 0; i < len(qs); i++ {
-			for j := i + 1; j < len(qs); j++ {
-				qx, qy := qs[i], qs[j]
-
-				// middle market: либо qx->qy, либо qy->qx
-				var (
-					mMid          Market
-					quote1, quote3 string
-					okMid         bool
-				)
-
-				if mm, ok := dir[qx][qy]; ok {
-					mMid = mm
-					quote1, quote3 = qx, qy
-					okMid = true
-				} else if mm, ok := dir[qy][qx]; ok {
-					mMid = mm
-					quote1, quote3 = qy, qx
-					okMid = true
-				}
-
-				if !okMid {
-					continue
-				}
-
-				// outer legs гарантированно есть, т.к. quote1/quote3 взяты из quotesByBase[A]
-				m1, ok1 := dir[A][quote1]
-				m3, ok3 := dir[A][quote3]
-				if !(ok1 && ok3) {
-					continue
-				}
-
-				// дедуп (на всякий) — фиксируем порядок quote1/quote3 ровно как выбран mid
-				key := A + "|" + quote1 + "|" + quote3 + "|" + mMid.Symbol
-				if _, exists := seen[key]; exists {
-					continue
-				}
-				seen[key] = struct{}{}
-
-				rows = append(rows, TriangleRow{
-					Base1:  m1.Base,
-					Quote1: m1.Quote,
-					Base2:  mMid.Base,
-					Quote2: mMid.Quote,
-					Base3:  m3.Base,
-					Quote3: m3.Quote,
-					Symbol1: m1.Symbol,
-					Symbol2: mMid.Symbol,
-					Symbol3: m3.Symbol,
-				})
-			}
-		}
-	}
-
-	sort.Slice(rows, func(i, j int) bool {
-		a := rows[i]
-		b := rows[j]
-		if a.Base1 != b.Base1 {
-			return a.Base1 < b.Base1
-		}
-		if a.Quote1 != b.Quote1 {
-			return a.Quote1 < b.Quote1
-		}
-		if a.Quote3 != b.Quote3 {
-			return a.Quote3 < b.Quote3
-		}
-		return a.Symbol2 < b.Symbol2
-	})
-
-	return rows
+	return os.MkdirAll(dir, 0o755)
 }
 
-func writeCSVAtomic(path string, rows []TriangleRow) error {
-	dir := filepath.Dir(path)
-	if dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("mkdir: %w", err)
-		}
-	}
-
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("create tmp: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	cw := csv.NewWriter(tmp)
-	if err := cw.Write([]string{
-		"base1", "quote1",
-		"base2", "quote2",
-		"base3", "quote3",
-		"symbol1", "symbol2", "symbol3",
-	}); err != nil {
-		tmp.Close()
-		_ = os.Remove(tmpName)
+func writeRoutes(outPath string, rows [][]string) error {
+	if err := ensureDirForFile(outPath); err != nil {
 		return err
 	}
+	f, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
 
-	for _, r := range rows {
-		if err := cw.Write([]string{
-			r.Base1, r.Quote1,
-			r.Base2, r.Quote2,
-			r.Base3, r.Quote3,
-			r.Symbol1, r.Symbol2, r.Symbol3,
-		}); err != nil {
-			tmp.Close()
-			_ = os.Remove(tmpName)
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	for _, row := range rows {
+		if err := w.Write(row); err != nil {
 			return err
 		}
 	}
-
-	cw.Flush()
-	if err := cw.Error(); err != nil {
-		tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return nil
+	w.Flush()
+	return w.Error()
 }
 
-func uniqueStrings(in []string) []string {
-	if len(in) == 0 {
-		return in
+func main() {
+	in := flag.String("in", "triangles_markets_okx.csv", "input triangles CSV (from OKX generator)")
+	out := flag.String("out", "triangles_usdt_routes_okx.csv", "output routes CSV")
+	start := flag.String("start", "USDT", "start/end currency (cycle START -> ... -> START), default USDT")
+	flag.Parse()
+
+	tris, err := readTriangles(*in)
+	if err != nil {
+		fmt.Println("ERR:", err)
+		os.Exit(1)
 	}
-	out := make([]string, 0, len(in))
-	prev := ""
-	for i, s := range in {
-		if i == 0 || s != prev {
-			out = append(out, s)
+
+	// Заголовок итогового CSV
+	rows := [][]string{{
+		"start", "mid1", "mid2", "end",
+		"leg1_symbol", "leg1_action", "leg1_price", "leg1_from", "leg1_to",
+		"leg2_symbol", "leg2_action", "leg2_price", "leg2_from", "leg2_to",
+		"leg3_symbol", "leg3_action", "leg3_price", "leg3_from", "leg3_to",
+	}}
+
+	countRoutes := 0
+	startCcy := strings.TrimSpace(*start)
+
+	for _, t := range tris {
+		markets := []Market{
+			{Symbol: t.Sym1, Base: t.Base1, Quote: t.Quote1},
+			{Symbol: t.Sym2, Base: t.Base2, Quote: t.Quote2},
+			{Symbol: t.Sym3, Base: t.Base3, Quote: t.Quote3},
 		}
-		prev = s
+
+		routes := findRoutes3Legs(markets, startCcy)
+		if len(routes) == 0 {
+			continue
+		}
+
+		for _, rt := range routes {
+			if len(rt) != 3 {
+				continue
+			}
+			row := []string{
+				startCcy, rt[0].To, rt[1].To, startCcy,
+
+				rt[0].Symbol, rt[0].Action, rt[0].PriceSide, rt[0].From, rt[0].To,
+				rt[1].Symbol, rt[1].Action, rt[1].PriceSide, rt[1].From, rt[1].To,
+				rt[2].Symbol, rt[2].Action, rt[2].PriceSide, rt[2].From, rt[2].To,
+			}
+			rows = append(rows, row)
+			countRoutes++
+		}
 	}
-	return out
+
+	if err := writeRoutes(*out, rows); err != nil {
+		fmt.Println("ERR: write csv:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("OKX OK: triangles=%d routes=%d -> %s\n", len(tris), countRoutes, *out)
 }
 
-func fatalf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "ERR: "+format+"\n", args...)
-	os.Exit(1)
-}
 
 
