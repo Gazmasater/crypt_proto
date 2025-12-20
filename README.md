@@ -80,14 +80,15 @@ import (
 	"bufio"
 	"encoding/csv"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -97,8 +98,15 @@ const (
 	DefaultOutputCSV     = "triangles_usdt_routes_market_okx.csv"
 	DefaultBlacklistFile = "blacklist_symbols_okx.txt"
 
-	OKXInstrumentsURL = "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
+	DefaultInstrumentsURL = "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
+	DefaultBooksURL       = "https://www.okx.com/api/v5/market/books"
+
+	DefaultTimeout  = 25 * time.Second
+	DefaultStartAmt = 25.0
+	DefaultStartCcy = "USDT"
 )
+
+// ============ OKX API structs ============
 
 type okxInstrumentsResp struct {
 	Code string          `json:"code"`
@@ -107,282 +115,97 @@ type okxInstrumentsResp struct {
 }
 
 type okxInstrument struct {
-	InstID   string `json:"instId"`   // e.g. BTC-USDT
-	InstType string `json:"instType"` // SPOT
+	InstID   string `json:"instId"`
+	InstType string `json:"instType"`
 	BaseCcy  string `json:"baseCcy"`
 	QuoteCcy string `json:"quoteCcy"`
-	State    string `json:"state"` // live / suspend / ...
+	State    string `json:"state"`
 
-	// Trading rules (strings):
-	LotSz  string `json:"lotSz"`  // size increment (base)
-	MinSz  string `json:"minSz"`  // min size (base)
-	TickSz string `json:"tickSz"` // price increment
+	LotSz  string `json:"lotSz"`
+	MinSz  string `json:"minSz"`
+	TickSz string `json:"tickSz"`
+
+	MaxMktAmt string `json:"maxMktAmt"` // quote
+	MaxMktSz  string `json:"maxMktSz"`  // base
 }
 
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
-	in := flag.String("in", DefaultInputCSV, "input routes CSV (triangles_usdt_routes*.csv)")
-	out := flag.String("out", DefaultOutputCSV, "output filtered CSV")
-	blFile := flag.String("blacklist", DefaultBlacklistFile, "blacklist file path")
-	api := flag.String("api", OKXInstrumentsURL, "OKX instruments endpoint")
-	timeout := flag.Duration("timeout", 25*time.Second, "HTTP timeout")
-	flag.Parse()
-
-	// 1) Load existing blacklist (or empty if missing)
-	bl, err := loadBlacklist(*blFile)
-	if err != nil {
-		log.Fatalf("ERR: load blacklist: %v", err)
-	}
-	log.Printf("OK: loaded blacklist: %d symbols (%s)", len(bl), *blFile)
-
-	// 2) Load OKX instruments (rules)
-	rules, err := loadRulesOKX(*api, *timeout)
-	if err != nil {
-		log.Fatalf("ERR: load OKX instruments: %v", err)
-	}
-	log.Printf("OK: OKX instruments loaded: %d", len(rules))
-
-	// 3) Build "startup" blacklist from reliable fields ONLY
-	added := 0
-	for instID, s := range rules {
-		if marketOkOKX(s) {
-			continue
-		}
-		reason := notOkReasonOKX(s)
-		if reason == "" {
-			reason = "not eligible"
-		}
-		if _, exists := bl[instID]; !exists {
-			bl[instID] = reason
-			added++
-		}
-	}
-	log.Printf("OK: startup blacklist added=%d total=%d", added, len(bl))
-
-	// 4) Save merged blacklist
-	if err := saveBlacklist(*blFile, bl); err != nil {
-		log.Fatalf("ERR: save blacklist: %v", err)
-	}
-	log.Printf("OK: saved blacklist -> %s", *blFile)
-
-	// 5) Filter routes and write output CSV
-	if err := buildOutputCSVOKX(*in, *out, rules, bl); err != nil {
-		log.Fatalf("ERR: build output csv: %v", err)
-	}
+type okxBooksResp struct {
+	Code string        `json:"code"`
+	Msg  string        `json:"msg"`
+	Data []okxBookData `json:"data"`
 }
 
-func loadRulesOKX(url string, timeout time.Duration) (map[string]okxInstrument, error) {
-	client := &http.Client{Timeout: timeout}
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	// Иногда помогает от странных блоков/проксей:
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "cryptarb/1.0 (+okx instruments loader)")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("OKX instruments http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
-	}
-
-	var r okxInstrumentsResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(r.Code) != "" && strings.TrimSpace(r.Code) != "0" {
-		return nil, fmt.Errorf("OKX code=%s msg=%s", strings.TrimSpace(r.Code), strings.TrimSpace(r.Msg))
-	}
-
-	m := make(map[string]okxInstrument, len(r.Data))
-	for _, s := range r.Data {
-		instID := strings.TrimSpace(s.InstID)
-		if instID == "" {
-			continue
-		}
-		m[instID] = s
-	}
-	return m, nil
+type okxBookData struct {
+	Asks [][]string `json:"asks"`
+	Bids [][]string `json:"bids"`
 }
 
-func buildOutputCSVOKX(inputCSV, outputCSV string, rules map[string]okxInstrument, bl map[string]string) error {
-	in, err := os.Open(inputCSV)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", inputCSV, err)
-	}
-	defer in.Close()
-
-	cr := csv.NewReader(in)
-	header, err := cr.Read()
-	if err != nil {
-		return fmt.Errorf("read header: %w", err)
-	}
-
-	iL1 := colIndex(header, "leg1_symbol")
-	iL2 := colIndex(header, "leg2_symbol")
-	iL3 := colIndex(header, "leg3_symbol")
-	if iL1 < 0 || iL2 < 0 || iL3 < 0 {
-		return fmt.Errorf("нет колонок leg1_symbol/leg2_symbol/leg3_symbol в CSV")
-	}
-
-	// Add OKX rule/precision columns
-	header = append(header,
-		"leg1_lot_sz", "leg2_lot_sz", "leg3_lot_sz",
-		"leg1_min_sz", "leg2_min_sz", "leg3_min_sz",
-		"leg1_tick_sz", "leg2_tick_sz", "leg3_tick_sz",
-		"leg1_qty_dp", "leg2_qty_dp", "leg3_qty_dp",
-		"leg1_price_dp", "leg2_price_dp", "leg3_price_dp",
-	)
-
-	out, err := os.Create(outputCSV)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", outputCSV, err)
-	}
-	defer out.Close()
-
-	cw := csv.NewWriter(out)
-	defer cw.Flush()
-
-	if err := cw.Write(header); err != nil {
-		return fmt.Errorf("write header: %w", err)
-	}
-
-	read := 0
-	written := 0
-	skippedNoSymbol := 0
-	skippedBlacklisted := 0
-	skippedNotEligible := 0
-
-	for {
-		row, err := cr.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("read csv: %w", err)
-		}
-		read++
-
-		s1 := strings.TrimSpace(row[iL1])
-		s2 := strings.TrimSpace(row[iL2])
-		s3 := strings.TrimSpace(row[iL3])
-		if s1 == "" || s2 == "" || s3 == "" {
-			skippedNoSymbol++
-			continue
-		}
-
-		// if any leg is in blacklist -> skip
-		if isBlacklisted(bl, s1) || isBlacklisted(bl, s2) || isBlacklisted(bl, s3) {
-			skippedBlacklisted++
-			continue
-		}
-
-		r1, ok1 := rules[s1]
-		r2, ok2 := rules[s2]
-		r3, ok3 := rules[s3]
-		if !ok1 || !ok2 || !ok3 {
-			skippedNoSymbol++
-			continue
-		}
-
-		// eligibility
-		if !marketOkOKX(r1) || !marketOkOKX(r2) || !marketOkOKX(r3) {
-			skippedNotEligible++
-			continue
-		}
-
-		// qty precision from lotSz
-		dpQty1 := decimalsFromStep(r1.LotSz)
-		dpQty2 := decimalsFromStep(r2.LotSz)
-		dpQty3 := decimalsFromStep(r3.LotSz)
-
-		// price precision from tickSz
-		dpPx1 := decimalsFromStep(r1.TickSz)
-		dpPx2 := decimalsFromStep(r2.TickSz)
-		dpPx3 := decimalsFromStep(r3.TickSz)
-
-		row = append(row,
-			strings.TrimSpace(r1.LotSz), strings.TrimSpace(r2.LotSz), strings.TrimSpace(r3.LotSz),
-			strings.TrimSpace(r1.MinSz), strings.TrimSpace(r2.MinSz), strings.TrimSpace(r3.MinSz),
-			strings.TrimSpace(r1.TickSz), strings.TrimSpace(r2.TickSz), strings.TrimSpace(r3.TickSz),
-			fmt.Sprintf("%d", dpQty1), fmt.Sprintf("%d", dpQty2), fmt.Sprintf("%d", dpQty3),
-			fmt.Sprintf("%d", dpPx1), fmt.Sprintf("%d", dpPx2), fmt.Sprintf("%d", dpPx3),
-		)
-
-		if err := cw.Write(row); err != nil {
-			return fmt.Errorf("write row: %w", err)
-		}
-		written++
-	}
-
-	log.Printf(
-		"OK: read=%d written=%d skippedNoSymbol=%d skippedBlacklisted=%d skippedNotEligible=%d -> %s",
-		read, written, skippedNoSymbol, skippedBlacklisted, skippedNotEligible, outputCSV,
-	)
-
-	if written == 0 {
-		log.Printf("WARN: output is empty. Possible reasons:")
-		log.Printf(" - input CSV symbols are not OKX instId (must be like BTC-USDT)")
-		log.Printf(" - too broad blacklist (%s)", filepath.Base(outputCSV))
-		log.Printf(" - OKX instruments fetch blocked (then rules map is small/empty)")
-	}
-
-	return nil
+type Book struct {
+	Ask float64
+	Bid float64
 }
 
-// ======= Eligibility / reasons (OKX) =======
+// ============ Routes CSV leg ============
 
-func marketOkOKX(s okxInstrument) bool {
-	if s.InstType != "" && !strings.EqualFold(strings.TrimSpace(s.InstType), "SPOT") {
-		return false
-	}
-	if !strings.EqualFold(strings.TrimSpace(s.State), "live") {
-		return false
-	}
-	// Чтобы потом не ломаться на округлениях
-	if strings.TrimSpace(s.LotSz) == "" {
-		return false
-	}
-	if strings.TrimSpace(s.MinSz) == "" {
-		return false
-	}
-	if strings.TrimSpace(s.TickSz) == "" {
-		return false
-	}
-	return true
+type LegRow struct {
+	Symbol    string
+	Action    string // BUY/SELL
+	PriceSide string // ASK/BID (not used, just carried)
+	From      string
+	To        string
 }
 
-func notOkReasonOKX(s okxInstrument) string {
-	var reasons []string
-	if s.InstType != "" && !strings.EqualFold(strings.TrimSpace(s.InstType), "SPOT") {
-		reasons = append(reasons, "instType!=SPOT")
+// ============ ENV helpers ============
+
+func getenv(key, def string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
 	}
-	if !strings.EqualFold(strings.TrimSpace(s.State), "live") {
-		reasons = append(reasons, "state!=live")
-	}
-	if strings.TrimSpace(s.LotSz) == "" {
-		reasons = append(reasons, "lotSz empty")
-	}
-	if strings.TrimSpace(s.MinSz) == "" {
-		reasons = append(reasons, "minSz empty")
-	}
-	if strings.TrimSpace(s.TickSz) == "" {
-		reasons = append(reasons, "tickSz empty")
-	}
-	return strings.Join(reasons, ", ")
+	return v
 }
 
-// ======= Precision helpers =======
+func getenvDuration(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Printf("WARN: bad %s=%q, using default %s", key, v, def)
+		return def
+	}
+	return d
+}
 
-// "0.000001" -> 6; "1" -> 0; "" -> -1
+func getenvFloat(key string, def float64) float64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		log.Printf("WARN: bad %s=%q, using default %.8f", key, v, def)
+		return def
+	}
+	return f
+}
+
+// ============ Parsing helpers ============
+
+func parseF(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	return v, true
+}
+
+// "0.001" -> 3, "1" -> 0, "" -> -1
 func decimalsFromStep(step string) int {
 	step = strings.TrimSpace(step)
 	if step == "" {
@@ -396,19 +219,15 @@ func decimalsFromStep(step string) int {
 	return len(frac)
 }
 
-// ======= CSV helpers =======
-
-func colIndex(header []string, name string) int {
-	name = strings.ToLower(strings.TrimSpace(name))
-	for i, h := range header {
-		if strings.ToLower(strings.TrimSpace(h)) == name {
-			return i
-		}
+func floorByDP(x float64, dp int) float64 {
+	if dp <= 0 {
+		return math.Floor(x)
 	}
-	return -1
+	pow := math.Pow10(dp)
+	return math.Floor(x*pow) / pow
 }
 
-// ======= Blacklist I/O =======
+// ============ Blacklist I/O ============
 
 // File format: SYMBOL<TAB>reason
 // Lines starting with # are comments.
@@ -418,7 +237,7 @@ func loadBlacklist(path string) (map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return bl, nil // first run: empty
+			return bl, nil
 		}
 		return nil, err
 	}
@@ -441,15 +260,11 @@ func loadBlacklist(path string) (map[string]string, error) {
 		}
 		bl[sym] = reason
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	return bl, nil
+	return bl, sc.Err()
 }
 
 func saveBlacklist(path string, bl map[string]string) error {
 	tmp := path + ".tmp"
-
 	if err := ensureDirForFile(path); err != nil {
 		return err
 	}
@@ -485,6 +300,8 @@ func isBlacklisted(bl map[string]string, sym string) bool {
 	return ok
 }
 
+// ============ FS helpers ============
+
 func ensureDirForFile(path string) error {
 	dir := filepath.Dir(path)
 	if dir == "." || dir == "/" || dir == "" {
@@ -492,6 +309,516 @@ func ensureDirForFile(path string) error {
 	}
 	return os.MkdirAll(dir, 0o755)
 }
+
+// ============ OKX instruments/rules ============
+
+func loadRulesOKX(url string, timeout time.Duration) (map[string]okxInstrument, error) {
+	client := &http.Client{Timeout: timeout}
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "cryptarb/1.0 (+okx instruments loader)")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode/100 != 2 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("OKX instruments http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	var r okxInstrumentsResp
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(r.Code) != "" && strings.TrimSpace(r.Code) != "0" {
+		return nil, fmt.Errorf("OKX instruments code=%s msg=%s", strings.TrimSpace(r.Code), strings.TrimSpace(r.Msg))
+	}
+
+	m := make(map[string]okxInstrument, len(r.Data))
+	for _, s := range r.Data {
+		id := strings.TrimSpace(s.InstID)
+		if id == "" {
+			continue
+		}
+		m[id] = s
+	}
+	return m, nil
+}
+
+// Eligibility:
+// instType==SPOT
+// state==live
+// lotSz/minSz/tickSz not empty
+// AND (maxMktAmt OR maxMktSz) not empty
+func marketOkOKX(s okxInstrument) bool {
+	if s.InstType != "" && !strings.EqualFold(strings.TrimSpace(s.InstType), "SPOT") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(s.State), "live") {
+		return false
+	}
+	if strings.TrimSpace(s.LotSz) == "" || strings.TrimSpace(s.MinSz) == "" || strings.TrimSpace(s.TickSz) == "" {
+		return false
+	}
+	if strings.TrimSpace(s.MaxMktAmt) == "" && strings.TrimSpace(s.MaxMktSz) == "" {
+		return false
+	}
+	return true
+}
+
+func notOkReasonOKX(s okxInstrument) string {
+	var reasons []string
+	if s.InstType != "" && !strings.EqualFold(strings.TrimSpace(s.InstType), "SPOT") {
+		reasons = append(reasons, "instType!=SPOT")
+	}
+	if !strings.EqualFold(strings.TrimSpace(s.State), "live") {
+		reasons = append(reasons, "state!=live")
+	}
+	if strings.TrimSpace(s.LotSz) == "" {
+		reasons = append(reasons, "lotSz empty")
+	}
+	if strings.TrimSpace(s.MinSz) == "" {
+		reasons = append(reasons, "minSz empty")
+	}
+	if strings.TrimSpace(s.TickSz) == "" {
+		reasons = append(reasons, "tickSz empty")
+	}
+	if strings.TrimSpace(s.MaxMktAmt) == "" && strings.TrimSpace(s.MaxMktSz) == "" {
+		reasons = append(reasons, "maxMktAmt/maxMktSz empty")
+	}
+	return strings.Join(reasons, ", ")
+}
+
+// ============ OKX top-of-book ============
+
+func fetchTopBook(client *http.Client, booksBaseURL, instId string) (Book, error) {
+	url := fmt.Sprintf("%s?instId=%s&sz=1", strings.TrimRight(booksBaseURL, "/"), instId)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return Book{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "cryptarb/1.0 (+okx books)")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return Book{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode/100 != 2 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return Book{}, fmt.Errorf("books http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	var r okxBooksResp
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return Book{}, err
+	}
+	if strings.TrimSpace(r.Code) != "" && strings.TrimSpace(r.Code) != "0" {
+		return Book{}, fmt.Errorf("books code=%s msg=%s", strings.TrimSpace(r.Code), strings.TrimSpace(r.Msg))
+	}
+	if len(r.Data) == 0 {
+		return Book{}, fmt.Errorf("empty books data")
+	}
+	d := r.Data[0]
+	if len(d.Asks) == 0 || len(d.Bids) == 0 {
+		return Book{}, fmt.Errorf("empty asks/bids")
+	}
+
+	ask, okA := parseF(d.Asks[0][0])
+	bid, okB := parseF(d.Bids[0][0])
+	if !okA || !okB || ask <= 0 || bid <= 0 {
+		return Book{}, fmt.Errorf("bad ask/bid")
+	}
+
+	return Book{Ask: ask, Bid: bid}, nil
+}
+
+// ============ Route simulation for START_AMT (e.g. 25 USDT) ============
+
+// BUY: spend quote at ASK -> receive base (floor to lotSz), check minSz, check maxMktAmt/maxMktSz
+// SELL: sell base at BID (floor to lotSz), check minSz, check maxMktSz
+func simulateRoute(
+	startAmt float64,
+	startCcy string,
+	legs [3]LegRow,
+	rules map[string]okxInstrument,
+	bookCache map[string]Book,
+	client *http.Client,
+	booksURL string,
+) (endAmt float64, fail string) {
+
+	amt := startAmt
+	ccy := startCcy
+
+	for i := 0; i < 3; i++ {
+		leg := legs[i]
+
+		inst, ok := rules[leg.Symbol]
+		if !ok {
+			return 0, "no instrument"
+		}
+		if !marketOkOKX(inst) {
+			return 0, "not eligible"
+		}
+
+		bk, ok := bookCache[leg.Symbol]
+		if !ok {
+			b, err := fetchTopBook(client, booksURL, leg.Symbol)
+			if err != nil {
+				return 0, "book err: " + err.Error()
+			}
+			bookCache[leg.Symbol] = b
+			bk = b
+		}
+
+		lotDP := decimalsFromStep(inst.LotSz)
+		minSz, okMin := parseF(inst.MinSz)
+		maxMktAmt, okMaxAmt := parseF(inst.MaxMktAmt)
+		maxMktSz, okMaxSz := parseF(inst.MaxMktSz)
+
+		switch strings.ToUpper(strings.TrimSpace(leg.Action)) {
+		case "BUY":
+			// Expect current currency to be quote
+			if ccy != inst.QuoteCcy {
+				return 0, "buy wrong ccy (need quote)"
+			}
+			// If OKX restricts market amount in quote
+			if okMaxAmt && amt > maxMktAmt {
+				return 0, "exceeds maxMktAmt"
+			}
+
+			base := amt / bk.Ask
+			base = floorByDP(base, lotDP)
+
+			if !okMin {
+				return 0, "minSz parse"
+			}
+			if base < minSz {
+				return 0, "below minSz"
+			}
+			if okMaxSz && base > maxMktSz {
+				return 0, "exceeds maxMktSz"
+			}
+
+			amt = base
+			ccy = inst.BaseCcy
+
+		case "SELL":
+			// Expect current currency to be base
+			if ccy != inst.BaseCcy {
+				return 0, "sell wrong ccy (need base)"
+			}
+			if !okMin {
+				return 0, "minSz parse"
+			}
+
+			base := floorByDP(amt, lotDP)
+			if base < minSz {
+				return 0, "below minSz"
+			}
+			if okMaxSz && base > maxMktSz {
+				return 0, "exceeds maxMktSz"
+			}
+
+			quote := base * bk.Bid
+			amt = quote
+			ccy = inst.QuoteCcy
+
+		default:
+			return 0, "bad action"
+		}
+	}
+
+	if ccy != startCcy {
+		return 0, "end ccy mismatch"
+	}
+	return amt, ""
+}
+
+// ============ CSV processing ============
+
+func colIndex(header []string, name string) int {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for i, h := range header {
+		if strings.ToLower(strings.TrimSpace(h)) == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func buildOutputCSVOKX(
+	inputCSV, outputCSV string,
+	startAmt float64,
+	startCcy string,
+	rules map[string]okxInstrument,
+	bl map[string]string,
+	booksURL string,
+	timeout time.Duration,
+) error {
+
+	in, err := os.Open(inputCSV)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", inputCSV, err)
+	}
+	defer in.Close()
+
+	cr := csv.NewReader(in)
+	header, err := cr.Read()
+	if err != nil {
+		return fmt.Errorf("read header: %w", err)
+	}
+
+	iL1 := colIndex(header, "leg1_symbol")
+	iL2 := colIndex(header, "leg2_symbol")
+	iL3 := colIndex(header, "leg3_symbol")
+
+	iA1 := colIndex(header, "leg1_action")
+	iA2 := colIndex(header, "leg2_action")
+	iA3 := colIndex(header, "leg3_action")
+
+	iP1 := colIndex(header, "leg1_price")
+	iP2 := colIndex(header, "leg2_price")
+	iP3 := colIndex(header, "leg3_price")
+
+	iF1 := colIndex(header, "leg1_from")
+	iF2 := colIndex(header, "leg2_from")
+	iF3 := colIndex(header, "leg3_from")
+
+	iT1 := colIndex(header, "leg1_to")
+	iT2 := colIndex(header, "leg2_to")
+	iT3 := colIndex(header, "leg3_to")
+
+	if iL1 < 0 || iL2 < 0 || iL3 < 0 ||
+		iA1 < 0 || iA2 < 0 || iA3 < 0 ||
+		iF1 < 0 || iF2 < 0 || iF3 < 0 ||
+		iT1 < 0 || iT2 < 0 || iT3 < 0 {
+		return fmt.Errorf("CSV must contain leg*_symbol, leg*_action, leg*_from, leg*_to")
+	}
+	_ = iP1
+	_ = iP2
+	_ = iP3
+
+	header = append(header,
+		"start_amt", "end_amt",
+		"leg1_lot_sz", "leg2_lot_sz", "leg3_lot_sz",
+		"leg1_min_sz", "leg2_min_sz", "leg3_min_sz",
+		"leg1_tick_sz", "leg2_tick_sz", "leg3_tick_sz",
+		"leg1_max_mkt_amt", "leg2_max_mkt_amt", "leg3_max_mkt_amt",
+		"leg1_max_mkt_sz", "leg2_max_mkt_sz", "leg3_max_mkt_sz",
+	)
+
+	if err := ensureDirForFile(outputCSV); err != nil {
+		return err
+	}
+	out, err := os.Create(outputCSV)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", outputCSV, err)
+	}
+	defer out.Close()
+
+	cw := csv.NewWriter(out)
+	defer cw.Flush()
+
+	if err := cw.Write(header); err != nil {
+		return fmt.Errorf("write header: %w", err)
+	}
+
+	client := &http.Client{Timeout: timeout}
+	bookCache := make(map[string]Book, 4096)
+
+	read := 0
+	written := 0
+	skippedNoSymbol := 0
+	skippedBlacklisted := 0
+	skippedNotEligible := 0
+	skippedNotFeasible := 0
+
+	for {
+		row, err := cr.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read csv: %w", err)
+		}
+		read++
+
+		s1 := strings.TrimSpace(row[iL1])
+		s2 := strings.TrimSpace(row[iL2])
+		s3 := strings.TrimSpace(row[iL3])
+		if s1 == "" || s2 == "" || s3 == "" {
+			skippedNoSymbol++
+			continue
+		}
+
+		if isBlacklisted(bl, s1) || isBlacklisted(bl, s2) || isBlacklisted(bl, s3) {
+			skippedBlacklisted++
+			continue
+		}
+
+		r1, ok1 := rules[s1]
+		r2, ok2 := rules[s2]
+		r3, ok3 := rules[s3]
+		if !ok1 || !ok2 || !ok3 {
+			skippedNoSymbol++
+			continue
+		}
+
+		if !marketOkOKX(r1) || !marketOkOKX(r2) || !marketOkOKX(r3) {
+			skippedNotEligible++
+			continue
+		}
+
+		legs := [3]LegRow{
+			{
+				Symbol:    s1,
+				Action:    strings.TrimSpace(row[iA1]),
+				PriceSide: strings.TrimSpace(row[iP1]),
+				From:      strings.TrimSpace(row[iF1]),
+				To:        strings.TrimSpace(row[iT1]),
+			},
+			{
+				Symbol:    s2,
+				Action:    strings.TrimSpace(row[iA2]),
+				PriceSide: strings.TrimSpace(row[iP2]),
+				From:      strings.TrimSpace(row[iF2]),
+				To:        strings.TrimSpace(row[iT2]),
+			},
+			{
+				Symbol:    s3,
+				Action:    strings.TrimSpace(row[iA3]),
+				PriceSide: strings.TrimSpace(row[iP3]),
+				From:      strings.TrimSpace(row[iF3]),
+				To:        strings.TrimSpace(row[iT3]),
+			},
+		}
+
+		endAmt, fail := simulateRoute(startAmt, startCcy, legs, rules, bookCache, client, booksURL)
+		if fail != "" {
+			skippedNotFeasible++
+			continue
+		}
+
+		row = append(row,
+			fmt.Sprintf("%.8f", startAmt),
+			fmt.Sprintf("%.8f", endAmt),
+
+			strings.TrimSpace(r1.LotSz), strings.TrimSpace(r2.LotSz), strings.TrimSpace(r3.LotSz),
+			strings.TrimSpace(r1.MinSz), strings.TrimSpace(r2.MinSz), strings.TrimSpace(r3.MinSz),
+			strings.TrimSpace(r1.TickSz), strings.TrimSpace(r2.TickSz), strings.TrimSpace(r3.TickSz),
+			strings.TrimSpace(r1.MaxMktAmt), strings.TrimSpace(r2.MaxMktAmt), strings.TrimSpace(r3.MaxMktAmt),
+			strings.TrimSpace(r1.MaxMktSz), strings.TrimSpace(r2.MaxMktSz), strings.TrimSpace(r3.MaxMktSz),
+		)
+
+		if err := cw.Write(row); err != nil {
+			return fmt.Errorf("write row: %w", err)
+		}
+		written++
+	}
+
+	log.Printf(
+		"OK: read=%d written=%d skippedNoSymbol=%d skippedBlacklisted=%d skippedNotEligible=%d skippedNotFeasible(%.2f %s)=%d -> %s",
+		read, written, skippedNoSymbol, skippedBlacklisted, skippedNotEligible, startAmt, startCcy, skippedNotFeasible, outputCSV,
+	)
+
+	return nil
+}
+
+// ============ main ============
+
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	// Read from ENV
+	inputCSV := getenv("INPUT_CSV", DefaultInputCSV)
+	outputCSV := getenv("OUTPUT_CSV", DefaultOutputCSV)
+	blacklistFile := getenv("BLACKLIST_FILE", DefaultBlacklistFile)
+
+	instrumentsURL := getenv("OKX_INSTRUMENTS_URL", DefaultInstrumentsURL)
+	booksURL := getenv("OKX_BOOKS_URL", DefaultBooksURL)
+
+	timeout := getenvDuration("HTTP_TIMEOUT", DefaultTimeout)
+	startAmt := getenvFloat("START_AMT", DefaultStartAmt)
+	startCcy := getenv("START_CCY", DefaultStartCcy)
+
+	log.Printf("CFG: INPUT_CSV=%s", inputCSV)
+	log.Printf("CFG: OUTPUT_CSV=%s", outputCSV)
+	log.Printf("CFG: BLACKLIST_FILE=%s", blacklistFile)
+	log.Printf("CFG: OKX_INSTRUMENTS_URL=%s", instrumentsURL)
+	log.Printf("CFG: OKX_BOOKS_URL=%s", booksURL)
+	log.Printf("CFG: HTTP_TIMEOUT=%s", timeout)
+	log.Printf("CFG: START_AMT=%.8f", startAmt)
+	log.Printf("CFG: START_CCY=%s", startCcy)
+
+	// Load blacklist
+	bl, err := loadBlacklist(blacklistFile)
+	if err != nil {
+		log.Fatalf("ERR: load blacklist: %v", err)
+	}
+	log.Printf("OK: loaded blacklist: %d symbols", len(bl))
+
+	// Load OKX rules
+	rules, err := loadRulesOKX(instrumentsURL, timeout)
+	if err != nil {
+		log.Fatalf("ERR: load OKX instruments: %v", err)
+	}
+	log.Printf("OK: OKX instruments loaded: %d", len(rules))
+
+	// Build startup blacklist from reliable fields
+	added := 0
+	for instID, s := range rules {
+		if marketOkOKX(s) {
+			continue
+		}
+		reason := notOkReasonOKX(s)
+		if reason == "" {
+			reason = "not eligible"
+		}
+		if _, exists := bl[instID]; !exists {
+			bl[instID] = reason
+			added++
+		}
+	}
+	log.Printf("OK: startup blacklist added=%d total=%d", added, len(bl))
+
+	if err := saveBlacklist(blacklistFile, bl); err != nil {
+		log.Fatalf("ERR: save blacklist: %v", err)
+	}
+	log.Printf("OK: saved blacklist -> %s", blacklistFile)
+
+	// Filter routes for START_AMT (e.g. 25 USDT)
+	if err := buildOutputCSVOKX(inputCSV, outputCSV, startAmt, strings.TrimSpace(startCcy), rules, bl, booksURL, timeout); err != nil {
+		log.Fatalf("ERR: build output csv: %v", err)
+	}
+
+	log.Printf("DONE")
+}
+
+
+
+
+
+INPUT_CSV=triangles_usdt_routes_okx.csv
+OUTPUT_CSV=triangles_usdt_routes_market_okx.csv
+BLACKLIST_FILE=blacklist_symbols_okx.txt
+
+OKX_INSTRUMENTS_URL=https://www.okx.com/api/v5/public/instruments?instType=SPOT
+OKX_BOOKS_URL=https://www.okx.com/api/v5/market/books
+
+HTTP_TIMEOUT=25s
+START_AMT=25
+START_CCY=USDT
+
 
 
 
