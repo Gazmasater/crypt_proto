@@ -1,4 +1,4 @@
-# generated: 2025-12-20 00:15:14
+# generated: 2025-12-20 11:13:23
 # format: SYMBOL<TAB>reason
 AAVEUSDC	no MARKET type
 ADABTC	no MARKET type
@@ -28,6 +28,7 @@ JASMYUSDC	no MARKET type
 KAIAUSDC	no MARKET type
 KOMUSDT	st=true
 LAK3USDT	st=true
+LITUSDT	status!=1
 LTCBTC	no MARKET type
 LTCUSDC	no MARKET type
 LUNCUSDC	no MARKET type
@@ -36,6 +37,7 @@ MINUSDT	no MARKET type
 MRLNUSDT	st=true
 MXUSDC	no MARKET type
 NEARUSDC	no MARKET type
+NOVAUSDT	status!=1
 OPUSDC	no MARKET type
 PAXGUSDC	no MARKET type
 PENUSDT	st=true
@@ -46,7 +48,6 @@ SLFUSDT	st=true
 SOLUSDC	no MARKET type
 SPLDUSDT	status!=1
 TOMIUSDT	st=true
-TRIARCUSDT	status!=1
 TRISIGUSDT	st=true
 TROWUSDT	st=true
 TRXUSDC	no MARKET type
