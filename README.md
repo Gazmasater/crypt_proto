@@ -77,398 +77,344 @@ go run ./cmd/triangles_enrich_mexc
 package main
 
 import (
-	"bufio"
+	"context"
 	"encoding/csv"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
 
-const (
-	InputCSV      = "triangles_usdt_routes.csv"
-	OutputCSV     = "triangles_usdt_routes_market.csv"
-	BlacklistFile = "blacklist_symbols.txt"
-	BaseURL       = "https://api.mexc.com"
-)
-
-type exchangeInfo struct {
-	Symbols []symbolInfo `json:"symbols"`
+type Market struct {
+	Symbol string
+	Base   string
+	Quote  string
 }
 
-type symbolInfo struct {
-	Symbol string `json:"symbol"`
-	Status string `json:"status"`
+type TriangleRow struct {
+	Base1, Quote1 string
+	Base2, Quote2 string
+	Base3, Quote3 string
+	Symbol1       string
+	Symbol2       string
+	Symbol3       string
+}
 
-	OrderTypes  []string `json:"orderTypes"`
-	Permissions []string `json:"permissions"`
-	St          bool     `json:"st"`
+// OKX: GET /api/v5/public/instruments?instType=SPOT
+type okxInstrumentsResp struct {
+	Code string          `json:"code"`
+	Msg  string          `json:"msg"`
+	Data []okxInstrument `json:"data"`
+}
 
-	BaseSizePrec string `json:"baseSizePrecision"`
-
-	QuoteAmountPrecisionMarket string `json:"quoteAmountPrecisionMarket"`
-	QuoteAmountPrecision       string `json:"quoteAmountPrecision"`
+type okxInstrument struct {
+	InstID   string `json:"instId"`
+	InstType string `json:"instType"`
+	BaseCcy  string `json:"baseCcy"`
+	QuoteCcy string `json:"quoteCcy"`
+	State    string `json:"state"`
 }
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	var (
+		apiURL  = flag.String("api", "https://www.okx.com/api/v5/public/instruments?instType=SPOT", "OKX instruments endpoint (public)")
+		outPath = flag.String("out", "triangles_markets_okx.csv", "output csv path")
+		timeout = flag.Duration("timeout", 20*time.Second, "http timeout")
+		limitA  = flag.String("base", "", "optional: generate only for this base asset A (e.g. BTC)")
+		state   = flag.String("state", "", "optional: allow only this state (e.g. live). empty = allow common states")
+	)
+	flag.Parse()
 
-	// 1) Load existing blacklist (or empty if missing)
-	bl, err := loadBlacklist(BlacklistFile)
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	markets, err := fetchMarketsOKX(ctx, *apiURL, *state, *timeout)
 	if err != nil {
-		log.Fatalf("ERR: load blacklist: %v", err)
+		fatalf("fetch OKX instruments: %v", err)
 	}
-	log.Printf("OK: loaded blacklist: %d symbols (%s)", len(bl), BlacklistFile)
 
-	// 2) Load exchangeInfo
-	rules, err := loadRules()
-	if err != nil {
-		log.Fatalf("ERR: load exchangeInfo: %v", err)
-	}
-	log.Printf("OK: exchangeInfo symbols: %d", len(rules))
+	rows := buildTrianglesOKX(markets, strings.TrimSpace(*limitA))
 
-	// 3) Build "startup" blacklist from reliable fields ONLY
-	added := 0
-	for sym, s := range rules {
-		if marketOk(s) {
-			continue
-		}
-		reason := notOkReason(s)
-		if reason == "" {
-			reason = "not eligible"
-		}
-		if _, exists := bl[sym]; !exists {
-			bl[sym] = reason
-			added++
-		}
+	if err := writeCSVAtomic(*outPath, rows); err != nil {
+		fatalf("write csv: %v", err)
 	}
-	log.Printf("OK: startup blacklist added=%d total=%d", added, len(bl))
 
-	// 4) Save merged blacklist
-	if err := saveBlacklist(BlacklistFile, bl); err != nil {
-		log.Fatalf("ERR: save blacklist: %v", err)
-	}
-	log.Printf("OK: saved blacklist -> %s", BlacklistFile)
-
-	// 5) Filter triangles and write output CSV
-	if err := buildOutputCSV(rules, bl); err != nil {
-		log.Fatalf("ERR: build output csv: %v", err)
-	}
+	fmt.Printf("OK: markets=%d triangles=%d -> %s\n", len(markets), len(rows), *outPath)
 }
 
-func buildOutputCSV(rules map[string]symbolInfo, bl map[string]string) error {
-	in, err := os.Open(InputCSV)
+func fetchMarketsOKX(ctx context.Context, url string, onlyState string, timeout time.Duration) ([]Market, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", InputCSV, err)
-	}
-	defer in.Close()
-
-	cr := csv.NewReader(in)
-	header, err := cr.Read()
-	if err != nil {
-		return fmt.Errorf("read header: %w", err)
+		return nil, err
 	}
 
-	iL1 := colIndex(header, "leg1_symbol")
-	iL2 := colIndex(header, "leg2_symbol")
-	iL3 := colIndex(header, "leg3_symbol")
-	if iL1 < 0 || iL2 < 0 || iL3 < 0 {
-		return fmt.Errorf("нет колонок leg1_symbol/leg2_symbol/leg3_symbol в CSV")
-	}
-
-	// Add precision columns
-	header = append(header,
-		"leg1_qty_dp", "leg2_qty_dp", "leg3_qty_dp",
-		"leg1_quote_dp_market", "leg2_quote_dp_market", "leg3_quote_dp_market",
-	)
-
-	out, err := os.Create(OutputCSV)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", OutputCSV, err)
-	}
-	defer out.Close()
-
-	cw := csv.NewWriter(out)
-	defer cw.Flush()
-
-	if err := cw.Write(header); err != nil {
-		return fmt.Errorf("write header: %w", err)
-	}
-
-	read := 0
-	written := 0
-	skippedNoSymbol := 0
-	skippedBlacklisted := 0
-	skippedNotEligible := 0
-
-	for {
-		row, err := cr.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("read csv: %w", err)
-		}
-		read++
-
-		s1 := strings.TrimSpace(row[iL1])
-		s2 := strings.TrimSpace(row[iL2])
-		s3 := strings.TrimSpace(row[iL3])
-		if s1 == "" || s2 == "" || s3 == "" {
-			skippedNoSymbol++
-			continue
-		}
-
-		// if any leg is in blacklist -> skip
-		if isBlacklisted(bl, s1) || isBlacklisted(bl, s2) || isBlacklisted(bl, s3) {
-			skippedBlacklisted++
-			continue
-		}
-
-		r1, ok1 := rules[s1]
-		r2, ok2 := rules[s2]
-		r3, ok3 := rules[s3]
-		if !ok1 || !ok2 || !ok3 {
-			skippedNoSymbol++
-			continue
-		}
-
-		// reliable eligibility (same as blacklist criteria)
-		if !marketOk(r1) || !marketOk(r2) || !marketOk(r3) {
-			skippedNotEligible++
-			continue
-		}
-
-		// qty precision (base)
-		dpQty1 := decimalsFromStep(r1.BaseSizePrec)
-		dpQty2 := decimalsFromStep(r2.BaseSizePrec)
-		dpQty3 := decimalsFromStep(r3.BaseSizePrec)
-
-		// quote precision for MARKET (quote)
-		dpQm1 := decimalsFromStep(quoteMarketStep(r1))
-		dpQm2 := decimalsFromStep(quoteMarketStep(r2))
-		dpQm3 := decimalsFromStep(quoteMarketStep(r3))
-
-		row = append(row,
-			fmt.Sprintf("%d", dpQty1), fmt.Sprintf("%d", dpQty2), fmt.Sprintf("%d", dpQty3),
-			fmt.Sprintf("%d", dpQm1), fmt.Sprintf("%d", dpQm2), fmt.Sprintf("%d", dpQm3),
-		)
-
-		if err := cw.Write(row); err != nil {
-			return fmt.Errorf("write row: %w", err)
-		}
-		written++
-	}
-
-	log.Printf(
-		"OK: read=%d written=%d skippedNoSymbol=%d skippedBlacklisted=%d skippedNotEligible=%d -> %s",
-		read, written, skippedNoSymbol, skippedBlacklisted, skippedNotEligible, OutputCSV,
-	)
-
-	if written == 0 {
-		log.Printf("WARN: output is empty. Most likely your blacklist is too broad or input csv symbols mismatch exchangeInfo.")
-		log.Printf("TIP: temporarily move %s away and rerun to see baseline written>0.", BlacklistFile)
-	}
-
-	return nil
-}
-
-func loadRules() (map[string]symbolInfo, error) {
-	client := &http.Client{Timeout: 25 * time.Second}
-	resp, err := client.Get(BaseURL + "/api/v3/exchangeInfo")
+	cl := &http.Client{Timeout: timeout}
+	resp, err := cl.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("exchangeInfo %d: %s", resp.StatusCode, string(b))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
-	var info exchangeInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	var r okxInstrumentsResp
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return nil, err
 	}
 
-	m := make(map[string]symbolInfo, len(info.Symbols))
-	for _, s := range info.Symbols {
-		sym := strings.TrimSpace(s.Symbol)
-		if sym == "" {
+	// OKX обычно: code="0" = success
+	if strings.TrimSpace(r.Code) != "" && strings.TrimSpace(r.Code) != "0" {
+		return nil, fmt.Errorf("okx code=%s msg=%s", strings.TrimSpace(r.Code), strings.TrimSpace(r.Msg))
+	}
+
+	allowState := func(s string) bool {
+		s = strings.TrimSpace(s)
+		if onlyState != "" {
+			return strings.EqualFold(s, onlyState)
+		}
+		// чаще всего нужны только "live"
+		return s == "" || strings.EqualFold(s, "live")
+	}
+
+	out := make([]Market, 0, len(r.Data))
+	seen := make(map[string]struct{}, len(r.Data))
+
+	for _, it := range r.Data {
+		base := strings.TrimSpace(it.BaseCcy)
+		quote := strings.TrimSpace(it.QuoteCcy)
+		sym := strings.TrimSpace(it.InstID)
+
+		if sym == "" || base == "" || quote == "" {
 			continue
 		}
-		m[sym] = s
+		if !allowState(it.State) {
+			continue
+		}
+		// instType=SPOT уже в query, но на всякий случай:
+		if it.InstType != "" && !strings.EqualFold(it.InstType, "SPOT") {
+			continue
+		}
+
+		// instId уникален
+		if _, ok := seen[sym]; ok {
+			continue
+		}
+		seen[sym] = struct{}{}
+
+		out = append(out, Market{
+			Symbol: sym,   // например: BTC-USDT
+			Base:   base,  // BTC
+			Quote:  quote, // USDT
+		})
 	}
-	return m, nil
+
+	return out, nil
 }
 
-// ======= Eligibility / reasons =======
+// Как у тебя: base1==base3==A, а quote1/quote3 — две котировки,
+// между которыми должен существовать рынок (quote1/quote3) ИЛИ (quote3/quote1).
+func buildTrianglesOKX(markets []Market, onlyBaseA string) []TriangleRow {
+	// dir[base][quote] = Market  (ровно как на OKX: base-quote)
+	dir := make(map[string]map[string]Market, 4096)
+	quotesByBase := make(map[string][]string, 4096) // A -> list of quotes (A/quote)
 
-// Reliable filter you already validated with Postman:
-// status=="1", st==false, permissions contains "SPOT", orderTypes contains "MARKET"
-func marketOk(s symbolInfo) bool {
-	if strings.TrimSpace(s.Status) != "1" {
-		return false
-	}
-	if s.St {
-		return false
-	}
-	if !hasPerm(s.Permissions, "SPOT") {
-		return false
-	}
-	if !hasMarket(s.OrderTypes) {
-		return false
-	}
-	return true
-}
-
-func notOkReason(s symbolInfo) string {
-	var reasons []string
-	if strings.TrimSpace(s.Status) != "1" {
-		reasons = append(reasons, "status!=1")
-	}
-	if s.St {
-		reasons = append(reasons, "st=true")
-	}
-	if !hasPerm(s.Permissions, "SPOT") {
-		reasons = append(reasons, "no SPOT perm")
-	}
-	if !hasMarket(s.OrderTypes) {
-		reasons = append(reasons, "no MARKET type")
-	}
-	return strings.Join(reasons, ", ")
-}
-
-func hasMarket(orderTypes []string) bool {
-	for _, t := range orderTypes {
-		if strings.EqualFold(strings.TrimSpace(t), "MARKET") {
-			return true
+	for _, m := range markets {
+		if _, ok := dir[m.Base]; !ok {
+			dir[m.Base] = make(map[string]Market, 64)
+		}
+		// если внезапно дубликаты base/quote, оставим первый (детерминируем ниже сортировкой входа не будем)
+		if _, exists := dir[m.Base][m.Quote]; !exists {
+			dir[m.Base][m.Quote] = m
+			quotesByBase[m.Base] = append(quotesByBase[m.Base], m.Quote)
 		}
 	}
-	return false
-}
 
-func hasPerm(perms []string, want string) bool {
-	for _, p := range perms {
-		if strings.EqualFold(strings.TrimSpace(p), want) {
-			return true
+	// unique + sort quotes
+	for base, qs := range quotesByBase {
+		sort.Strings(qs)
+		quotesByBase[base] = uniqueStrings(qs)
+	}
+
+	var bases []string
+	for b := range quotesByBase {
+		if onlyBaseA != "" && b != onlyBaseA {
+			continue
+		}
+		bases = append(bases, b)
+	}
+	sort.Strings(bases)
+
+	seen := make(map[string]struct{}, 4096)
+	rows := make([]TriangleRow, 0, 16384)
+
+	for _, A := range bases {
+		qs := quotesByBase[A]
+		if len(qs) < 2 {
+			continue
+		}
+
+		for i := 0; i < len(qs); i++ {
+			for j := i + 1; j < len(qs); j++ {
+				qx, qy := qs[i], qs[j]
+
+				// middle market: либо qx->qy, либо qy->qx
+				var (
+					mMid          Market
+					quote1, quote3 string
+					okMid         bool
+				)
+
+				if mm, ok := dir[qx][qy]; ok {
+					mMid = mm
+					quote1, quote3 = qx, qy
+					okMid = true
+				} else if mm, ok := dir[qy][qx]; ok {
+					mMid = mm
+					quote1, quote3 = qy, qx
+					okMid = true
+				}
+
+				if !okMid {
+					continue
+				}
+
+				// outer legs гарантированно есть, т.к. quote1/quote3 взяты из quotesByBase[A]
+				m1, ok1 := dir[A][quote1]
+				m3, ok3 := dir[A][quote3]
+				if !(ok1 && ok3) {
+					continue
+				}
+
+				// дедуп (на всякий) — фиксируем порядок quote1/quote3 ровно как выбран mid
+				key := A + "|" + quote1 + "|" + quote3 + "|" + mMid.Symbol
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+
+				rows = append(rows, TriangleRow{
+					Base1:  m1.Base,
+					Quote1: m1.Quote,
+					Base2:  mMid.Base,
+					Quote2: mMid.Quote,
+					Base3:  m3.Base,
+					Quote3: m3.Quote,
+					Symbol1: m1.Symbol,
+					Symbol2: mMid.Symbol,
+					Symbol3: m3.Symbol,
+				})
+			}
 		}
 	}
-	return false
+
+	sort.Slice(rows, func(i, j int) bool {
+		a := rows[i]
+		b := rows[j]
+		if a.Base1 != b.Base1 {
+			return a.Base1 < b.Base1
+		}
+		if a.Quote1 != b.Quote1 {
+			return a.Quote1 < b.Quote1
+		}
+		if a.Quote3 != b.Quote3 {
+			return a.Quote3 < b.Quote3
+		}
+		return a.Symbol2 < b.Symbol2
+	})
+
+	return rows
 }
 
-// ======= Precision helpers =======
-
-func quoteMarketStep(s symbolInfo) string {
-	if strings.TrimSpace(s.QuoteAmountPrecisionMarket) != "" {
-		return s.QuoteAmountPrecisionMarket
-	}
-	return s.QuoteAmountPrecision
-}
-
-// "0.000001" -> 6; "1" -> 0; "" -> -1
-func decimalsFromStep(step string) int {
-	step = strings.TrimSpace(step)
-	if step == "" {
-		return -1
-	}
-	if !strings.Contains(step, ".") {
-		return 0
-	}
-	parts := strings.SplitN(step, ".", 2)
-	frac := strings.TrimRight(parts[1], "0")
-	return len(frac)
-}
-
-// ======= CSV helpers =======
-
-func colIndex(header []string, name string) int {
-	name = strings.ToLower(strings.TrimSpace(name))
-	for i, h := range header {
-		if strings.ToLower(strings.TrimSpace(h)) == name {
-			return i
+func writeCSVAtomic(path string, rows []TriangleRow) error {
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("mkdir: %w", err)
 		}
 	}
-	return -1
-}
 
-// ======= Blacklist I/O =======
-
-// File format: SYMBOL<TAB>reason
-// Lines starting with # are comments.
-func loadBlacklist(path string) (map[string]string, error) {
-	bl := make(map[string]string)
-
-	f, err := os.Open(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp.*")
 	if err != nil {
-		if os.IsNotExist(err) {
-			// first run: empty blacklist
-			return bl, nil
-		}
-		return nil, err
+		return fmt.Errorf("create tmp: %w", err)
 	}
-	defer f.Close()
+	tmpName := tmp.Name()
 
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 2)
-		sym := strings.TrimSpace(parts[0])
-		if sym == "" {
-			continue
-		}
-		reason := ""
-		if len(parts) == 2 {
-			reason = strings.TrimSpace(parts[1])
-		}
-		bl[sym] = reason
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	return bl, nil
-}
-
-func saveBlacklist(path string, bl map[string]string) error {
-	tmp := path + ".tmp"
-
-	f, err := os.Create(tmp)
-	if err != nil {
+	cw := csv.NewWriter(tmp)
+	if err := cw.Write([]string{
+		"base1", "quote1",
+		"base2", "quote2",
+		"base3", "quote3",
+		"symbol1", "symbol2", "symbol3",
+	}); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
 		return err
 	}
-	defer f.Close()
 
-	bw := bufio.NewWriter(f)
-	fmt.Fprintf(bw, "# generated: %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(bw, "# format: SYMBOL<TAB>reason\n")
-
-	keys := make([]string, 0, len(bl))
-	for k := range bl {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		fmt.Fprintf(bw, "%s\t%s\n", k, bl[k])
+	for _, r := range rows {
+		if err := cw.Write([]string{
+			r.Base1, r.Quote1,
+			r.Base2, r.Quote2,
+			r.Base3, r.Quote3,
+			r.Symbol1, r.Symbol2, r.Symbol3,
+		}); err != nil {
+			tmp.Close()
+			_ = os.Remove(tmpName)
+			return err
+		}
 	}
 
-	if err := bw.Flush(); err != nil {
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
 		return err
 	}
-	return os.Rename(tmp, path)
+
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
-func isBlacklisted(bl map[string]string, sym string) bool {
-	_, ok := bl[sym]
-	return ok
+func uniqueStrings(in []string) []string {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]string, 0, len(in))
+	prev := ""
+	for i, s := range in {
+		if i == 0 || s != prev {
+			out = append(out, s)
+		}
+		prev = s
+	}
+	return out
+}
+
+func fatalf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "ERR: "+format+"\n", args...)
+	os.Exit(1)
 }
 
 
