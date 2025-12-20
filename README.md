@@ -99,6 +99,17 @@ MIN_PROFIT_PCT=0.3
 # 0 = писать только прошедшие фильтры
 KEEP_FAILED=0
 
-
+2025/12/20 14:00:06.159091 CFG: OKX_BOOKS_URL=https://www.okx.com/api/v5/market/books
+2025/12/20 14:00:06.159092 CFG: HTTP_TIMEOUT=25s
+2025/12/20 14:00:06.159102 CFG: START_AMT=25.00000000
+2025/12/20 14:00:06.159110 CFG: START_CCY=USDT
+2025/12/20 14:00:06.159112 CFG: KEEP_FAILED=false
+2025/12/20 14:00:06.159115 OK: loaded blacklist: 0 symbols
+2025/12/20 14:00:06.563296 OK: OKX instruments loaded: 693
+2025/12/20 14:00:06.563394 OK: startup blacklist added=0 total=0
+2025/12/20 14:00:06.563582 OK: saved blacklist -> blacklist_symbols_okx.txt
+2025/12/20 14:03:37.801421 OK: read=788 written=766 skippedNoSymbol=0 skippedBlacklisted=0 skippedNotEligible=0 skippedNotFeasible(start=25.00 USDT)=22 keep_failed=false -> triangles_usdt_routes_market_okx.csv
+2025/12/20 14:03:37.801514 DONE
+gaz358@gaz358-BOD-WXX9:~/myprog/cr
 
 
