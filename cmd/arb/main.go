@@ -3,28 +3,47 @@ package main
 import (
 	"crypt_proto/internal/collector"
 	"crypt_proto/pkg/models"
-	"fmt"
-	"time"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
-	dataCh := make(chan models.MarketData, 100)
+	// канал для рыночных данных
+	marketDataCh := make(chan models.MarketData, 1000)
+
+	// инициализация коллектора
 	okxCollector := collector.NewOKXCollector()
 
-	err := okxCollector.Start(dataCh)
-	if err != nil {
-		fmt.Println("Ошибка запуска Collector:", err)
-		return
+	// старт коллектора
+	if err := okxCollector.Start(marketDataCh); err != nil {
+		log.Fatal("failed to start OKX collector:", err)
 	}
 
-	// Вывод данных из канала
+	log.Println("OKX collector started")
+
+	// consumer (пока просто логируем)
 	go func() {
-		for md := range dataCh {
-			fmt.Printf("Collector: %s %s Bid=%.2f Ask=%.2f\n",
-				md.Exchange, md.Symbol, md.Bid, md.Ask)
+		for md := range marketDataCh {
+			log.Printf(
+				"[MARKET] %s %s bid=%.4f ask=%.4f",
+				md.Exchange,
+				md.Symbol,
+				md.Bid,
+				md.Ask,
+			)
 		}
 	}()
 
-	time.Sleep(10 * time.Second) // пусть Collector поработает
+	// graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	<-sigCh
+	log.Println("shutdown signal received")
+
 	okxCollector.Stop()
+
+	log.Println("collector stopped, exit")
 }
