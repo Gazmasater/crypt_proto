@@ -61,28 +61,33 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 (pprof) quit
 
 
-
 /arb_project
- ├─ main.go                  # Точка входа, запуск Collector, Calculator, Queue, Executor
- ├─ collector/               # Пакет для сбора данных с бирж
- │   ├─ collector.go         # Интерфейс Collector
- │   ├─ okx_collector.go     # Реализация Collector для OKX
- │   ├─ mexc_collector.go    # Реализация Collector для MEXC
- │   └─ kucoin_collector.go  # Реализация Collector для KuCoin
- ├─ calculator/              # Пакет для расчёта арбитража
- │   ├─ calculator.go        # Интерфейс Calculator
- │   └─ arb.go               # Реализация arb
- ├─ queue/                   # Пакет для очереди сигналов
- │   ├─ in_memory_queue.go   # InMemoryQueue для теста
- │   └─ redis_queue.go       # RedisQueue для продакшн
- ├─ executor/                # Пакет для исполнения сигналов
- │   ├─ executor.go          # Интерфейс Executor
- │   └─ executor_impl.go     # Реализация Executor (реальные ордера)
- ├─ models/                  # Общие структуры данных
- │   ├─ market_data.go       # Структура MarketData
- │   └─ signal.go            # Структура Signal
- └─ utils/                   # Вспомогательные функции
-     └─ helpers.go           # parseFloat, логирование, конвертация
-
+ ├─ cmd/
+ │   ├─ arb/
+ │   │   └─ main.go
+ │   └─ arb_test/
+ │       └─ main.go
+ ├─ internal/
+ │   ├─ collector_impl/
+ │   │   ├─ okx_collector.go
+ │   │   ├─ mexc_collector.go
+ │   │   └─ kucoin_collector.go
+ │   ├─ calculator_impl/
+ │   │   └─ arb.go
+ │   ├─ executor_impl/
+ │   │   └─ executor_impl.go
+ │   └─ queue_impl/
+ │       ├─ redis_queue.go
+ │       └─ in_memory_queue.go
+ ├─ pkg/
+ │   ├─ models/
+ │   │   ├─ market_data.go
+ │   │   └─ signal.go
+ │   └─ utils/
+ │       └─ helpers.go
+ ├─ configs/
+ │   └─ config.yaml
+ └─ scripts/
+     └─ deploy.sh
 
 
