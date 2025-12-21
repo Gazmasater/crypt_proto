@@ -208,3 +208,12 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 }
 
 
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+EXCHANGE!!!!!!!!! mexc
+2025/12/22 00:32:46 Starting collector: MEXC
+2025/12/22 00:32:46 [MEXC] connecting...
+2025/12/22 00:33:19 [MEXC] read error: websocket: close 1005 (no status)
+2025/12/22 00:33:19 [MEXC] reconnect in 1s...
+2025/12/22 00:33:20 [MEXC] connecting...
+^C2025/12/22 00:33:23 shutdown signal
+
