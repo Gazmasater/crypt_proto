@@ -35,8 +35,9 @@ func (c *OKXCollector) Start(out chan<- models.MarketData) error {
 	return nil
 }
 
-func (c *OKXCollector) Stop() {
+func (c *OKXCollector) Stop() error {
 	c.cancel()
+	return nil
 }
 
 func (c *OKXCollector) run(out chan<- models.MarketData) {
