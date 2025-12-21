@@ -4,61 +4,48 @@ import (
 	"crypt_proto/internal/collector"
 	"crypt_proto/pkg/models"
 	"fmt"
-	"log"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/joho/godotenv"
 )
 
 func main() {
-	_ = godotenv.Load()
+	_ = godotenv.Load(".env")
 	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
 	if exchange == "" {
 		exchange = "okx"
 	}
 
+	symbolEnv := os.Getenv("SYMBOLS") // допустим, SYMBOLS=BTCUSDT,ETHUSDT,XRPUSDT
+	if symbolEnv == "" {
+		symbolEnv = "BTCUSDT"
+	}
+	symbols := strings.Split(symbolEnv, ",")
+
+	fmt.Println("EXCHANGE!!!!!!!!!", exchange)
+	fmt.Println("SYMBOLS!!!!!!!!!", symbols)
+
 	marketDataCh := make(chan models.MarketData, 1000)
 
 	var c collector.Collector
 
-	fmt.Println("EXCHANGE!!!!!!!!!", exchange)
-
 	switch exchange {
 	case "okx":
-		c = collector.NewOKXCollector()
-
+		c = collector.NewOKXCollector() // старый OKX
 	case "mexc":
-		c = collector.NewMEXCCollector("BTCUSDT")
+		c = collector.NewMEXCCollector(symbols)
 	default:
-		log.Fatalf("unknown exchange: %s", exchange)
+		panic("unsupported exchange")
 	}
 
-	log.Printf("Starting collector: %s\n", c.Name())
-
+	fmt.Println("Starting collector:", c.Name())
 	if err := c.Start(marketDataCh); err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
-	go func() {
-		for md := range marketDataCh {
-			log.Printf(
-				"[MARKET] %s %s bid=%.6f ask=%.6f",
-				md.Exchange,
-				md.Symbol,
-				md.Bid,
-				md.Ask,
-			)
-		}
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	<-sigCh
-	log.Println("shutdown signal")
-
-	c.Stop()
+	// простой вывод данных
+	for md := range marketDataCh {
+		fmt.Printf("%s %s bid=%.6f ask=%.6f\n", md.Exchange, md.Symbol, md.Bid, md.Ask)
+	}
 }
