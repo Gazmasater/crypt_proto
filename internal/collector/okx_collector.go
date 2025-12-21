@@ -1,9 +1,9 @@
 package collector
 
 import (
+	"context"
 	"crypt_proto/pkg/models"
 	"encoding/json"
-	"fmt"
 	"log"
 	"strconv"
 	"time"
@@ -11,111 +11,127 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// OKXCollector реализует Collector для OKX
+const okxWS = "wss://ws.okx.com:8443/ws/v5/public"
+
 type OKXCollector struct {
-	wsConn *websocket.Conn
-	done   chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
-// NewOKXCollector создает новый экземпляр OKXCollector
 func NewOKXCollector() *OKXCollector {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &OKXCollector{
-		done: make(chan struct{}),
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
-// Start подключается к WebSocket OKX и начинает отправку MarketData в dataCh
-func (c *OKXCollector) Start(dataCh chan<- models.MarketData) error {
-	var err error
-	c.wsConn, _, err = websocket.DefaultDialer.Dial("wss://ws.okx.com:8443/ws/v5/public", nil)
-	if err != nil {
-		return fmt.Errorf("OKX websocket dial error: %v", err)
-	}
+func (c *OKXCollector) Name() string {
+	return "OKX"
+}
 
-	// Подписка на тикеры спот-рынка
-	sub := map[string]interface{}{
+func (c *OKXCollector) Start(out chan<- models.MarketData) error {
+	go c.run(out)
+	return nil
+}
+
+func (c *OKXCollector) Stop() {
+	c.cancel()
+}
+
+func (c *OKXCollector) run(out chan<- models.MarketData) {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			log.Println("[OKX] connecting...")
+			c.connectAndRead(out)
+			log.Println("[OKX] reconnect in 1s...")
+			time.Sleep(time.Second)
+		}
+	}
+}
+
+func (c *OKXCollector) connectAndRead(out chan<- models.MarketData) {
+	conn, _, err := websocket.DefaultDialer.Dial(okxWS, nil)
+	if err != nil {
+		log.Println("[OKX] dial error:", err)
+		return
+	}
+	defer conn.Close()
+
+	subscribe := map[string]interface{}{
 		"op": "subscribe",
 		"args": []map[string]string{
 			{
-				"channel":  "tickers",
-				"instType": "SPOT",
+				"channel": "tickers",
+				"instId":  "BTC-USDT",
 			},
 		},
 	}
-	if err := c.wsConn.WriteJSON(sub); err != nil {
-		return fmt.Errorf("OKX subscribe error: %v", err)
+
+	if err := conn.WriteJSON(subscribe); err != nil {
+		log.Println("[OKX] subscribe error:", err)
+		return
 	}
 
-	// Запуск цикла чтения
-	go c.readLoop(dataCh)
-	return nil
-}
+	// keepalive ping
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
 
-// readLoop читает сообщения с WebSocket и отправляет их в канал MarketData
-func (c *OKXCollector) readLoop(dataCh chan<- models.MarketData) {
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-ticker.C:
+				_ = conn.WriteMessage(websocket.PingMessage, nil)
+			}
+		}
+	}()
+
 	for {
 		select {
-		case <-c.done:
+		case <-c.ctx.Done():
 			return
 		default:
-			_, msg, err := c.wsConn.ReadMessage()
+			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				log.Println("OKX read error:", err)
-				time.Sleep(time.Second)
-				continue
+				log.Println("[OKX] read error:", err)
+				return
 			}
-
-			var resp map[string]interface{}
-			if err := json.Unmarshal(msg, &resp); err != nil {
-				log.Println("OKX unmarshal error:", err)
-				continue
-			}
-
-			data, ok := resp["data"].([]interface{})
-			if !ok {
-				continue
-			}
-
-			for _, d := range data {
-				item, ok := d.(map[string]interface{})
-				if !ok {
-					continue
-				}
-
-				md := models.MarketData{
-					Exchange:  "OKX",
-					Symbol:    item["instId"].(string),
-					Bid:       parseFloat(item["bidPx"]),
-					Ask:       parseFloat(item["askPx"]),
-					Timestamp: time.Now().UnixMilli(),
-				}
-				dataCh <- md
-			}
+			c.handleMessage(msg, out)
 		}
 	}
 }
 
-// Stop закрывает WebSocket соединение
-func (c *OKXCollector) Stop() error {
-	close(c.done)
-	if c.wsConn != nil {
-		return c.wsConn.Close()
+func (c *OKXCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
+	var raw struct {
+		Data []struct {
+			InstId string `json:"instId"`
+			BidPx  string `json:"bidPx"`
+			AskPx  string `json:"askPx"`
+		} `json:"data"`
 	}
-	return nil
-}
 
-// parseFloat — вспомогательная функция для конвертации интерфейса в float64
-func parseFloat(val interface{}) float64 {
-	switch v := val.(type) {
-	case string:
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return 0
+	if err := json.Unmarshal(msg, &raw); err != nil {
+		return
+	}
+
+	for _, d := range raw.Data {
+		bid, err1 := strconv.ParseFloat(d.BidPx, 64)
+		ask, err2 := strconv.ParseFloat(d.AskPx, 64)
+		if err1 != nil || err2 != nil {
+			continue
 		}
-		return f
-	case float64:
-		return v
-	default:
-		return 0
+
+		out <- models.MarketData{
+			Exchange:  "OKX",
+			Symbol:    d.InstId,
+			Bid:       bid,
+			Ask:       ask,
+			Timestamp: time.Now().UnixMilli(),
+		}
 	}
 }
