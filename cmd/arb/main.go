@@ -3,31 +3,46 @@ package main
 import (
 	"crypt_proto/internal/collector"
 	"crypt_proto/pkg/models"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
 func main() {
-	// канал для рыночных данных
-	marketDataCh := make(chan models.MarketData, 1000)
-
-	// инициализация коллектора
-	okxCollector := collector.NewOKXCollector()
-
-	// старт коллектора
-	if err := okxCollector.Start(marketDataCh); err != nil {
-		log.Fatal("failed to start OKX collector:", err)
+	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
+	if exchange == "" {
+		exchange = "okx"
 	}
 
-	log.Println("OKX collector started")
+	marketDataCh := make(chan models.MarketData, 1000)
 
-	// consumer (пока просто логируем)
+	var c collector.Collector
+
+	fmt.Println("EXCHANGE!!!!!!!!!", exchange)
+
+	switch exchange {
+	case "okx":
+		c = collector.NewOKXCollector()
+
+	case "mexc":
+		c = collector.NewMEXCCollector("BTCUSDT")
+	default:
+		log.Fatalf("unknown exchange: %s", exchange)
+	}
+
+	log.Printf("Starting collector: %s\n", c.Name())
+
+	if err := c.Start(marketDataCh); err != nil {
+		log.Fatal(err)
+	}
+
 	go func() {
 		for md := range marketDataCh {
 			log.Printf(
-				"[MARKET] %s %s bid=%.4f ask=%.4f",
+				"[MARKET] %s %s bid=%.6f ask=%.6f",
 				md.Exchange,
 				md.Symbol,
 				md.Bid,
@@ -36,14 +51,11 @@ func main() {
 		}
 	}()
 
-	// graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigCh
-	log.Println("shutdown signal received")
+	log.Println("shutdown signal")
 
-	okxCollector.Stop()
-
-	log.Println("collector stopped, exit")
+	c.Stop()
 }
