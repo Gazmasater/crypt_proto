@@ -64,192 +64,80 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package collector
-
-import (
-	"context"
-	"crypt_proto/pkg/models"
-	"encoding/json"
-	"log"
-	"strconv"
-	"strings"
-	"time"
-
-	"github.com/gorilla/websocket"
-)
-
-const mexcWS = "wss://wbs.mexc.com/ws"
-
-type MEXCCollector struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	symbol string
-}
-
-func NewMEXCCollector(symbol string) *MEXCCollector {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &MEXCCollector{
-		ctx:    ctx,
-		cancel: cancel,
-		symbol: strings.ToUpper(symbol),
-	}
-}
-
-func (c *MEXCCollector) Name() string {
-	return "MEXC"
-}
-
-func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
-	go c.run(out)
-	return nil
-}
-
-func (c *MEXCCollector) Stop() {
-	c.cancel()
-}
-
-func (c *MEXCCollector) run(out chan<- models.MarketData) {
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-			log.Println("[MEXC] connecting...")
-			c.connectAndRead(out)
-			log.Println("[MEXC] reconnect in 1s...")
-			time.Sleep(time.Second)
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
 		}
-	}
-}
+	},
+	"severity": 8,
+	"message": "missing argument in conversion to collector.OKXCollector",
+	"source": "compiler",
+	"startLineNumber": 25,
+	"startColumn": 7,
+	"endLineNumber": 25,
+	"endColumn": 31,
+	"origin": "extHost1"
+}]
 
-func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
-	conn, _, err := websocket.DefaultDialer.Dial(mexcWS, nil)
-	if err != nil {
-		log.Println("[MEXC] dial error:", err)
-		return
-	}
-	defer conn.Close()
 
-	subscribe := map[string]interface{}{
-		"method": "SUBSCRIPTION",
-		"params": []string{
-			"spot@public.bookTicker." + c.symbol,
-		},
-	}
-
-	if err := conn.WriteJSON(subscribe); err != nil {
-		log.Println("[MEXC] subscribe error:", err)
-		return
-	}
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				log.Println("[MEXC] read error:", err)
-				return
-			}
-			c.handleMessage(msg, out)
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidIfaceAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidIfaceAssign"
 		}
-	}
-}
-
-func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
-	var raw struct {
-		Data struct {
-			Symbol string `json:"s"`
-			Bid    string `json:"b"`
-			Ask    string `json:"a"`
-		} `json:"d"`
-	}
-
-	if err := json.Unmarshal(msg, &raw); err != nil {
-		return
-	}
-
-	bid, err1 := strconv.ParseFloat(raw.Data.Bid, 64)
-	ask, err2 := strconv.ParseFloat(raw.Data.Ask, 64)
-	if err1 != nil || err2 != nil {
-		return
-	}
-
-	out <- models.MarketData{
-		Exchange:  "MEXC",
-		Symbol:    raw.Data.Symbol,
-		Bid:       bid,
-		Ask:       ask,
-		Timestamp: time.Now().UnixMilli(),
-	}
-}
+	},
+	"severity": 8,
+	"message": "cannot use collector.NewMEXCCollector(\"BTCUSDT\") (value of type *collector.MEXCCollector) as collector.Collector value in assignment: *collector.MEXCCollector does not implement collector.Collector (wrong type for method Stop)\n\t\thave Stop()\n\t\twant Stop() error",
+	"source": "compiler",
+	"startLineNumber": 27,
+	"startColumn": 7,
+	"endLineNumber": 27,
+	"endColumn": 44,
+	"origin": "extHost1"
+}]
 
 
-
-export EXCHANGE=okx
-# или
-export EXCHANGE=mexc
-
-
-
-package main
-
-import (
-	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
-	"log"
-	"os"
-	"os/signal"
-	"strings"
-	"syscall"
-)
-
-func main() {
-	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
-	if exchange == "" {
-		exchange = "okx"
-	}
-
-	marketDataCh := make(chan models.MarketData, 1000)
-
-	var c collector.Collector
-
-	switch exchange {
-	case "okx":
-		c = collector.NewOKXCollector()
-	case "mexc":
-		c = collector.NewMEXCCollector("BTCUSDT")
-	default:
-		log.Fatalf("unknown exchange: %s", exchange)
-	}
-
-	log.Printf("Starting collector: %s\n", c.Name())
-
-	if err := c.Start(marketDataCh); err != nil {
-		log.Fatal(err)
-	}
-
-	go func() {
-		for md := range marketDataCh {
-			log.Printf(
-				"[MARKET] %s %s bid=%.6f ask=%.6f",
-				md.Exchange,
-				md.Symbol,
-				md.Bid,
-				md.Ask,
-			)
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
 		}
-	}()
+	},
+	"severity": 8,
+	"message": "c.Name undefined (type collector.Collector has no field or method Name)",
+	"source": "compiler",
+	"startLineNumber": 32,
+	"startColumn": 43,
+	"endLineNumber": 32,
+	"endColumn": 47,
+	"origin": "extHost1"
+}]
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	<-sigCh
-	log.Println("shutdown signal")
 
-	c.Stop()
-}
+
 
 
 
