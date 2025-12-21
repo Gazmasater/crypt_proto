@@ -63,80 +63,86 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+1️⃣ Интерфейс Collector
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "WrongArgCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongArgCount"
-		}
-	},
-	"severity": 8,
-	"message": "missing argument in conversion to collector.OKXCollector",
-	"source": "compiler",
-	"startLineNumber": 25,
-	"startColumn": 7,
-	"endLineNumber": 25,
-	"endColumn": 31,
-	"origin": "extHost1"
-}]
+Судя по ошибкам, у тебя в коде есть что-то вроде:
+
+var c collector.Collector
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "InvalidIfaceAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "InvalidIfaceAssign"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use collector.NewMEXCCollector(\"BTCUSDT\") (value of type *collector.MEXCCollector) as collector.Collector value in assignment: *collector.MEXCCollector does not implement collector.Collector (wrong type for method Stop)\n\t\thave Stop()\n\t\twant Stop() error",
-	"source": "compiler",
-	"startLineNumber": 27,
-	"startColumn": 7,
-	"endLineNumber": 27,
-	"endColumn": 44,
-	"origin": "extHost1"
-}]
+и ты хочешь присвоить туда:
+
+c = collector.NewOKXCollector()
+c = collector.NewMEXCCollector("BTCUSDT")
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "c.Name undefined (type collector.Collector has no field or method Name)",
-	"source": "compiler",
-	"startLineNumber": 32,
-	"startColumn": 43,
-	"endLineNumber": 32,
-	"endColumn": 47,
-	"origin": "extHost1"
-}]
+Ошибка:
+
+MEXCCollector не реализует метод Stop() error, а только Stop().
+
+Name() тоже не входит в интерфейс.
+
+✅ Исправление: сделать интерфейс так:
+
+package collector
+
+import "crypt_proto/pkg/models"
+
+type Collector interface {
+	Start(out chan<- models.MarketData) error
+	Stop() error
+	Name() string
+}
+
+2️⃣ Реализация OKXCollector
+func (c *OKXCollector) Stop() error {
+	c.cancel()
+	return nil
+}
+
+3️⃣ Реализация MEXCCollector
+func (c *MEXCCollector) Stop() error {
+	c.cancel()
+	return nil
+}
 
 
+Теперь и OKX, и MEXC реализуют интерфейс Collector.
 
+4️⃣ Конструкторы
+
+Ошибка WrongArgCount говорит о том, что конструктор NewOKXCollector() в интерфейсе ожидает аргументы?
+
+Сейчас у нас NewOKXCollector() без аргументов.
+
+В main.go используй без аргументов:
+
+c = collector.NewOKXCollector()
+
+
+Для MEXC нужно указать символ:
+
+c = collector.NewMEXCCollector("BTCUSDT")
+
+5️⃣ main.go
+
+После исправлений:
+
+var c collector.Collector
+
+switch exchange {
+case "okx":
+	c = collector.NewOKXCollector()
+case "mexc":
+	c = collector.NewMEXCCollector("BTCUSDT")
+default:
+	log.Fatalf("unknown exchange: %s", exchange)
+}
+
+log.Printf("Starting collector: %s\n", c.Name())
+
+
+Теперь c.Name() и c.Stop() корректно работают через интерфейс.
 
 
 
