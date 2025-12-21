@@ -77,12 +77,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const mexcWS = "wss://wbs.mexc.com/ws" // официальный Spot V3 WebSocket
+const mexcWS = "wss://wbs.mexc.com/ws"
 
 type MEXCCollector struct {
 	ctx    context.Context
 	cancel context.CancelFunc
-	symbol string
+	symbol string // BTC_USDT
 }
 
 func NewMEXCCollector(symbol string) *MEXCCollector {
@@ -90,7 +90,7 @@ func NewMEXCCollector(symbol string) *MEXCCollector {
 	return &MEXCCollector{
 		ctx:    ctx,
 		cancel: cancel,
-		symbol: strings.ToUpper(symbol),
+		symbol: strings.ToUpper(strings.ReplaceAll(symbol, "-", "_")), // BTCUSDT -> BTC_USDT
 	}
 }
 
@@ -130,10 +130,10 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 	}
 	defer conn.Close()
 
-	// Подписка на тикер BTCUSDT через Spot V3
+	// Подписка на orderbook для получения best bid/ask
 	subscribe := map[string]interface{}{
-		"method": "sub.ticker",
-		"params": []string{"spot." + c.symbol + ".ticker"},
+		"method": "sub.orderbook",
+		"params": []string{c.symbol},
 		"id":     1,
 	}
 
@@ -142,18 +142,16 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 		return
 	}
 
-	// Ping каждые 15 секунд
+	// Ping каждые 20 секунд
 	go func() {
-		ticker := time.NewTicker(15 * time.Second)
+		ticker := time.NewTicker(20 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-c.ctx.Done():
 				return
 			case <-ticker.C:
-				if err := conn.WriteJSON(map[string]interface{}{"method": "ping"}); err != nil {
-					return
-				}
+				_ = conn.WriteJSON(map[string]interface{}{"method": "ping"})
 			}
 		}
 	}()
@@ -174,22 +172,13 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 }
 
 func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
-	// MEXC может прислать ping -> pong
-	var ping struct {
-		Method string `json:"method"`
-	}
-	if err := json.Unmarshal(msg, &ping); err == nil && ping.Method == "ping" {
-		// Ответ pong
-		return
-	}
-
-	// Ответ тикера
+	// Ответ от сервера может быть разным
 	var raw struct {
 		Method string `json:"method"`
 		Params []struct {
-			Symbol string `json:"s"`
-			Bid    string `json:"b"`
-			Ask    string `json:"a"`
+			Symbol string   `json:"s"`
+			Bid    []string `json:"b"` // [price, qty]
+			Ask    []string `json:"a"` // [price, qty]
 		} `json:"params"`
 	}
 
@@ -197,13 +186,17 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 		return
 	}
 
-	if raw.Method != "ticker.update" || len(raw.Params) == 0 {
+	if raw.Method != "orderbook.update" || len(raw.Params) == 0 {
 		return
 	}
 
 	for _, d := range raw.Params {
-		bid, err1 := strconv.ParseFloat(d.Bid, 64)
-		ask, err2 := strconv.ParseFloat(d.Ask, 64)
+		if len(d.Bid) < 1 || len(d.Ask) < 1 {
+			continue
+		}
+
+		bid, err1 := strconv.ParseFloat(d.Bid[0], 64)
+		ask, err2 := strconv.ParseFloat(d.Ask[0], 64)
 		if err1 != nil || err2 != nil {
 			continue
 		}
