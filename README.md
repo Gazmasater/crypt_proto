@@ -77,7 +77,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const mexcWS = "wss://wbs.mexc.com/ws"
+const mexcWS = "wss://wbs.mexc.com/ws" // официальный Spot V3 WebSocket
 
 type MEXCCollector struct {
 	ctx    context.Context
@@ -130,9 +130,9 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 	}
 	defer conn.Close()
 
-	// Подписка на тикеры
+	// Подписка на тикер BTCUSDT через Spot V3
 	subscribe := map[string]interface{}{
-		"method": "sub.deal",
+		"method": "sub.ticker",
 		"params": []string{"spot." + c.symbol + ".ticker"},
 		"id":     1,
 	}
@@ -151,7 +151,9 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 			case <-c.ctx.Done():
 				return
 			case <-ticker.C:
-				_ = conn.WriteJSON(map[string]interface{}{"method": "ping"})
+				if err := conn.WriteJSON(map[string]interface{}{"method": "ping"}); err != nil {
+					return
+				}
 			}
 		}
 	}()
@@ -172,12 +174,22 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 }
 
 func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
+	// MEXC может прислать ping -> pong
+	var ping struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(msg, &ping); err == nil && ping.Method == "ping" {
+		// Ответ pong
+		return
+	}
+
+	// Ответ тикера
 	var raw struct {
 		Method string `json:"method"`
 		Params []struct {
-			Symbol string `json:"symbol"`
-			Bid    string `json:"bidPrice"`
-			Ask    string `json:"askPrice"`
+			Symbol string `json:"s"`
+			Bid    string `json:"b"`
+			Ask    string `json:"a"`
 		} `json:"params"`
 	}
 
@@ -185,7 +197,7 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 		return
 	}
 
-	if len(raw.Params) == 0 {
+	if raw.Method != "ticker.update" || len(raw.Params) == 0 {
 		return
 	}
 
@@ -205,5 +217,6 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 		}
 	}
 }
+
 
 
