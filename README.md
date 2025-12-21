@@ -80,17 +80,21 @@ import (
 const mexcWS = "wss://wbs.mexc.com/ws"
 
 type MEXCCollector struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	symbol string // BTC_USDT
+	ctx     context.Context
+	cancel  context.CancelFunc
+	symbols []string
 }
 
-func NewMEXCCollector(symbol string) *MEXCCollector {
+func NewMEXCCollector(symbols []string) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
+	upperSymbols := make([]string, len(symbols))
+	for i, s := range symbols {
+		upperSymbols[i] = strings.ToUpper(strings.ReplaceAll(s, "-", "_"))
+	}
 	return &MEXCCollector{
-		ctx:    ctx,
-		cancel: cancel,
-		symbol: strings.ToUpper(strings.ReplaceAll(symbol, "-", "_")), // BTCUSDT -> BTC_USDT
+		ctx:     ctx,
+		cancel:  cancel,
+		symbols: upperSymbols,
 	}
 }
 
@@ -130,10 +134,15 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 	}
 	defer conn.Close()
 
-	// Подписка на orderbook для получения best bid/ask
+	// Формируем батч подписки (до 25 символов за раз)
+	params := make([]string, len(c.symbols))
+	for i, s := range c.symbols {
+		params[i] = "spot@public.ticker.v3.api@" + s
+	}
+
 	subscribe := map[string]interface{}{
-		"method": "sub.orderbook",
-		"params": []string{c.symbol},
+		"method": "sub.ticker",
+		"params": params,
 		"id":     1,
 	}
 
@@ -172,13 +181,12 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 }
 
 func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
-	// Ответ от сервера может быть разным
 	var raw struct {
 		Method string `json:"method"`
 		Params []struct {
-			Symbol string   `json:"s"`
-			Bid    []string `json:"b"` // [price, qty]
-			Ask    []string `json:"a"` // [price, qty]
+			Symbol string `json:"s"`
+			Bid    string `json:"b"`
+			Ask    string `json:"a"`
 		} `json:"params"`
 	}
 
@@ -186,17 +194,13 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 		return
 	}
 
-	if raw.Method != "orderbook.update" || len(raw.Params) == 0 {
+	if raw.Method != "ticker.update" || len(raw.Params) == 0 {
 		return
 	}
 
 	for _, d := range raw.Params {
-		if len(d.Bid) < 1 || len(d.Ask) < 1 {
-			continue
-		}
-
-		bid, err1 := strconv.ParseFloat(d.Bid[0], 64)
-		ask, err2 := strconv.ParseFloat(d.Ask[0], 64)
+		bid, err1 := strconv.ParseFloat(d.Bid, 64)
+		ask, err2 := strconv.ParseFloat(d.Ask, 64)
 		if err1 != nil || err2 != nil {
 			continue
 		}
@@ -211,5 +215,56 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 	}
 }
 
+
+
+
+package main
+
+import (
+	"crypt_proto/pkg/collector"
+	"crypt_proto/pkg/models"
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
+	if exchange == "" {
+		exchange = "okx"
+	}
+
+	symbolEnv := os.Getenv("SYMBOLS") // допустим, SYMBOLS=BTCUSDT,ETHUSDT,XRPUSDT
+	if symbolEnv == "" {
+		symbolEnv = "BTCUSDT"
+	}
+	symbols := strings.Split(symbolEnv, ",")
+
+	fmt.Println("EXCHANGE!!!!!!!!!", exchange)
+	fmt.Println("SYMBOLS!!!!!!!!!", symbols)
+
+	marketDataCh := make(chan models.MarketData, 1000)
+
+	var c collector.Collector
+
+	switch exchange {
+	case "okx":
+		c = collector.NewOKXCollector() // старый OKX
+	case "mexc":
+		c = collector.NewMEXCCollector(symbols)
+	default:
+		panic("unsupported exchange")
+	}
+
+	fmt.Println("Starting collector:", c.Name())
+	if err := c.Start(marketDataCh); err != nil {
+		panic(err)
+	}
+
+	// простой вывод данных
+	for md := range marketDataCh {
+		fmt.Printf("%s %s bid=%.6f ask=%.6f\n", md.Exchange, md.Symbol, md.Bid, md.Ask)
+	}
+}
 
 
