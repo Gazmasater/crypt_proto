@@ -63,7 +63,13 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-    _ = godotenv.Load() // загружает переменные из .env в os.Getenv
-
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+EXCHANGE!!!!!!!!! mexc
+2025/12/21 23:03:16 Starting collector: MEXC
+2025/12/21 23:03:16 [MEXC] connecting...
+2025/12/21 23:03:50 [MEXC] read error: websocket: close 1005 (no status)
+2025/12/21 23:03:50 [MEXC] reconnect in 1s...
+2025/12/21 23:03:51 [MEXC] connecting...
+^C2025/12/21 23:04:01 shutdown signal
 
 
