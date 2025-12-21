@@ -63,25 +63,6 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-const mexcWS = "wss://wbs-api.mexc.com/ws"
-
-
-{
-  "method": "sub.deals",
-  "params": ["spot@public.deals.v3.api@BTCUSDT"],
-  "id": 1
-}
-
-
-{
-  "method": "sub.ticker",
-  "params": ["spot@public.ticker.v3.api@BTCUSDT"],
-  "id": 1
-}
-
-
-
-
 package collector
 
 import (
@@ -90,6 +71,7 @@ import (
 	"encoding/json"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -108,7 +90,7 @@ func NewMEXCCollector(symbol string) *MEXCCollector {
 	return &MEXCCollector{
 		ctx:    ctx,
 		cancel: cancel,
-		symbol: symbol, // ожидаем формат: BTCUSDT
+		symbol: strings.ToUpper(symbol), // BTCUSDT
 	}
 }
 
@@ -148,7 +130,7 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 	}
 	defer conn.Close()
 
-	// подписка на ticker через v3 API каналы
+	// Подписка на тикер
 	subscribe := map[string]interface{}{
 		"method": "sub.ticker",
 		"params": []string{"spot@public.ticker.v3.api@" + c.symbol},
@@ -160,7 +142,7 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 		return
 	}
 
-	// ping каждые 20s, иначе MEXC может разорвать
+	// Ping каждые 20 секунд
 	go func() {
 		ticker := time.NewTicker(20 * time.Second)
 		defer ticker.Stop()
@@ -169,7 +151,7 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 			case <-c.ctx.Done():
 				return
 			case <-ticker.C:
-				conn.WriteMessage(websocket.TextMessage, []byte(`{"method":"ping"}`))
+				_ = conn.WriteJSON(map[string]interface{}{"method": "ping"})
 			}
 		}
 	}()
@@ -190,12 +172,13 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 }
 
 func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
+	// Ответ от сервера может быть разных типов, фильтруем тикер
 	var raw struct {
 		Method string `json:"method"`
 		Params []struct {
-			Symbol string `json:"symbol"`
-			Bid    string `json:"bid"`
-			Ask    string `json:"ask"`
+			Symbol string `json:"s"`
+			Bid    string `json:"b"`
+			Ask    string `json:"a"`
 		} `json:"params"`
 	}
 
@@ -203,16 +186,20 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 		return
 	}
 
-	for _, p := range raw.Params {
-		bid, err1 := strconv.ParseFloat(p.Bid, 64)
-		ask, err2 := strconv.ParseFloat(p.Ask, 64)
+	if raw.Method != "ticker.update" || len(raw.Params) == 0 {
+		return
+	}
+
+	for _, d := range raw.Params {
+		bid, err1 := strconv.ParseFloat(d.Bid, 64)
+		ask, err2 := strconv.ParseFloat(d.Ask, 64)
 		if err1 != nil || err2 != nil {
 			continue
 		}
 
 		out <- models.MarketData{
 			Exchange:  "MEXC",
-			Symbol:    p.Symbol,
+			Symbol:    d.Symbol,
 			Bid:       bid,
 			Ask:       ask,
 			Timestamp: time.Now().UnixMilli(),
@@ -221,13 +208,3 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 }
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-EXCHANGE!!!!!!!!! mexc
-2025/12/21 23:46:17 Starting collector: MEXC
-2025/12/21 23:46:17 [MEXC] connecting...
-2025/12/21 23:46:53 [MEXC] read error: websocket: close 1005 (no status)
-2025/12/21 23:46:53 [MEXC] reconnect in 1s...
-2025/12/21 23:46:54 [MEXC] connecting...
-2025/12/21 23:47:28 [MEXC] read error: websocket: close 1005 (no status)
-2025/12/21 23:47:28 [MEXC] reconnect in 1s...
-2025/12/21 23:47:29 [MEXC] connecting...
