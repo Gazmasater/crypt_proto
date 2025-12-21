@@ -77,7 +77,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const mexcWS = "wss://wbs-api.mexc.com/ws"
+const mexcWS = "wss://wbs.mexc.com/ws"
 
 type MEXCCollector struct {
 	ctx    context.Context
@@ -90,7 +90,7 @@ func NewMEXCCollector(symbol string) *MEXCCollector {
 	return &MEXCCollector{
 		ctx:    ctx,
 		cancel: cancel,
-		symbol: strings.ToUpper(symbol), // BTCUSDT
+		symbol: strings.ToUpper(symbol),
 	}
 }
 
@@ -130,10 +130,10 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 	}
 	defer conn.Close()
 
-	// Подписка на тикер
+	// Подписка на тикеры
 	subscribe := map[string]interface{}{
-		"method": "sub.ticker",
-		"params": []string{"spot@public.ticker.v3.api@" + c.symbol},
+		"method": "sub.deal",
+		"params": []string{"spot." + c.symbol + ".ticker"},
 		"id":     1,
 	}
 
@@ -142,9 +142,9 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 		return
 	}
 
-	// Ping каждые 20 секунд
+	// Ping каждые 15 секунд
 	go func() {
-		ticker := time.NewTicker(20 * time.Second)
+		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -172,13 +172,12 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 }
 
 func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
-	// Ответ от сервера может быть разных типов, фильтруем тикер
 	var raw struct {
 		Method string `json:"method"`
 		Params []struct {
-			Symbol string `json:"s"`
-			Bid    string `json:"b"`
-			Ask    string `json:"a"`
+			Symbol string `json:"symbol"`
+			Bid    string `json:"bidPrice"`
+			Ask    string `json:"askPrice"`
 		} `json:"params"`
 	}
 
@@ -186,7 +185,7 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 		return
 	}
 
-	if raw.Method != "ticker.update" || len(raw.Params) == 0 {
+	if len(raw.Params) == 0 {
 		return
 	}
 
@@ -207,13 +206,4 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 	}
 }
 
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-EXCHANGE!!!!!!!!! mexc
-2025/12/22 00:32:46 Starting collector: MEXC
-2025/12/22 00:32:46 [MEXC] connecting...
-2025/12/22 00:33:19 [MEXC] read error: websocket: close 1005 (no status)
-2025/12/22 00:33:19 [MEXC] reconnect in 1s...
-2025/12/22 00:33:20 [MEXC] connecting...
-^C2025/12/22 00:33:23 shutdown signal
 
