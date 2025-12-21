@@ -61,6 +61,10 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 (pprof) quit
 
 
+
+
+
+✅ internal/collector/okx_collector.go (адаптирован под models.MarketData)
 package collector
 
 import (
@@ -93,35 +97,38 @@ func (c *OKXCollector) Name() string {
 	return "OKX"
 }
 
-func (c *OKXCollector) Start(out chan<- models.MarketTick) error {
+func (c *OKXCollector) Start(out chan<- models.MarketData) error {
 	go c.run(out)
 	return nil
 }
 
-func (c *OKXCollector) run(out chan<- models.MarketTick) {
+func (c *OKXCollector) Stop() {
+	c.cancel()
+}
+
+func (c *OKXCollector) run(out chan<- models.MarketData) {
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
-			log.Println("OKX connecting...")
+			log.Println("[OKX] connecting...")
 			c.connectAndRead(out)
-			log.Println("OKX reconnect in 1s...")
+			log.Println("[OKX] reconnect in 1s...")
 			time.Sleep(time.Second)
 		}
 	}
 }
 
-func (c *OKXCollector) connectAndRead(out chan<- models.MarketTick) {
+func (c *OKXCollector) connectAndRead(out chan<- models.MarketData) {
 	conn, _, err := websocket.DefaultDialer.Dial(okxWS, nil)
 	if err != nil {
-		log.Println("OKX dial error:", err)
+		log.Println("[OKX] dial error:", err)
 		return
 	}
 	defer conn.Close()
 
-	// subscribe
-	sub := map[string]interface{}{
+	subscribe := map[string]interface{}{
 		"op": "subscribe",
 		"args": []map[string]string{
 			{
@@ -131,12 +138,12 @@ func (c *OKXCollector) connectAndRead(out chan<- models.MarketTick) {
 		},
 	}
 
-	if err := conn.WriteJSON(sub); err != nil {
-		log.Println("OKX subscribe error:", err)
+	if err := conn.WriteJSON(subscribe); err != nil {
+		log.Println("[OKX] subscribe error:", err)
 		return
 	}
 
-	// ping loop
+	// keepalive ping
 	go func() {
 		ticker := time.NewTicker(20 * time.Second)
 		defer ticker.Stop()
@@ -146,12 +153,11 @@ func (c *OKXCollector) connectAndRead(out chan<- models.MarketTick) {
 			case <-c.ctx.Done():
 				return
 			case <-ticker.C:
-				_ = conn.WriteMessage(websocket.PingMessage, []byte("ping"))
+				_ = conn.WriteMessage(websocket.PingMessage, nil)
 			}
 		}
 	}()
 
-	// read loop
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -159,7 +165,7 @@ func (c *OKXCollector) connectAndRead(out chan<- models.MarketTick) {
 		default:
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				log.Println("OKX read error:", err)
+				log.Println("[OKX] read error:", err)
 				return
 			}
 			c.handleMessage(msg, out)
@@ -167,14 +173,12 @@ func (c *OKXCollector) connectAndRead(out chan<- models.MarketTick) {
 	}
 }
 
-func (c *OKXCollector) handleMessage(msg []byte, out chan<- models.MarketTick) {
+func (c *OKXCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
 	var raw struct {
 		Data []struct {
 			InstId string `json:"instId"`
 			BidPx  string `json:"bidPx"`
-			BidSz  string `json:"bidSz"`
 			AskPx  string `json:"askPx"`
-			AskSz  string `json:"askSz"`
 		} `json:"data"`
 	}
 
@@ -183,32 +187,82 @@ func (c *OKXCollector) handleMessage(msg []byte, out chan<- models.MarketTick) {
 	}
 
 	for _, d := range raw.Data {
-		bidPx, _ := strconv.ParseFloat(d.BidPx, 64)
-		bidSz, _ := strconv.ParseFloat(d.BidSz, 64)
-		askPx, _ := strconv.ParseFloat(d.AskPx, 64)
-		askSz, _ := strconv.ParseFloat(d.AskSz, 64)
+		bid, err1 := strconv.ParseFloat(d.BidPx, 64)
+		ask, err2 := strconv.ParseFloat(d.AskPx, 64)
+		if err1 != nil || err2 != nil {
+			continue
+		}
 
-		out <- models.MarketTick{
+		out <- models.MarketData{
 			Exchange:  "OKX",
 			Symbol:    d.InstId,
-			BidPrice: bidPx,
-			BidQty:   bidSz,
-			AskPrice: askPx,
-			AskQty:   askSz,
-			Timestamp: time.Now(),
+			Bid:       bid,
+			Ask:       ask,
+			Timestamp: time.Now().UnixMilli(),
 		}
 	}
 }
 
-func (c *OKXCollector) Stop() error {
-	c.cancel()
-	return nil
+🔎 Что изменилось принципиально
+Было	Стало
+MarketTick	models.MarketData
+BidPrice / AskPrice	Bid / Ask
+time.Time	int64 (Unix ms)
+ручной Stop	context.Cancel()
+🧠 Архитектурно важно
+
+Collector → только MarketData
+
+Calculator → принимает MarketData[], отдаёт Signal
+
+Executor → работает ТОЛЬКО с Signal
+
+Это чистый SOLID:
+
+SRP ✔
+
+DIP ✔
+
+Open/Closed ✔
+
+✅ Проверка, что всё работает
+
+В main.go:
+
+for md := range marketDataCh {
+	log.Printf(
+		"%s %s bid=%.2f ask=%.2f",
+		md.Exchange, md.Symbol, md.Bid, md.Ask,
+	)
 }
 
 
+Если bid/ask обновляются → коллектор идеален.
 
+Следующий логичный шаг
 
+1️⃣ вынести Collector интерфейс
+2️⃣ добавить MEXCCollector (почти копипаста)
+3️⃣ сделать fan-in канал для калькулятора
 
+Скажи — идём дальше по какому шагу.
+
+перепиши main gjkyjcnm.
+
+Понял 👍
+Переписываю main.go полностью и аккуратно, под твою текущую архитектуру:
+
+один процесс
+
+без контейнеров
+
+тест коллектора OKX
+
+корректное завершение
+
+готово к расширению (MEXC / KuCoin)
+
+✅ cmd/arb/main.go (чистая, правильная версия)
 package main
 
 import (
@@ -221,26 +275,44 @@ import (
 )
 
 func main() {
-	ticks := make(chan models.MarketTick, 1000)
+	// канал для рыночных данных
+	marketDataCh := make(chan models.MarketData, 1000)
 
-	okx := collector.NewOKXCollector()
-	okx.Start(ticks)
+	// инициализация коллектора
+	okxCollector := collector.NewOKXCollector()
 
+	// старт коллектора
+	if err := okxCollector.Start(marketDataCh); err != nil {
+		log.Fatal("failed to start OKX collector:", err)
+	}
+
+	log.Println("OKX collector started")
+
+	// consumer (пока просто логируем)
 	go func() {
-		for t := range ticks {
-			log.Printf("%s %s bid=%.2f ask=%.2f",
-				t.Exchange, t.Symbol, t.BidPrice, t.AskPrice)
+		for md := range marketDataCh {
+			log.Printf(
+				"[MARKET] %s %s bid=%.4f ask=%.4f",
+				md.Exchange,
+				md.Symbol,
+				md.Bid,
+				md.Ask,
+			)
 		}
 	}()
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
+	// graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	log.Println("shutdown")
-	okx.Stop()
+	<-sigCh
+	log.Println("shutdown signal received")
+
+	okxCollector.Stop()
+
+	log.Println("collector stopped, exit")
 }
 
-
+🔍 Что здесь важно архитектурно
 
 
