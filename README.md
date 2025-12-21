@@ -62,24 +62,27 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-
 /arb_project
- ├─ main.go                  # Точка входа, запуск всех компонентов
- ├─ collector/
+ ├─ main.go                  # Точка входа, запуск Collector, Calculator, Queue, Executor
+ ├─ collector/               # Пакет для сбора данных с бирж
  │   ├─ collector.go         # Интерфейс Collector
- │   └─ okx_collector.go     # Реализация Collector для OKX
- ├─ calculator/
+ │   ├─ okx_collector.go     # Реализация Collector для OKX
+ │   ├─ mexc_collector.go    # Реализация Collector для MEXC
+ │   └─ kucoin_collector.go  # Реализация Collector для KuCoin
+ ├─ calculator/              # Пакет для расчёта арбитража
  │   ├─ calculator.go        # Интерфейс Calculator
- │   └─ arb.go               # Реализация расчёта треугольников
- ├─ queue/
- │   └─ in_memory_queue.go   # Очередь сигналов (InMemoryQueue)
- ├─ executor/
+ │   └─ arb.go               # Реализация arb
+ ├─ queue/                   # Пакет для очереди сигналов
+ │   ├─ in_memory_queue.go   # InMemoryQueue для теста
+ │   └─ redis_queue.go       # RedisQueue для продакшн
+ ├─ executor/                # Пакет для исполнения сигналов
  │   ├─ executor.go          # Интерфейс Executor
- │   └─ executor_impl.go     # Реализация Executor (отправка ордеров / моки)
- ├─ models/
+ │   └─ executor_impl.go     # Реализация Executor (реальные ордера)
+ ├─ models/                  # Общие структуры данных
  │   ├─ market_data.go       # Структура MarketData
- │   └─ signal.go            # Структура Signal (арбитраж)
- └─ utils/
-     └─ helpers.go           # Вспомогательные функции (например, parseFloat)
+ │   └─ signal.go            # Структура Signal
+ └─ utils/                   # Вспомогательные функции
+     └─ helpers.go           # parseFloat, логирование, конвертация
+
 
 
