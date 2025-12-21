@@ -9,9 +9,12 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	_ = godotenv.Load()
 	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
 	if exchange == "" {
 		exchange = "okx"
