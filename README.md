@@ -61,33 +61,48 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 (pprof) quit
 
 
-/arb_project
- ├─ cmd/
- │   ├─ arb/
- │   │   └─ main.go
- │   └─ arb_test/
- │       └─ main.go
- ├─ internal/
- │   ├─ collector_impl/
- │   │   ├─ okx_collector.go
- │   │   ├─ mexc_collector.go
- │   │   └─ kucoin_collector.go
- │   ├─ calculator_impl/
- │   │   └─ arb.go
- │   ├─ executor_impl/
- │   │   └─ executor_impl.go
- │   └─ queue_impl/
- │       ├─ redis_queue.go
- │       └─ in_memory_queue.go
- ├─ pkg/
- │   ├─ models/
- │   │   ├─ market_data.go
- │   │   └─ signal.go
- │   └─ utils/
- │       └─ helpers.go
- ├─ configs/
- │   └─ config.yaml
- └─ scripts/
-     └─ deploy.sh
+models/market_data.go
+package models
+
+// MarketData хранит данные с биржи для одного инструмента
+type MarketData struct {
+	Exchange  string  `json:"exchange"`  // название биржи
+	Symbol    string  `json:"symbol"`    // торговая пара, например BTC-USDT
+	Bid       float64 `json:"bid"`       // лучшая цена покупки
+	Ask       float64 `json:"ask"`       // лучшая цена продажи
+	Timestamp int64   `json:"timestamp"` // метка времени в миллисекундах
+}
+
+models/signal.go
+package models
+
+// Signal представляет сигнал арбитража
+type Signal struct {
+	ExchangeStart string  `json:"exchange_start"` // биржа первой сделки
+	ExchangeMid   string  `json:"exchange_mid"`   // биржа второй сделки
+	ExchangeEnd   string  `json:"exchange_end"`   // биржа третьей сделки
+	SymbolStart   string  `json:"symbol_start"`   // первая монета
+	SymbolMid     string  `json:"symbol_mid"`     // вторая монета
+	SymbolEnd     string  `json:"symbol_end"`     // третья монета
+	ProfitPercent float64 `json:"profit_percent"` // ожидаемая прибыль в процентах
+	Amount        float64 `json:"amount"`         // объём сделки
+	Timestamp     int64   `json:"timestamp"`      // время создания сигнала
+}
+
+
+
+package collector
+
+import "arb_project/models"
+
+// Collector — интерфейс для любого коллектора биржи
+type Collector interface {
+	// Start запускает сбор данных и отправку в канал dataCh
+	Start(dataCh chan<- models.MarketData) error
+	
+	// Stop останавливает сбор данных
+	Stop() error
+}
+
 
 
