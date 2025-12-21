@@ -63,15 +63,5 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-EXCHANGE!!!!!!!!! mexc
-2025/12/21 23:11:49 Starting collector: MEXC
-2025/12/21 23:11:49 [MEXC] connecting...
-2025/12/21 23:11:49 [MEXC] dial error: websocket: bad handshake
-2025/12/21 23:11:49 [MEXC] reconnect in 1s...
-2025/12/21 23:11:50 [MEXC] connecting...
-2025/12/21 23:11:50 [MEXC] dial error: websocket: bad handshake
-2025/12/21 23:11:50 [MEXC] reconnect in 1s...
-2025/12/21 23:11:51 [MEXC] connecting...
-2025/12/21 23:11:52 [MEXC] dial error: websocket: bad handshake
-2025/12/21 23:11:52 [MEXC] reconnect in 1s..
+const mexcWS = "wss://www.mexc.com/ws"
+
