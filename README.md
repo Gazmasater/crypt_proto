@@ -63,137 +63,15 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package collector
-
-import (
-	"context"
-	"crypt_proto/pkg/models"
-	"encoding/json"
-	"log"
-	"strconv"
-	"strings"
-	"time"
-
-	"github.com/gorilla/websocket"
-)
-
-const mexcWS = "wss://www.mexc.com/ws"
-
-type MEXCCollector struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	symbol string
-}
-
-func NewMEXCCollector(symbol string) *MEXCCollector {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &MEXCCollector{
-		ctx:    ctx,
-		cancel: cancel,
-		symbol: strings.ToUpper(symbol),
-	}
-}
-
-func (c *MEXCCollector) Name() string {
-	return "MEXC"
-}
-
-func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
-	go c.run(out)
-	return nil
-}
-
-func (c *MEXCCollector) Stop() error {
-	c.cancel()
-	return nil
-}
-
-func (c *MEXCCollector) run(out chan<- models.MarketData) {
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-			log.Println("[MEXC] connecting...")
-			c.connectAndRead(out)
-			log.Println("[MEXC] reconnect in 1s...")
-			time.Sleep(time.Second)
-		}
-	}
-}
-
-func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
-	conn, _, err := websocket.DefaultDialer.Dial(mexcWS, nil)
-	if err != nil {
-		log.Println("[MEXC] dial error:", err)
-		return
-	}
-	defer conn.Close()
-
-	// подписка на тикер
-	subscribe := map[string]interface{}{
-		"method": "sub.ticker",
-		"params": []map[string]string{
-			{"symbol": c.symbol},
-		},
-		"id": 1,
-	}
-
-	if err := conn.WriteJSON(subscribe); err != nil {
-		log.Println("[MEXC] subscribe error:", err)
-		return
-	}
-
-	// обработка ping
-	go func() {
-		for {
-			select {
-			case <-c.ctx.Done():
-				return
-			default:
-				conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-				_, msg, err := conn.ReadMessage()
-				if err != nil {
-					return
-				}
-				if string(msg) == "ping" {
-					_ = conn.WriteMessage(websocket.TextMessage, []byte("pong"))
-				} else {
-					c.handleMessage(msg, out)
-				}
-			}
-		}
-	}()
-	<-c.ctx.Done()
-}
-
-func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
-	var raw struct {
-		Method string `json:"method"`
-		Params []struct {
-			Symbol string `json:"symbol"`
-			Bid    string `json:"bid"`
-			Ask    string `json:"ask"`
-		} `json:"params"`
-	}
-
-	if err := json.Unmarshal(msg, &raw); err != nil {
-		return
-	}
-
-	for _, p := range raw.Params {
-		bid, err1 := strconv.ParseFloat(p.Bid, 64)
-		ask, err2 := strconv.ParseFloat(p.Ask, 64)
-		if err1 != nil || err2 != nil {
-			continue
-		}
-
-		out <- models.MarketData{
-			Exchange:  "MEXC",
-			Symbol:    p.Symbol,
-			Bid:       bid,
-			Ask:       ask,
-			Timestamp: time.Now().UnixMilli(),
-		}
-	}
-}
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+EXCHANGE!!!!!!!!! mexc
+2025/12/21 23:11:49 Starting collector: MEXC
+2025/12/21 23:11:49 [MEXC] connecting...
+2025/12/21 23:11:49 [MEXC] dial error: websocket: bad handshake
+2025/12/21 23:11:49 [MEXC] reconnect in 1s...
+2025/12/21 23:11:50 [MEXC] connecting...
+2025/12/21 23:11:50 [MEXC] dial error: websocket: bad handshake
+2025/12/21 23:11:50 [MEXC] reconnect in 1s...
+2025/12/21 23:11:51 [MEXC] connecting...
+2025/12/21 23:11:52 [MEXC] dial error: websocket: bad handshake
+2025/12/21 23:11:52 [MEXC] reconnect in 1s..
