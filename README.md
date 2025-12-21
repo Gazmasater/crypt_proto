@@ -64,99 +64,83 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-✅ internal/collector/okx_collector.go (адаптирован под models.MarketData)
 package collector
 
 import (
 	"context"
-	"crypt_proto/models"
+	"crypt_proto/pkg/models"
 	"encoding/json"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-const okxWS = "wss://ws.okx.com:8443/ws/v5/public"
+const mexcWS = "wss://wbs.mexc.com/ws"
 
-type OKXCollector struct {
+type MEXCCollector struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	symbol string
 }
 
-func NewOKXCollector() *OKXCollector {
+func NewMEXCCollector(symbol string) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &OKXCollector{
+	return &MEXCCollector{
 		ctx:    ctx,
 		cancel: cancel,
+		symbol: strings.ToUpper(symbol),
 	}
 }
 
-func (c *OKXCollector) Name() string {
-	return "OKX"
+func (c *MEXCCollector) Name() string {
+	return "MEXC"
 }
 
-func (c *OKXCollector) Start(out chan<- models.MarketData) error {
+func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
 	go c.run(out)
 	return nil
 }
 
-func (c *OKXCollector) Stop() {
+func (c *MEXCCollector) Stop() {
 	c.cancel()
 }
 
-func (c *OKXCollector) run(out chan<- models.MarketData) {
+func (c *MEXCCollector) run(out chan<- models.MarketData) {
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
-			log.Println("[OKX] connecting...")
+			log.Println("[MEXC] connecting...")
 			c.connectAndRead(out)
-			log.Println("[OKX] reconnect in 1s...")
+			log.Println("[MEXC] reconnect in 1s...")
 			time.Sleep(time.Second)
 		}
 	}
 }
 
-func (c *OKXCollector) connectAndRead(out chan<- models.MarketData) {
-	conn, _, err := websocket.DefaultDialer.Dial(okxWS, nil)
+func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
+	conn, _, err := websocket.DefaultDialer.Dial(mexcWS, nil)
 	if err != nil {
-		log.Println("[OKX] dial error:", err)
+		log.Println("[MEXC] dial error:", err)
 		return
 	}
 	defer conn.Close()
 
 	subscribe := map[string]interface{}{
-		"op": "subscribe",
-		"args": []map[string]string{
-			{
-				"channel": "tickers",
-				"instId":  "BTC-USDT",
-			},
+		"method": "SUBSCRIPTION",
+		"params": []string{
+			"spot@public.bookTicker." + c.symbol,
 		},
 	}
 
 	if err := conn.WriteJSON(subscribe); err != nil {
-		log.Println("[OKX] subscribe error:", err)
+		log.Println("[MEXC] subscribe error:", err)
 		return
 	}
-
-	// keepalive ping
-	go func() {
-		ticker := time.NewTicker(20 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-c.ctx.Done():
-				return
-			case <-ticker.C:
-				_ = conn.WriteMessage(websocket.PingMessage, nil)
-			}
-		}
-	}()
 
 	for {
 		select {
@@ -165,7 +149,7 @@ func (c *OKXCollector) connectAndRead(out chan<- models.MarketData) {
 		default:
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				log.Println("[OKX] read error:", err)
+				log.Println("[MEXC] read error:", err)
 				return
 			}
 			c.handleMessage(msg, out)
@@ -173,126 +157,83 @@ func (c *OKXCollector) connectAndRead(out chan<- models.MarketData) {
 	}
 }
 
-func (c *OKXCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
+func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
 	var raw struct {
-		Data []struct {
-			InstId string `json:"instId"`
-			BidPx  string `json:"bidPx"`
-			AskPx  string `json:"askPx"`
-		} `json:"data"`
+		Data struct {
+			Symbol string `json:"s"`
+			Bid    string `json:"b"`
+			Ask    string `json:"a"`
+		} `json:"d"`
 	}
 
 	if err := json.Unmarshal(msg, &raw); err != nil {
 		return
 	}
 
-	for _, d := range raw.Data {
-		bid, err1 := strconv.ParseFloat(d.BidPx, 64)
-		ask, err2 := strconv.ParseFloat(d.AskPx, 64)
-		if err1 != nil || err2 != nil {
-			continue
-		}
+	bid, err1 := strconv.ParseFloat(raw.Data.Bid, 64)
+	ask, err2 := strconv.ParseFloat(raw.Data.Ask, 64)
+	if err1 != nil || err2 != nil {
+		return
+	}
 
-		out <- models.MarketData{
-			Exchange:  "OKX",
-			Symbol:    d.InstId,
-			Bid:       bid,
-			Ask:       ask,
-			Timestamp: time.Now().UnixMilli(),
-		}
+	out <- models.MarketData{
+		Exchange:  "MEXC",
+		Symbol:    raw.Data.Symbol,
+		Bid:       bid,
+		Ask:       ask,
+		Timestamp: time.Now().UnixMilli(),
 	}
 }
 
-🔎 Что изменилось принципиально
-Было	Стало
-MarketTick	models.MarketData
-BidPrice / AskPrice	Bid / Ask
-time.Time	int64 (Unix ms)
-ручной Stop	context.Cancel()
-🧠 Архитектурно важно
-
-Collector → только MarketData
-
-Calculator → принимает MarketData[], отдаёт Signal
-
-Executor → работает ТОЛЬКО с Signal
-
-Это чистый SOLID:
-
-SRP ✔
-
-DIP ✔
-
-Open/Closed ✔
-
-✅ Проверка, что всё работает
-
-В main.go:
-
-for md := range marketDataCh {
-	log.Printf(
-		"%s %s bid=%.2f ask=%.2f",
-		md.Exchange, md.Symbol, md.Bid, md.Ask,
-	)
-}
 
 
-Если bid/ask обновляются → коллектор идеален.
+export EXCHANGE=okx
+# или
+export EXCHANGE=mexc
 
-Следующий логичный шаг
 
-1️⃣ вынести Collector интерфейс
-2️⃣ добавить MEXCCollector (почти копипаста)
-3️⃣ сделать fan-in канал для калькулятора
 
-Скажи — идём дальше по какому шагу.
-
-перепиши main gjkyjcnm.
-
-Понял 👍
-Переписываю main.go полностью и аккуратно, под твою текущую архитектуру:
-
-один процесс
-
-без контейнеров
-
-тест коллектора OKX
-
-корректное завершение
-
-готово к расширению (MEXC / KuCoin)
-
-✅ cmd/arb/main.go (чистая, правильная версия)
 package main
 
 import (
 	"crypt_proto/internal/collector"
-	"crypt_proto/models"
+	"crypt_proto/pkg/models"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
 func main() {
-	// канал для рыночных данных
-	marketDataCh := make(chan models.MarketData, 1000)
-
-	// инициализация коллектора
-	okxCollector := collector.NewOKXCollector()
-
-	// старт коллектора
-	if err := okxCollector.Start(marketDataCh); err != nil {
-		log.Fatal("failed to start OKX collector:", err)
+	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
+	if exchange == "" {
+		exchange = "okx"
 	}
 
-	log.Println("OKX collector started")
+	marketDataCh := make(chan models.MarketData, 1000)
 
-	// consumer (пока просто логируем)
+	var c collector.Collector
+
+	switch exchange {
+	case "okx":
+		c = collector.NewOKXCollector()
+	case "mexc":
+		c = collector.NewMEXCCollector("BTCUSDT")
+	default:
+		log.Fatalf("unknown exchange: %s", exchange)
+	}
+
+	log.Printf("Starting collector: %s\n", c.Name())
+
+	if err := c.Start(marketDataCh); err != nil {
+		log.Fatal(err)
+	}
+
 	go func() {
 		for md := range marketDataCh {
 			log.Printf(
-				"[MARKET] %s %s bid=%.4f ask=%.4f",
+				"[MARKET] %s %s bid=%.6f ask=%.6f",
 				md.Exchange,
 				md.Symbol,
 				md.Bid,
@@ -301,18 +242,14 @@ func main() {
 		}
 	}()
 
-	// graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigCh
-	log.Println("shutdown signal received")
+	log.Println("shutdown signal")
 
-	okxCollector.Stop()
-
-	log.Println("collector stopped, exit")
+	c.Stop()
 }
 
-🔍 Что здесь важно архитектурно
 
 
