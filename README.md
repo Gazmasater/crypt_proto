@@ -82,7 +82,7 @@ import (
 const (
 	mexcWS       = "wss://wbs-api.mexc.com/ws"
 	readTimeout  = 30 * time.Second
-	pingInterval = 10 * time.Second
+	pingInterval = 5 * time.Second
 	reconnectDur = time.Second
 )
 
@@ -141,13 +141,13 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 	}
 	defer conn.Close()
 
-	// heartbeat
 	conn.SetReadDeadline(time.Now().Add(readTimeout))
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(readTimeout))
 		return nil
 	})
 
+	// Ping каждые 5 секунд
 	go func() {
 		ticker := time.NewTicker(pingInterval)
 		defer ticker.Stop()
@@ -157,16 +157,17 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 				return
 			case <-ticker.C:
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					log.Println("[MEXC] ping error:", err)
 					return
 				}
 			}
 		}
 	}()
 
-	// подписка на все символы сразу
+	// Подписка на все символы (нижний регистр)
 	params := make([]string, 0, len(c.symbols))
 	for _, s := range c.symbols {
-		params = append(params, "spot@public.bookTicker."+s)
+		params = append(params, "spot/ticker:"+strings.ToLower(s))
 	}
 
 	subscribe := map[string]interface{}{
@@ -197,92 +198,31 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 
 func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
 	var raw struct {
-		Data struct {
-			Symbol string `json:"s"`
-			Bid    string `json:"b"`
-			Ask    string `json:"a"`
-		} `json:"d"`
+		Symbol string `json:"s"` // приходит в верхнем регистре
+		Bid    string `json:"b"`
+		Ask    string `json:"a"`
 	}
 
 	if err := json.Unmarshal(msg, &raw); err != nil {
 		return
 	}
 
-	if raw.Data.Symbol == "" {
+	if raw.Symbol == "" {
 		return
 	}
 
-	bid, err1 := strconv.ParseFloat(raw.Data.Bid, 64)
-	ask, err2 := strconv.ParseFloat(raw.Data.Ask, 64)
+	bid, err1 := strconv.ParseFloat(raw.Bid, 64)
+	ask, err2 := strconv.ParseFloat(raw.Ask, 64)
 	if err1 != nil || err2 != nil {
 		return
 	}
 
 	out <- models.MarketData{
 		Exchange:  "MEXC",
-		Symbol:    raw.Data.Symbol,
+		Symbol:    raw.Symbol, // верхний регистр для вывода
 		Bid:       bid,
 		Ask:       ask,
 		Timestamp: time.Now().UnixMilli(),
 	}
 }
-
-
-
-
-
-package main
-
-import (
-	"fmt"
-	"os"
-	"strings"
-
-	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
-
-	"github.com/joho/godotenv"
-)
-
-func main() {
-	_ = godotenv.Load(".env")
-	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
-	if exchange == "" {
-		exchange = "mexc"
-	}
-
-	fmt.Println("EXCHANGE:", exchange)
-
-	marketDataCh := make(chan models.MarketData, 1000)
-
-	if exchange != "mexc" && exchange != "okx" {
-		panic("unknown exchange")
-	}
-
-	// два символа
-	symbols := []string{"BTCUSDT", "ETHUSDT"}
-
-	var c collector.Collector
-	if exchange == "mexc" {
-		c = collector.NewMEXCCollector(symbols)
-	} else {
-		c = collector.NewOKXCollector()
-	}
-
-	fmt.Println("Starting collector:", c.Name())
-	if err := c.Start(marketDataCh); err != nil {
-		panic(err)
-	}
-
-	// consumer
-	go func() {
-		for data := range marketDataCh {
-			fmt.Printf("[%s] %s bid=%.4f ask=%.4f\n",
-				data.Exchange, data.Symbol, data.Bid, data.Ask)
-		}
-	}()
-
-	select {}
-}
-
 
