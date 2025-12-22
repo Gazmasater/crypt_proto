@@ -89,19 +89,15 @@ const (
 type MEXCCollector struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
-	symbols []string
+	symbol  string
 }
 
-func NewMEXCCollector(symbols []string) *MEXCCollector {
+func NewMEXCCollector(symbol string) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
-	upper := make([]string, 0, len(symbols))
-	for _, s := range symbols {
-		upper = append(upper, strings.ToUpper(s))
-	}
 	return &MEXCCollector{
-		ctx:     ctx,
-		cancel:  cancel,
-		symbols: upper,
+		ctx:    ctx,
+		cancel: cancel,
+		symbol: strings.ToUpper(symbol),
 	}
 }
 
@@ -125,9 +121,9 @@ func (c *MEXCCollector) run(out chan<- models.MarketData) {
 		case <-c.ctx.Done():
 			return
 		default:
-			log.Println("[MEXC] connecting...")
+			log.Println("[MEXC]", c.symbol, "connecting...")
 			c.connectAndRead(out)
-			log.Println("[MEXC] reconnect in 1s...")
+			log.Println("[MEXC]", c.symbol, "reconnect in 1s...")
 			time.Sleep(reconnectDur)
 		}
 	}
@@ -136,7 +132,7 @@ func (c *MEXCCollector) run(out chan<- models.MarketData) {
 func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 	conn, _, err := websocket.DefaultDialer.Dial(mexcWS, nil)
 	if err != nil {
-		log.Println("[MEXC] dial error:", err)
+		log.Println("[MEXC]", c.symbol, "dial error:", err)
 		return
 	}
 	defer conn.Close()
@@ -163,18 +159,14 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 		}
 	}()
 
-	// подписка на все символы
-	params := make([]string, 0, len(c.symbols))
-	for _, s := range c.symbols {
-		params = append(params, "spot@public.bookTicker."+s)
-	}
+	// подписка на один символ
 	subscribe := map[string]interface{}{
 		"method": "SUBSCRIBE",
-		"params": params,
+		"params": []string{"spot@public.bookTicker." + c.symbol},
 	}
 
 	if err := conn.WriteJSON(subscribe); err != nil {
-		log.Println("[MEXC] subscribe error:", err)
+		log.Println("[MEXC]", c.symbol, "subscribe error:", err)
 		return
 	}
 
@@ -185,7 +177,7 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 		default:
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				log.Println("[MEXC] read error:", err)
+				log.Println("[MEXC]", c.symbol, "read error:", err)
 				return
 			}
 			c.handleMessage(msg, out)
@@ -254,23 +246,25 @@ func main() {
 
 	marketDataCh := make(chan models.MarketData, 1000)
 
-	var c collector.Collector
-
-	// пример мультисимвола
-	symbols := []string{"BTCUSDT", "ETHUSDT"}
-
-	switch exchange {
-	case "okx":
-		c = collector.NewOKXCollector()
-	case "mexc":
-		c = collector.NewMEXCCollector(symbols)
-	default:
+	if exchange != "mexc" && exchange != "okx" {
 		panic("unknown exchange")
 	}
 
-	fmt.Println("Starting collector:", c.Name())
-	if err := c.Start(marketDataCh); err != nil {
-		panic(err)
+	// два символа
+	symbols := []string{"BTCUSDT", "ETHUSDT"}
+
+	// создаём отдельный WS на каждый символ
+	for _, sym := range symbols {
+		var c collector.Collector
+		if exchange == "mexc" {
+			c = collector.NewMEXCCollector(sym)
+		} else {
+			c = collector.NewOKXCollector()
+		}
+		fmt.Println("Starting collector:", c.Name(), "symbol:", sym)
+		if err := c.Start(marketDataCh); err != nil {
+			panic(err)
+		}
 	}
 
 	// consumer
@@ -286,5 +280,4 @@ func main() {
 		time.Sleep(time.Hour)
 	}
 }
-
 
