@@ -65,17 +65,4 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-EXCHANGE!!!!!!!!! mexc
-Starting collector: MEXC
-2025/12/22 21:40:51 [MEXC] connecting...
-2025/12/22 21:41:22 [MEXC] read error: read tcp 192.168.1.71:46626->128.75.237.177:443: i/o timeout
-2025/12/22 21:41:22 [MEXC] reconnect in 1s...
-2025/12/22 21:41:23 [MEXC] connecting...
-2025/12/22 21:41:53 [MEXC] read error: read tcp 192.168.1.71:42596->128.75.237.154:443: i/o timeout
-2025/12/22 21:41:53 [MEXC] reconnect in 1s...
-2025/12/22 21:41:54 [MEXC] connecting...
-
-
-
-
+ "wss://wbs-api.mexc.com/ws"
