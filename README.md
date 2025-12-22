@@ -63,74 +63,18 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+
+
 gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-# crypt_proto/cmd/arb
-./main.go:31:34: cannot use symbols (variable of type []string) as string value in argument to collector.NewMEXCCollector
-
-
-
-func NewMEXCCollector(symbol string) *MEXCCollector {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &MEXCCollector{
-		ctx:    ctx,
-		cancel: cancel,
-		symbol: strings.ToUpper(symbol),
-	}
-}
-
-
-package main
-
-import (
-	"fmt"
-	"os"
-	"strings"
-	"time"
-
-	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
-)
-
-func main() {
-	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
-	if exchange == "" {
-		exchange = "okx"
-	}
-
-	fmt.Println("EXCHANGE!!!!!!!!!", exchange)
-
-	marketDataCh := make(chan models.MarketData, 1000)
-
-	var c collector.Collector
-
-	symbols := "BTCUSDT" // пример батча
-
-	switch exchange {
-	case "okx":
-		c = collector.NewOKXCollector()
-	case "mexc":
-		c = collector.NewMEXCCollector(symbols)
-	default:
-		panic("unknown exchange")
-	}
-
-	fmt.Println("Starting collector:", c.Name())
-	if err := c.Start(marketDataCh); err != nil {
-		panic(err)
-	}
-
-	// consumer
-	go func() {
-		for data := range marketDataCh {
-			fmt.Printf("[%s] %s bid=%.4f ask=%.4f\n", data.Exchange, data.Symbol, data.Bid, data.Ask)
-		}
-	}()
-
-	// run forever
-	for {
-		time.Sleep(time.Hour)
-	}
-}
+EXCHANGE!!!!!!!!! mexc
+Starting collector: MEXC
+2025/12/22 21:40:51 [MEXC] connecting...
+2025/12/22 21:41:22 [MEXC] read error: read tcp 192.168.1.71:46626->128.75.237.177:443: i/o timeout
+2025/12/22 21:41:22 [MEXC] reconnect in 1s...
+2025/12/22 21:41:23 [MEXC] connecting...
+2025/12/22 21:41:53 [MEXC] read error: read tcp 192.168.1.71:42596->128.75.237.154:443: i/o timeout
+2025/12/22 21:41:53 [MEXC] reconnect in 1s...
+2025/12/22 21:41:54 [MEXC] connecting...
 
 
 
