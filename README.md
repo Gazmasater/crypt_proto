@@ -71,6 +71,7 @@ import (
 	"context"
 	"crypt_proto/pkg/models"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -159,8 +160,9 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 		}
 	}()
 
-	// подписка на один символ
+	// подписка с id
 	subscribe := map[string]interface{}{
+		"id":     1,
 		"method": "SUBSCRIBE",
 		"params": []string{"spot@public.bookTicker." + c.symbol},
 	}
@@ -220,7 +222,6 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 
 
 
-
 package main
 
 import (
@@ -253,7 +254,7 @@ func main() {
 	// два символа
 	symbols := []string{"BTCUSDT", "ETHUSDT"}
 
-	// создаём отдельный WS на каждый символ
+	// отдельный WS на каждый символ
 	for _, sym := range symbols {
 		var c collector.Collector
 		if exchange == "mexc" {
@@ -276,8 +277,7 @@ func main() {
 	}()
 
 	// run forever
-	for {
-		time.Sleep(time.Hour)
-	}
+	select {}
 }
+
 
