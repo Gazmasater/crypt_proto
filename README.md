@@ -73,7 +73,6 @@ import (
 	"encoding/json"
 	"log"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -94,14 +93,10 @@ type MEXCCollector struct {
 
 func NewMEXCCollector(symbols []string) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
-	upper := make([]string, 0, len(symbols))
-	for _, s := range symbols {
-		upper = append(upper, strings.ToUpper(s))
-	}
 	return &MEXCCollector{
 		ctx:     ctx,
 		cancel:  cancel,
-		symbols: upper,
+		symbols: symbols, // оставляем верхний регистр, как требует MEXC
 	}
 }
 
@@ -164,14 +159,14 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 		}
 	}()
 
-	// Подписка на все символы (нижний регистр)
+	// Подписка на все символы (верхний регистр)
 	params := make([]string, 0, len(c.symbols))
 	for _, s := range c.symbols {
-		params = append(params, "spot/ticker:"+strings.ToLower(s))
+		params = append(params, "spot@public.bookTicker@"+s)
 	}
 
 	subscribe := map[string]interface{}{
-		"id":     1,
+		"id":     0, // как в документации
 		"method": "SUBSCRIBE",
 		"params": params,
 	}
@@ -198,7 +193,7 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 
 func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
 	var raw struct {
-		Symbol string `json:"s"` // приходит в верхнем регистре
+		Symbol string `json:"s"`
 		Bid    string `json:"b"`
 		Ask    string `json:"a"`
 	}
@@ -219,10 +214,9 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 
 	out <- models.MarketData{
 		Exchange:  "MEXC",
-		Symbol:    raw.Symbol, // верхний регистр для вывода
+		Symbol:    raw.Symbol,
 		Bid:       bid,
 		Ask:       ask,
 		Timestamp: time.Now().UnixMilli(),
 	}
 }
-
