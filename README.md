@@ -173,6 +173,8 @@ func (c *MEXCCollector) Stop() {
 }
 
 
+
+
 [{
 	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
 	"owner": "_generated_diagnostic_collection_name_#0",
@@ -196,6 +198,7 @@ func (c *MEXCCollector) Stop() {
 	"origin": "extHost1"
 }]
 
+
 [{
 	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collecter.go",
 	"owner": "_generated_diagnostic_collection_name_#0",
@@ -218,4 +221,3 @@ func (c *MEXCCollector) Stop() {
 	"endColumn": 20,
 	"origin": "extHost1"
 }]
-
