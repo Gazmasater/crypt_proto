@@ -67,60 +67,43 @@ package collector
 
 import (
 	"context"
+	"crypt_proto/pkg/models"
+	"encoding/json"
 	"log"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"crypt_proto/domain"
-	pb "crypt_proto/pb"
-	"crypt_proto/pkg/models"
-
 	"github.com/gorilla/websocket"
-	"google.golang.org/protobuf/proto"
+)
+
+const (
+	mexcWS        = "wss://wbs.mexc.com/ws"
+	readTimeout  = 30 * time.Second
+	reconnectDur = time.Second
 )
 
 type MEXCCollector struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	symbols []string
-	out     chan<- models.MarketData
-	debug   bool
+	ctx    context.Context
+	cancel context.CancelFunc
+	symbol string
 }
 
-func NewMEXCCollector(symbols []string, debug bool) *MEXCCollector {
+func NewMEXCCollector(symbol string) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &MEXCCollector{
-		ctx:     ctx,
-		cancel:  cancel,
-		symbols: symbols,
-		debug:   debug,
+		ctx:    ctx,
+		cancel: cancel,
+		symbol: strings.ToUpper(symbol),
 	}
 }
 
-func (c *MEXCCollector) Name() string { return "MEXC" }
+func (c *MEXCCollector) Name() string {
+	return "MEXC"
+}
 
 func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
-	c.out = out
-	const maxPerConn = 25
-
-	chunks := make([][]string, 0)
-	for i := 0; i < len(c.symbols); i += maxPerConn {
-		j := i + maxPerConn
-		if j > len(c.symbols) {
-			j = len(c.symbols)
-		}
-		chunks = append(chunks, c.symbols[i:j])
-	}
-
-	var wg sync.WaitGroup
-	for idx, chunk := range chunks {
-		wg.Add(1)
-		go c.runFeed(idx, chunk, &wg)
-	}
-	go func() {
-		wg.Wait()
-	}()
+	go c.run(out)
 	return nil
 }
 
@@ -129,206 +112,94 @@ func (c *MEXCCollector) Stop() error {
 	return nil
 }
 
-// -------------------- WS Feed --------------------
+func (c *MEXCCollector) run(out chan<- models.MarketData) {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			log.Println("[MEXC] connecting...")
+			c.connectAndRead(out)
+			log.Println("[MEXC] reconnect in 1s...")
+			time.Sleep(reconnectDur)
+		}
+	}
+}
 
-func (c *MEXCCollector) runFeed(connID int, symbols []string, wg *sync.WaitGroup) {
-	defer wg.Done()
+func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
+	conn, _, err := websocket.DefaultDialer.Dial(mexcWS, nil)
+	if err != nil {
+		log.Println("[MEXC] dial error:", err)
+		return
+	}
+	defer conn.Close()
 
-	urlWS := "wss://wbs-api.mexc.com/ws"
-	topics := make([]string, 0, len(symbols))
-	for _, s := range symbols {
-		topics = append(topics, "spot@public.aggre.bookTicker.v3.api.pb@1s@"+strings.ToUpper(s))
+	// heartbeat
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
+		return nil
+	})
+
+	// subscribe
+	subscribe := map[string]interface{}{
+		"method": "SUBSCRIBE",
+		"params": []string{
+			"spot@public.bookTicker." + c.symbol,
+		},
 	}
 
-	const (
-		baseRetry = 2 * time.Second
-		maxRetry  = 30 * time.Second
-	)
-	retry := baseRetry
+	if err := conn.WriteJSON(subscribe); err != nil {
+		log.Println("[MEXC] subscribe error:", err)
+		return
+	}
 
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
-		}
-
-		conn, _, err := websocket.DefaultDialer.Dial(urlWS, nil)
-		if err != nil {
-			log.Printf("[MEXC WS #%d] dial error: %v (retry in %v)", connID, err, retry)
-			time.Sleep(retry)
-			if retry < maxRetry {
-				retry *= 2
-				if retry > maxRetry {
-					retry = maxRetry
-				}
-			}
-			continue
-		}
-		log.Printf("[MEXC WS #%d] connected (symbols: %d)", connID, len(symbols))
-		retry = baseRetry
-
-		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-		lastPing := time.Now()
-		stopPing := make(chan struct{})
-
-		conn.SetPongHandler(func(string) error {
-			conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-			return nil
-		})
-
-		go func() {
-			t := time.NewTicker(45 * time.Second)
-			defer t.Stop()
-			for {
-				select {
-				case <-t.C:
-					lastPing = time.Now()
-					_ = conn.WriteControl(websocket.PingMessage, []byte("hb"), time.Now().Add(5*time.Second))
-				case <-stopPing:
-					return
-				}
-			}
-		}()
-
-		sub := map[string]interface{}{
-			"method": "SUBSCRIPTION",
-			"params": topics,
-			"id":     time.Now().Unix(),
-		}
-		if err := conn.WriteJSON(sub); err != nil {
-			log.Printf("[MEXC WS #%d] subscribe error: %v", connID, err)
-			close(stopPing)
-			conn.Close()
-			time.Sleep(retry)
-			continue
-		}
-		log.Printf("[MEXC WS #%d] SUB -> %d topics", connID, len(topics))
-
-		for {
-			_, raw, err := conn.ReadMessage()
+			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				log.Printf("[MEXC WS #%d] read error: %v (reconnect)", connID, err)
-				break
+				log.Println("[MEXC] read error:", err)
+				return
 			}
-			c.handleProtoMessage(raw)
-		}
-
-		close(stopPing)
-		conn.Close()
-		time.Sleep(retry)
-		if retry < maxRetry {
-			retry *= 2
-			if retry > maxRetry {
-				retry = maxRetry
-			}
+			c.handleMessage(msg, out)
 		}
 	}
 }
 
-// -------------------- Protobuf parser --------------------
+func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
+	var raw struct {
+		Data struct {
+			Symbol string `json:"s"`
+			Bid    string `json:"b"`
+			Ask    string `json:"a"`
+		} `json:"d"`
+	}
 
-var wrapperPool = sync.Pool{
-	New: func() any { return new(pb.PushDataV3ApiWrapper) },
-}
-
-func (c *MEXCCollector) handleProtoMessage(raw []byte) {
-	w, _ := wrapperPool.Get().(*pb.PushDataV3ApiWrapper)
-	defer func() {
-		*w = pb.PushDataV3ApiWrapper{}
-		wrapperPool.Put(w)
-	}()
-	if err := proto.Unmarshal(raw, w); err != nil {
+	if err := json.Unmarshal(msg, &raw); err != nil {
 		return
 	}
 
-	var sym string
-	ch := w.GetChannel()
-	if i := strings.LastIndex(ch, "@"); i >= 0 && i+1 < len(ch) {
-		sym = ch[i+1:]
-	}
-	if sym == "" {
-		sym = w.GetSymbol()
-	}
-	if sym == "" {
+	if raw.Data.Symbol == "" {
 		return
 	}
 
-	var bid, ask float64
-	if b1, ok := w.GetBody().(*pb.PushDataV3ApiWrapper_PublicAggreBookTicker); ok && b1.PublicAggreBookTicker != nil {
-		t := b1.PublicAggreBookTicker
-		bid, _ = strconv.ParseFloat(t.GetBidPrice(), 64)
-		ask, _ = strconv.ParseFloat(t.GetAskPrice(), 64)
-		if bid <= 0 || ask <= 0 {
-			return
-		}
+	bid, err1 := strconv.ParseFloat(raw.Data.Bid, 64)
+	ask, err2 := strconv.ParseFloat(raw.Data.Ask, 64)
+	if err1 != nil || err2 != nil {
+		return
+	}
 
-		c.out <- models.MarketData{
-			Exchange:  "MEXC",
-			Symbol:    sym,
-			Bid:       bid,
-			Ask:       ask,
-			Timestamp: time.Now().UnixMilli(),
-		}
+	out <- models.MarketData{
+		Exchange:  "MEXC",
+		Symbol:    raw.Data.Symbol,
+		Bid:       bid,
+		Ask:       ask,
+		Timestamp: time.Now().UnixMilli(),
 	}
 }
 
-
-
-
-
-
-package main
-
-import (
-	"fmt"
-	"os"
-	"strings"
-	"time"
-
-	"crypt_proto/collector"
-	"crypt_proto/pkg/models"
-)
-
-func main() {
-	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
-	if exchange == "" {
-		exchange = "okx"
-	}
-
-	fmt.Println("EXCHANGE!!!!!!!!!", exchange)
-
-	marketDataCh := make(chan models.MarketData, 1000)
-
-	var c collector.Collector
-
-	symbols := []string{"BTCUSDT", "ETHUSDT", "XRPUSDT"} // пример батча
-
-	switch exchange {
-	case "okx":
-		c = collector.NewOKXCollector()
-	case "mexc":
-		c = collector.NewMEXCCollector(symbols, true)
-	default:
-		panic("unknown exchange")
-	}
-
-	fmt.Println("Starting collector:", c.Name())
-	if err := c.Start(marketDataCh); err != nil {
-		panic(err)
-	}
-
-	// consumer
-	go func() {
-		for data := range marketDataCh {
-			fmt.Printf("[%s] %s bid=%.4f ask=%.4f\n", data.Exchange, data.Symbol, data.Bid, data.Ask)
-		}
-	}()
-
-	// run forever
-	for {
-		time.Sleep(time.Hour)
-	}
-}
 
 
