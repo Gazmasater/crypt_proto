@@ -213,3 +213,12 @@ func parseFloat(s string) float64 {
 	v, _ := strconv.ParseFloat(s, 64)
 	return v
 }
+
+
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+EXCHANGE: mexc
+Starting collector: mexc
+2025/12/23 02:39:10 [MEXC] connected
+2025/12/23 02:39:10 [MEXC] subscribed: [spot@public.bookTicker.batch@BTCUSDT spot@public.bookTicker.batch@ETHUSDT]
+2025/12/23 02:39:41 [MEXC] read error: websocket: close 1005 (no status)
+^Csignal: interrupt
