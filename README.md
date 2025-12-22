@@ -172,3 +172,50 @@ func (c *MEXCCollector) Stop() {
 	c.cancel()
 }
 
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidIfaceAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidIfaceAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use collector.NewMEXCCollector(symbols) (value of type *collector.MEXCCollector) as collector.Collector value in assignment: *collector.MEXCCollector does not implement collector.Collector (wrong type for method Stop)\n\t\thave Stop()\n\t\twant Stop() error",
+	"source": "compiler",
+	"startLineNumber": 34,
+	"startColumn": 7,
+	"endLineNumber": 34,
+	"endColumn": 42,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collecter.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "c.handleMessage undefined (type *MEXCCollector has no field or method handleMessage)",
+	"source": "compiler",
+	"startLineNumber": 95,
+	"startColumn": 7,
+	"endLineNumber": 95,
+	"endColumn": 20,
+	"origin": "extHost1"
+}]
+
