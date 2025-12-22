@@ -79,20 +79,29 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const mexcWS = "wss://wbs-api.mexc.com/ws"
+const (
+	mexcWS       = "wss://wbs-api.mexc.com/ws"
+	readTimeout  = 30 * time.Second
+	pingInterval = 10 * time.Second
+	reconnectDur = time.Second
+)
 
 type MEXCCollector struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	symbol string
+	ctx     context.Context
+	cancel  context.CancelFunc
+	symbols []string
 }
 
-func NewMEXCCollector(symbol string) *MEXCCollector {
+func NewMEXCCollector(symbols []string) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
+	upper := make([]string, 0, len(symbols))
+	for _, s := range symbols {
+		upper = append(upper, strings.ToUpper(s))
+	}
 	return &MEXCCollector{
-		ctx:    ctx,
-		cancel: cancel,
-		symbol: strings.ToUpper(symbol),
+		ctx:     ctx,
+		cancel:  cancel,
+		symbols: upper,
 	}
 }
 
@@ -119,7 +128,7 @@ func (c *MEXCCollector) run(out chan<- models.MarketData) {
 			log.Println("[MEXC] connecting...")
 			c.connectAndRead(out)
 			log.Println("[MEXC] reconnect in 1s...")
-			time.Sleep(time.Second)
+			time.Sleep(reconnectDur)
 		}
 	}
 }
@@ -132,11 +141,36 @@ func (c *MEXCCollector) connectAndRead(out chan<- models.MarketData) {
 	}
 	defer conn.Close()
 
+	// heartbeat
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
+		return nil
+	})
+
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-ticker.C:
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	// подписка на все символы
+	params := make([]string, 0, len(c.symbols))
+	for _, s := range c.symbols {
+		params = append(params, "spot@public.bookTicker."+s)
+	}
 	subscribe := map[string]interface{}{
 		"method": "SUBSCRIBE",
-		"params": []string{
-			"spot@public.bookTicker." + c.symbol,
-		},
+		"params": params,
 	}
 
 	if err := conn.WriteJSON(subscribe); err != nil {
@@ -172,6 +206,10 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 		return
 	}
 
+	if raw.Data.Symbol == "" {
+		return
+	}
+
 	bid, err1 := strconv.ParseFloat(raw.Data.Bid, 64)
 	ask, err2 := strconv.ParseFloat(raw.Data.Ask, 64)
 	if err1 != nil || err2 != nil {
@@ -186,6 +224,8 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 		Timestamp: time.Now().UnixMilli(),
 	}
 }
+
+
 
 
 
@@ -207,16 +247,17 @@ func main() {
 	_ = godotenv.Load(".env")
 	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
 	if exchange == "" {
-		exchange = "okx"
+		exchange = "mexc"
 	}
 
-	fmt.Println("EXCHANGE!!!!!!!!!", exchange)
+	fmt.Println("EXCHANGE:", exchange)
 
 	marketDataCh := make(chan models.MarketData, 1000)
 
 	var c collector.Collector
 
-	symbols := "BTCUSDT"
+	// пример мультисимвола
+	symbols := []string{"BTCUSDT", "ETHUSDT"}
 
 	switch exchange {
 	case "okx":
@@ -235,7 +276,8 @@ func main() {
 	// consumer
 	go func() {
 		for data := range marketDataCh {
-			fmt.Printf("[%s] %s bid=%.4f ask=%.4f\n", data.Exchange, data.Symbol, data.Bid, data.Ask)
+			fmt.Printf("[%s] %s bid=%.4f ask=%.4f\n",
+				data.Exchange, data.Symbol, data.Bid, data.Ask)
 		}
 	}()
 
@@ -244,6 +286,5 @@ func main() {
 		time.Sleep(time.Hour)
 	}
 }
-
 
 
