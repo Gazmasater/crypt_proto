@@ -168,56 +168,48 @@ func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
 	return nil
 }
 
-func (c *MEXCCollector) Stop() {
+func (c *MEXCCollector) Stop() error {
 	c.cancel()
+	return nil
 }
 
+/*
+MEXC bookTicker.batch пример:
+{
+  "d": {
+    "s": "BTCUSDT",
+    "b": "43500.1",
+    "a": "43500.2"
+  }
+}
+*/
+func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) {
+	var raw struct {
+		Data struct {
+			Symbol string `json:"s"`
+			Bid    string `json:"b"`
+			Ask    string `json:"a"`
+		} `json:"d"`
+	}
 
+	if err := json.Unmarshal(msg, &raw); err != nil {
+		return
+	}
 
+	if raw.Data.Symbol == "" {
+		return
+	}
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "InvalidIfaceAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "InvalidIfaceAssign"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use collector.NewMEXCCollector(symbols) (value of type *collector.MEXCCollector) as collector.Collector value in assignment: *collector.MEXCCollector does not implement collector.Collector (wrong type for method Stop)\n\t\thave Stop()\n\t\twant Stop() error",
-	"source": "compiler",
-	"startLineNumber": 34,
-	"startColumn": 7,
-	"endLineNumber": 34,
-	"endColumn": 42,
-	"origin": "extHost1"
-}]
+	out <- models.MarketData{
+		Exchange:  "MEXC",
+		Symbol:    raw.Data.Symbol,
+		Bid:       parseFloat(raw.Data.Bid),
+		Ask:       parseFloat(raw.Data.Ask),
+		Timestamp: time.Now().UnixMilli(),
+	}
+}
 
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collecter.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "c.handleMessage undefined (type *MEXCCollector has no field or method handleMessage)",
-	"source": "compiler",
-	"startLineNumber": 95,
-	"startColumn": 7,
-	"endLineNumber": 95,
-	"endColumn": 20,
-	"origin": "extHost1"
-}]
+func parseFloat(s string) float64 {
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
+}
