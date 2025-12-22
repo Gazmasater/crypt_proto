@@ -67,9 +67,10 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
  "wss://wbs-api.mexc.com/ws"
 
- subscribe := map[string]interface{}{
-		"method": "SUBSCRIPTION",
-		"params": []string{
-			"spot@public.bookTicker." + c.symbol,
-		},
-	}
+subscribe := map[string]interface{}{
+	"method": "SUBSCRIBE",
+	"params": []string{
+		"spot@public.bookTicker." + c.symbol,
+	},
+}
+
