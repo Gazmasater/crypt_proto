@@ -229,6 +229,8 @@ func (c *MEXCCollector) handleMessage(msg []byte, out chan<- models.MarketData) 
 
 
 
+
+
 package main
 
 import (
@@ -282,4 +284,5 @@ func main() {
 
 	select {}
 }
+
 
