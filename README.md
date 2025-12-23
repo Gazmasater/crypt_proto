@@ -387,3 +387,28 @@ func (c *OKXCollector) Stop() error {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "not enough arguments in call to c.Start\n\thave ()\n\twant (chan<- models.MarketData)",
+	"source": "compiler",
+	"startLineNumber": 44,
+	"startColumn": 20,
+	"endLineNumber": 44,
+	"endColumn": 20,
+	"origin": "extHost1"
+}]
+
+
+
