@@ -224,10 +224,24 @@ go test ./internal/market
 go test ./...
 
 
-FAIL: TestParsePair (0.00s)
-    market_test.go:41: ParsePair("BTC/") = {Base:BTC Quote:}, want Base="" Quote=""
-FAIL
-FAIL    crypt_proto/internal/market     0.002s
-FAIL
+package market
+
+import "strings"
+
+func ParsePair(normalized string) Pair {
+	parts := strings.Split(normalized, "/")
+	if len(parts) != 2 {
+		return Pair{}
+	}
+
+	if parts[0] == "" || parts[1] == "" {
+		return Pair{}
+	}
+
+	return Pair{
+		Base:  parts[0],
+		Quote: parts[1],
+	}
+}
 
 
