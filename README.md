@@ -63,27 +63,43 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (c *MEXCCollector) readLoop(out chan<- models.MarketData) {
-	defer c.conn.Close()
+func (c *MEXCCollector) readLoop() {
+	_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
+
 	for {
-		_, msg, err := c.conn.ReadMessage()
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+
+		mt, raw, err := c.conn.ReadMessage()
 		if err != nil {
-			log.Println("[MEXC] read error:", err)
+			log.Printf("[MEXC] read error: %v\n", err)
 			return
 		}
-		data := c.parseMessage(msg)
-		if data != nil {
-			out <- *data
+
+		_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
+
+		// ACK / ошибки
+		if mt == websocket.TextMessage {
+			log.Printf("[MEXC] text: %s\n", raw)
+			continue
 		}
+
+		if mt != websocket.BinaryMessage {
+			continue
+		}
+
+		var wrap pb.PushDataV3ApiWrapper
+		if err := proto.Unmarshal(raw, &wrap); err != nil {
+			continue
+		}
+
+		c.handleWrapper(&wrap)
 	}
 }
 
-
-
-func (c *MEXCCollector) Stop() error {
-	c.cancel()
-	return nil
-}
 
 
 
