@@ -72,42 +72,19 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 )
 
 func main() {
-	// читаем EXCHANGE из .env или среды
-	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
-	if exchange == "" {
-		exchange = "mexc" // значение по умолчанию
-	}
-
-	log.Println("EXCHANGE:", exchange)
-
+	log.Println("EXCHANGE: mexc")
+	log.Println("Starting collector: mexc")
 	var c collector.Collector
 
-	// создаём нужный коллектор по EXCHANGE
-	switch exchange {
-	case "mexc":
-		c = collector.NewMEXCCollector([]string{
-			"BTCUSDT",
-			"ETHUSDT",
-			"ETHBTC",
-		})
-	case "okx":
-		c = collector.NewOKXCollector()
-	case "kucoin":
-		c = collector.NewKuCoinCollector([]string{
-			"BTC-USDT",
-			"ETH-USDT",
-			"ETH-BTC",
-		})
-	default:
-		log.Fatal("unknown exchange: ", exchange)
-	}
-
-	log.Println("Starting collector:", c.Name())
+	c = collector.NewMEXCCollector([]string{
+		"BTCUSDT",
+		"ETHUSDT",
+		"ETHBTC",
+	})
 
 	if err := c.Start(); err != nil {
 		log.Fatal(err)
@@ -121,6 +98,57 @@ func main() {
 	log.Println("Stopping collector...")
 	c.Stop()
 }
+
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidIfaceAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidIfaceAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use collector.NewMEXCCollector([]string{…}) (value of type *collector.MEXCCollector) as collector.Collector value in assignment: *collector.MEXCCollector does not implement collector.Collector (missing method Name)",
+	"source": "compiler",
+	"startLineNumber": 16,
+	"startColumn": 6,
+	"endLineNumber": 20,
+	"endColumn": 4,
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "not enough arguments in call to c.Start\n\thave ()\n\twant (chan<- models.MarketData)",
+	"source": "compiler",
+	"startLineNumber": 22,
+	"startColumn": 20,
+	"endLineNumber": 22,
+	"endColumn": 20,
+	"origin": "extHost1"
+}]
+
+
 
 
 
