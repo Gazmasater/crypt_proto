@@ -63,46 +63,28 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (c *MEXCCollector) readLoop(out chan<- models.MarketData) {
-	_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "TooManyValues",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "TooManyValues"
 		}
-
-		mt, raw, err := c.conn.ReadMessage()
-		if err != nil {
-			log.Printf("[MEXC] read error: %v\n", err)
-			return
-		}
-
-		_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
-
-		// ACK / ошибки
-		if mt == websocket.TextMessage {
-			log.Printf("[MEXC] text: %s\n", raw)
-			continue
-		}
-
-		if mt != websocket.BinaryMessage {
-			continue
-		}
-
-		var wrap pb.PushDataV3ApiWrapper
-		if err := proto.Unmarshal(raw, &wrap); err != nil {
-			continue
-		}
-
-		// handleWrapper теперь возвращает MarketData
-		md := c.handleWrapper(&wrap)
-		if md != nil {
-			out <- *md
-		}
-	}
-}
+	},
+	"severity": 8,
+	"message": "c.handleWrapper(&wrap) (no value) used as value",
+	"source": "compiler",
+	"startLineNumber": 133,
+	"startColumn": 9,
+	"endLineNumber": 133,
+	"endColumn": 31,
+	"origin": "extHost1"
+}]
 
 
 
