@@ -122,6 +122,17 @@ func main() {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+EXCHANGE: kucoin
+Starting collector: KuCoin
+panic: dial tcp: lookup ws.kucoin.com on 127.0.0.53:53: no such host
+
+goroutine 1 [running]:
+main.main()
+        /home/gaz358/myprog/crypt_proto/cmd/arb/main.go:41 +0x2c5
+exit status 2
+
+
 
 
 
