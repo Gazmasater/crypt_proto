@@ -65,183 +65,32 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package collector
+package config
 
-import (
-	"context"
-	"encoding/json"
-	"log"
-	"strings"
-	"time"
+import "time"
 
-	"github.com/gorilla/websocket"
-)
-
+// --- MEXC ---
 const (
-	kucoinWS       = "wss://ws.kucoin.com/endpoint"
-	pingInterval   = 30 * time.Second
-	readTimeout    = 60 * time.Second
+	MEXC_WS       = "wss://wbs-api.mexc.com/ws"
+	MEXC_READ_TIMEOUT  = 30 * time.Second
+	MEXC_PING_INTERVAL = 10 * time.Second
+	MEXC_RECONNECT_DUR = time.Second
 )
 
-type KuCoinCollector struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	symbols []string
-	conn    *websocket.Conn
-}
-
-func NewKuCoinCollector(symbols []string) *KuCoinCollector {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &KuCoinCollector{
-		ctx:     ctx,
-		cancel:  cancel,
-		symbols: symbols,
-	}
-}
-
-func (c *KuCoinCollector) Start() error {
-	conn, _, err := websocket.DefaultDialer.Dial(kucoinWS, nil)
-	if err != nil {
-		return err
-	}
-	c.conn = conn
-	log.Println("[KuCoin] connected")
-
-	if err := c.subscribe(); err != nil {
-		return err
-	}
-
-	go c.pingLoop()
-	go c.readLoop()
-
-	return nil
-}
-
-func (c *KuCoinCollector) Stop() {
-	c.cancel()
-	if c.conn != nil {
-		_ = c.conn.Close()
-	}
-}
-
-func (c *KuCoinCollector) subscribe() error {
-	// KuCoin требует init message для публичного ws
-	initMsg := map[string]interface{}{
-		"id":     time.Now().UnixMilli(),
-		"type":   "subscribe",
-		"topic":  "/market/ticker:all",
-		"response": true,
-	}
-
-	if err := c.conn.WriteJSON(initMsg); err != nil {
-		return err
-	}
-
-	log.Println("[KuCoin] subscribed to ticker:all")
-	return nil
-}
-
-func (c *KuCoinCollector) pingLoop() {
-	t := time.NewTicker(pingInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-t.C:
-			_ = c.conn.WriteMessage(websocket.PingMessage, []byte("hb"))
-		case <-c.ctx.Done():
-			return
-		}
-	}
-}
-
-func (c *KuCoinCollector) readLoop() {
-	_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-		}
-
-		_, msg, err := c.conn.ReadMessage()
-		if err != nil {
-			log.Printf("[KuCoin] read error: %v", err)
-			return
-		}
-
-		_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
-
-		var data map[string]interface{}
-		if err := json.Unmarshal(msg, &data); err != nil {
-			continue
-		}
-
-		if d, ok := data["data"].(map[string]interface{}); ok {
-			symbol := strings.ToUpper(d["s"].(string))
-			bid := d["b"].(string)
-			ask := d["a"].(string)
-			log.Printf("[KuCoin] %s bid=%s ask=%s", symbol, bid, ask)
-		}
-	}
-}
-
-
-
-
-
-package main
-
-import (
-	"log"
-	"os"
-	"os/signal"
-	"strings"
-	"syscall"
-
-	"crypt_proto/pkg/collector"
+// --- KuCoin ---
+const (
+	KUCOIN_WS        = "wss://ws.kucoin.com/endpoint"
+	KUCOIN_PING_INTERVAL = 30 * time.Second
+	KUCOIN_READ_TIMEOUT  = 60 * time.Second
 )
 
-func main() {
-	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
-	if exchange == "" {
-		exchange = "mexc"
-	}
-	log.Println("EXCHANGE:", exchange)
+// --- OKX ---
+const (
+	OKX_WS           = "wss://ws.okx.com:8443/ws/v5/public"
+	OKX_PING_INTERVAL = 20 * time.Second
+	OKX_READ_TIMEOUT  = 60 * time.Second
+)
 
-	var c collector.Collector
 
-	switch exchange {
-	case "mexc":
-		c = collector.NewMEXCCollector([]string{
-			"BTCUSDT",
-			"ETHUSDT",
-			"ETHBTC",
-		})
-	case "kucoin":
-		c = collector.NewKuCoinCollector([]string{
-			"BTC-USDT",
-			"ETH-USDT",
-			"ETH-BTC",
-		})
-	case "okx":
-		c = collector.NewOKXCollector([]string{
-			"BTC-USDT",
-			"ETH-USDT",
-			"ETH-BTC",
-		})
-	default:
-		log.Fatalf("Unknown exchange: %s", exchange)
-	}
 
-	if err := c.Start(); err != nil {
-		log.Fatal(err)
-	}
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-
-	log.Println("Stopping collector...")
-	c.Stop()
-}
