@@ -64,30 +64,9 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "InvalidIfaceAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "InvalidIfaceAssign"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use collector.NewMEXCCollector([]string{…}) (value of type *collector.MEXCCollector) as collector.Collector value in assignment: *collector.MEXCCollector does not implement collector.Collector (missing method Name)",
-	"source": "compiler",
-	"startLineNumber": 19,
-	"startColumn": 6,
-	"endLineNumber": 23,
-	"endColumn": 4,
-	"origin": "extHost1"
-}]
-
+func (c *MEXCCollector) Name() string {
+	return "MEXC"
+}
 
 
 
