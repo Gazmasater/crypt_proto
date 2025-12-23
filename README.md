@@ -63,7 +63,7 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (c *MEXCCollector) Start() error {
+func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
 	conn, _, err := websocket.DefaultDialer.Dial(configs.MEXC_WS, nil)
 	if err != nil {
 		return err
@@ -76,10 +76,11 @@ func (c *MEXCCollector) Start() error {
 	}
 
 	go c.pingLoop()
-	go c.readLoop()
+	go c.readLoop(out) // передаём канал в readLoop
 
 	return nil
 }
+
 
 
 
