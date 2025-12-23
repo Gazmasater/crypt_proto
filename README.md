@@ -69,6 +69,7 @@ package main
 
 import (
 	"crypt_proto/internal/collector"
+	"crypt_proto/pkg/models"
 	"log"
 	"os"
 	"os/signal"
@@ -78,17 +79,27 @@ import (
 func main() {
 	log.Println("EXCHANGE: mexc")
 	log.Println("Starting collector: mexc")
-	var c collector.Collector
 
+	marketDataCh := make(chan models.MarketData, 1000)
+
+	var c collector.Collector
 	c = collector.NewMEXCCollector([]string{
 		"BTCUSDT",
 		"ETHUSDT",
 		"ETHBTC",
 	})
 
-	if err := c.Start(); err != nil {
+	if err := c.Start(marketDataCh); err != nil {
 		log.Fatal(err)
 	}
+
+	// читаем данные в фоне
+	go func() {
+		for data := range marketDataCh {
+			log.Printf("[%s] %s bid=%.4f ask=%.4f\n",
+				data.Exchange, data.Symbol, data.Bid, data.Ask)
+		}
+	}()
 
 	// корректное завершение по Ctrl+C
 	sig := make(chan os.Signal, 1)
@@ -96,61 +107,10 @@ func main() {
 	<-sig
 
 	log.Println("Stopping collector...")
-	c.Stop()
+	if err := c.Stop(); err != nil {
+		log.Println("Stop error:", err)
+	}
 }
-
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "InvalidIfaceAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "InvalidIfaceAssign"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use collector.NewMEXCCollector([]string{…}) (value of type *collector.MEXCCollector) as collector.Collector value in assignment: *collector.MEXCCollector does not implement collector.Collector (missing method Name)",
-	"source": "compiler",
-	"startLineNumber": 16,
-	"startColumn": 6,
-	"endLineNumber": 20,
-	"endColumn": 4,
-	"origin": "extHost1"
-}]
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "WrongArgCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongArgCount"
-		}
-	},
-	"severity": 8,
-	"message": "not enough arguments in call to c.Start\n\thave ()\n\twant (chan<- models.MarketData)",
-	"source": "compiler",
-	"startLineNumber": 22,
-	"startColumn": 20,
-	"endLineNumber": 22,
-	"endColumn": 20,
-	"origin": "extHost1"
-}]
-
-
-
-
 
 
 
