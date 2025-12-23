@@ -63,9 +63,23 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
-	go c.run(out)
+func (c *MEXCCollector) Start() error {
+	conn, _, err := websocket.DefaultDialer.Dial(configs.MEXC_WS, nil)
+	if err != nil {
+		return err
+	}
+	c.conn = conn
+	log.Println("[MEXC] connected")
+
+	if err := c.subscribe(); err != nil {
+		return err
+	}
+
+	go c.pingLoop()
+	go c.readLoop()
+
 	return nil
 }
+
 
 
