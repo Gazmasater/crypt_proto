@@ -62,259 +62,165 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package configs
-
-import "time"
-
-// KuCoin
-const KUCOIN_REST_PUBLIC = "https://api.kucoin.com/api/v1/bullet-public"
-const KUCOIN_PING_INTERVAL = 20 * time.Second
+internal/market/
+  normalize.go
+  pair.go
+  key.go
 
 
+package market
 
-package collector
+import "strings"
 
-import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"log"
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
+// NormalizeSymbol приводит символ к виду BASE/QUOTE
+// BTCUSDT   -> BTC/USDT
+// BTC-USDT  -> BTC/USDT
+func NormalizeSymbol(symbol string) string {
+	s := strings.ToUpper(strings.TrimSpace(symbol))
 
-	"crypt_proto/configs"
-	"crypt_proto/pkg/models"
-
-	"github.com/gorilla/websocket"
-)
-
-type KuCoinCollector struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	symbols []string
-	conn    *websocket.Conn
-	wsURL   string
-}
-
-func NewKuCoinCollector(symbols []string) *KuCoinCollector {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &KuCoinCollector{
-		ctx:     ctx,
-		cancel:  cancel,
-		symbols: symbols,
-	}
-}
-
-func (c *KuCoinCollector) Name() string { return "KuCoin" }
-
-// Start подключается к KuCoin WS и запускает read loop
-func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
-	// 1) Получаем токен
-	if err := c.initWS(); err != nil {
-		return err
-	}
-
-	// 2) Подключаемся
-	conn, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
-	if err != nil {
-		return err
-	}
-	c.conn = conn
-	log.Println("[KuCoin] connected")
-
-	// 3) Подписка на Level2/Ticker
-	for _, s := range c.symbols {
-		sub := map[string]interface{}{
-			"id":       time.Now().UnixNano(),
-			"type":     "subscribe",
-			"topic":    "level2/ticker:" + strings.ReplaceAll(s, "USDT", "-USDT"),
-			"response": true,
+	if strings.Contains(s, "-") {
+		parts := strings.Split(s, "-")
+		if len(parts) == 2 {
+			return parts[0] + "/" + parts[1]
 		}
-		if err := conn.WriteJSON(sub); err != nil {
-			return err
-		}
-		log.Println("[KuCoin] subscribed:", s)
 	}
 
-	// 4) ping loop
-	go func() {
-		t := time.NewTicker(configs.KUCOIN_PING_INTERVAL)
-		defer t.Stop()
-		for {
-			select {
-			case <-c.ctx.Done():
-				return
-			case <-t.C:
-				_ = conn.WriteMessage(websocket.PingMessage, nil)
-			}
-		}
-	}()
+	if strings.HasSuffix(s, "USDT") {
+		return strings.TrimSuffix(s, "USDT") + "/USDT"
+	}
 
-	// 5) read loop
-	go c.readLoop(out)
-
-	return nil
+	return s
 }
 
-func (c *KuCoinCollector) Stop() error {
-	c.cancel()
-	if c.conn != nil {
-		c.conn.Close()
-	}
-	return nil
+
+
+package market
+
+import "strings"
+
+type Pair struct {
+	Base  string
+	Quote string
 }
 
-// =================== private ===================
-
-func (c *KuCoinCollector) initWS() error {
-	resp, err := http.Get(configs.KUCOIN_REST_PUBLIC)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Code string `json:"code"`
-		Data struct {
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-				Encrypt  bool   `json:"encrypt"`
-			} `json:"instanceServers"`
-			Token string `json:"token"`
-		} `json:"data"`
+func ParsePair(normalized string) Pair {
+	parts := strings.Split(normalized, "/")
+	if len(parts) != 2 {
+		return Pair{}
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return err
+	return Pair{
+		Base:  parts[0],
+		Quote: parts[1],
 	}
-
-	if len(r.Data.InstanceServers) == 0 {
-		return fmt.Errorf("no KuCoin WS endpoints returned")
-	}
-
-	endpoint := r.Data.InstanceServers[0].Endpoint
-	c.wsURL = fmt.Sprintf("%s?token=%s&connectId=%d", endpoint, r.Data.Token, time.Now().UnixNano())
-
-	return nil
 }
 
-func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
-	defer func() {
-		if c.conn != nil {
-			c.conn.Close()
-		}
-	}()
 
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-			_, msg, err := c.conn.ReadMessage()
-			if err != nil {
-				log.Println("[KuCoin] read error:", err)
-				return
-			}
 
-			var data map[string]interface{}
-			if err := json.Unmarshal(msg, &data); err != nil {
-				continue
-			}
 
-			if data["type"] == "message" {
-				topic, ok := data["topic"].(string)
-				if !ok {
-					continue
-				}
-				symbol := strings.Split(topic, ":")[1]
+package market
 
-				body, ok := data["data"].(map[string]interface{})
-				if !ok {
-					continue
-				}
+// Key формирует единый ключ хранения
+// MEXC:BTC/USDT
+func Key(exchange, symbol string) string {
+	return exchange + ":" + NormalizeSymbol(symbol)
+}
 
-				bid, _ := parseStringToFloat(body["bestBid"].(string))
-				ask, _ := parseStringToFloat(body["bestAsk"].(string))
 
-				out <- models.MarketData{
-					Exchange: "KuCoin",
-					Symbol:   symbol,
-					Bid:      bid,
-					Ask:      ask,
-				}
-			}
+
+
+
+📁 Что тестируем
+
+Пакет:
+
+internal/market/
+  normalize.go
+  pair.go
+  key.go
+
+
+Создаём рядом:
+
+internal/market/market_test.go
+
+✅ Тест NormalizeSymbol
+package market
+
+import "testing"
+
+func TestNormalizeSymbol(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"BTCUSDT", "BTC/USDT"},
+		{"btcusdt", "BTC/USDT"},
+		{"BTC-USDT", "BTC/USDT"},
+		{"eth-btc", "ETH/BTC"},
+		{"ETHBTC", "ETHBTC"}, // неизвестный формат — не ломаем
+		{"  btcusdt  ", "BTC/USDT"},
+	}
+
+	for _, tt := range tests {
+		got := NormalizeSymbol(tt.in)
+		if got != tt.want {
+			t.Errorf("NormalizeSymbol(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
 
-func parseStringToFloat(s string) (float64, error) {
-	return strconv.ParseFloat(s, 64)
-}
-
-
-
-
-
-package main
-
-import (
-	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
-	"log"
-	"os"
-	"os/signal"
-	"strings"
-	"syscall"
-)
-
-func main() {
-	// EXCHANGE из env: "mexc", "okx", "kucoin"
-	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
-	if exchange == "" {
-		log.Fatal("Set EXCHANGE env variable: mexc | okx | kucoin")
-	}
-	log.Println("EXCHANGE:", exchange)
-
-	// создаем канал для данных
-	marketDataCh := make(chan models.MarketData, 1000)
-
-	var c collector.Collector
-
-	switch exchange {
-	case "mexc":
-		c = collector.NewMEXCCollector([]string{"BTCUSDT", "ETHUSDT", "ETHBTC"})
-	case "okx":
-		c = collector.NewOKXCollector([]string{"BTC-USDT", "ETH-USDT", "ETH-BTC"})
-	case "kucoin":
-		c = collector.NewKuCoinCollector([]string{"BTCUSDT", "ETHUSDT", "ETHBTC"})
-	default:
-		log.Fatal("Unknown exchange:", exchange)
+✅ Тест ParsePair
+func TestParsePair(t *testing.T) {
+	tests := []struct {
+		in        string
+		wantBase string
+		wantQuote string
+	}{
+		{"BTC/USDT", "BTC", "USDT"},
+		{"ETH/BTC", "ETH", "BTC"},
+		{"INVALID", "", ""},
+		{"BTC/", "", ""},
 	}
 
-	// стартуем
-	if err := c.Start(marketDataCh); err != nil {
-		log.Fatal(err)
-	}
-
-	// выводим данные
-	go func() {
-		for data := range marketDataCh {
-			log.Printf("[%s] %s bid=%.8f ask=%.8f\n",
-				data.Exchange, data.Symbol, data.Bid, data.Ask)
+	for _, tt := range tests {
+		p := ParsePair(tt.in)
+		if p.Base != tt.wantBase || p.Quote != tt.wantQuote {
+			t.Errorf(
+				"ParsePair(%q) = %+v, want Base=%q Quote=%q",
+				tt.in, p, tt.wantBase, tt.wantQuote,
+			)
 		}
-	}()
-
-	// корректное завершение по Ctrl+C
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-
-	log.Println("Stopping collector...")
-	if err := c.Stop(); err != nil {
-		log.Println("Stop error:", err)
 	}
 }
+
+✅ Тест Key
+func TestKey(t *testing.T) {
+	tests := []struct {
+		exchange string
+		symbol   string
+		want     string
+	}{
+		{"MEXC", "BTCUSDT", "MEXC:BTC/USDT"},
+		{"OKX", "BTC-USDT", "OKX:BTC/USDT"},
+		{"KuCoin", "eth-btc", "KuCoin:ETH/BTC"},
+	}
+
+	for _, tt := range tests {
+		got := Key(tt.exchange, tt.symbol)
+		if got != tt.want {
+			t.Errorf("Key(%q, %q) = %q, want %q",
+				tt.exchange, tt.symbol, got, tt.want)
+		}
+	}
+}
+
+▶️ Как запускать
+go test ./internal/market
+
+
+или всё сразу:
+
+go test ./...
 
 
