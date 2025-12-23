@@ -62,6 +62,12 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+parts := strings.Split(ch, "@")
+symbol = parts[len(parts)-1]
+
+
+
+
 
 package main
 
@@ -72,21 +78,36 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"strings"
 )
 
 func main() {
-	log.Println("EXCHANGE: mexc")
-	log.Println("Starting collector: mexc")
+	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
+	if exchange == "" {
+		exchange = "mexc"
+	}
+	log.Println("EXCHANGE:", exchange)
 
 	marketDataCh := make(chan models.MarketData, 1000)
 
 	var c collector.Collector
 
-	c = collector.NewMEXCCollector([]string{
-		"BTCUSDT",
-		"ETHUSDT",
-		"ETHBTC",
-	})
+	switch exchange {
+	case "mexc":
+		c = collector.NewMEXCCollector([]string{
+			"BTCUSDT",
+			"ETHUSDT",
+			"ETHBTC",
+		})
+	case "okx":
+		c = collector.NewOKXCollector([]string{
+			"BTC-USDT",
+			"ETH-USDT",
+			"ETH-BTC",
+		})
+	default:
+		log.Fatal("unknown exchange")
+	}
 
 	if err := c.Start(marketDataCh); err != nil {
 		log.Fatal(err)
@@ -110,6 +131,7 @@ func main() {
 		log.Println("Stop error:", err)
 	}
 }
+
 
 
 
