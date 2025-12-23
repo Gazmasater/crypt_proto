@@ -72,20 +72,44 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
 func main() {
-	log.Println("EXCHANGE: mexc")
-	log.Println("Starting collector: mexc")
+	// читаем EXCHANGE из .env или среды
+	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
+	if exchange == "" {
+		exchange = "mexc" // значение по умолчанию
+	}
 
-	mexc := collector.NewMEXCCollector([]string{
-		"BTCUSDT",
-		"ETHUSDT",
-		"ETHBTC",
-	})
+	log.Println("EXCHANGE:", exchange)
 
-	if err := mexc.Start(); err != nil {
+	var c collector.Collector
+
+	// создаём нужный коллектор по EXCHANGE
+	switch exchange {
+	case "mexc":
+		c = collector.NewMEXCCollector([]string{
+			"BTCUSDT",
+			"ETHUSDT",
+			"ETHBTC",
+		})
+	case "okx":
+		c = collector.NewOKXCollector()
+	case "kucoin":
+		c = collector.NewKuCoinCollector([]string{
+			"BTC-USDT",
+			"ETH-USDT",
+			"ETH-BTC",
+		})
+	default:
+		log.Fatal("unknown exchange: ", exchange)
+	}
+
+	log.Println("Starting collector:", c.Name())
+
+	if err := c.Start(); err != nil {
 		log.Fatal(err)
 	}
 
@@ -95,7 +119,7 @@ func main() {
 	<-sig
 
 	log.Println("Stopping collector...")
-	mexc.Stop()
+	c.Stop()
 }
 
 
