@@ -65,31 +65,100 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package config
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidIfaceAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidIfaceAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use collector.NewMEXCCollector([]string{…}) (value of type *collector.MEXCCollector) as collector.Collector value in assignment: *collector.MEXCCollector does not implement collector.Collector (missing method Name)",
+	"source": "compiler",
+	"startLineNumber": 23,
+	"startColumn": 7,
+	"endLineNumber": 27,
+	"endColumn": 5,
+	"origin": "extHost1"
+}]
 
-import "time"
 
-// --- MEXC ---
-const (
-	MEXC_WS       = "wss://wbs-api.mexc.com/ws"
-	MEXC_READ_TIMEOUT  = 30 * time.Second
-	MEXC_PING_INTERVAL = 10 * time.Second
-	MEXC_RECONNECT_DUR = time.Second
-)
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidIfaceAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidIfaceAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use collector.NewKuCoinCollector([]string{…}) (value of type *collector.KuCoinCollector) as collector.Collector value in assignment: *collector.KuCoinCollector does not implement collector.Collector (missing method Name)",
+	"source": "compiler",
+	"startLineNumber": 29,
+	"startColumn": 7,
+	"endLineNumber": 33,
+	"endColumn": 5,
+	"origin": "extHost1"
+}]
 
-// --- KuCoin ---
-const (
-	KUCOIN_WS        = "wss://ws.kucoin.com/endpoint"
-	KUCOIN_PING_INTERVAL = 30 * time.Second
-	KUCOIN_READ_TIMEOUT  = 60 * time.Second
-)
 
-// --- OKX ---
-const (
-	OKX_WS           = "wss://ws.okx.com:8443/ws/v5/public"
-	OKX_PING_INTERVAL = 20 * time.Second
-	OKX_READ_TIMEOUT  = 60 * time.Second
-)
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "too many arguments in call to collector.NewOKXCollector\n\thave ([]string)\n\twant ()",
+	"source": "compiler",
+	"startLineNumber": 35,
+	"startColumn": 33,
+	"endLineNumber": 39,
+	"endColumn": 4,
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "not enough arguments in call to c.Start\n\thave ()\n\twant (chan<- models.MarketData)",
+	"source": "compiler",
+	"startLineNumber": 44,
+	"startColumn": 20,
+	"endLineNumber": 44,
+	"endColumn": 20,
+	"origin": "extHost1"
+}]
 
 
 
