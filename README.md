@@ -224,35 +224,17 @@ go test ./internal/market
 go test ./...
 
 
-package market
-
-// Pair — нормализованная торговая пара
-// BTC/USDT, ETH/BTC и т.п.
-type Pair struct {
-	Base  string
-	Quote string
-}
 
 
-package market
 
-import "strings"
-
-func ParsePair(normalized string) Pair {
-	parts := strings.Split(normalized, "/")
-	if len(parts) != 2 {
-		return Pair{}
-	}
-
-	if parts[0] == "" || parts[1] == "" {
-		return Pair{}
-	}
-
-	return Pair{
-		Base:  parts[0],
-		Quote: parts[1],
-	}
-}
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/internal/market$ go test ./...
+# crypt_proto/internal/market [crypt_proto/internal/market.test]
+./pair_normaliz.go:5:6: ParsePair redeclared in this block
+        ./pair.go:5:6: other declaration of ParsePair
+./key.go:6:26: undefined: NormalizeSymbol
+./market_test.go:19:10: undefined: NormalizeSymbol
+FAIL    crypt_proto/internal/market [build failed]
+FAIL
 
 
 
