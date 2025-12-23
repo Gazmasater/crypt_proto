@@ -1,32 +1,54 @@
 package main
 
 import (
-	"crypt_proto/internal/collector"
-	"log"
+	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
+	"strings"
+
+	"crypt_proto/internal/collector"
+	"crypt_proto/pkg/models"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	log.Println("EXCHANGE: mexc")
-	log.Println("Starting collector: mexc")
+	// Загружаем .env
+	_ = godotenv.Load(".env")
 
-	mexc := collector.NewMEXCCollector([]string{
-		"BTCUSDT",
-		"ETHUSDT",
-		"ETHBTC",
-	})
+	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
+	if exchange == "" {
+		exchange = "mexc"
+	}
+	fmt.Println("EXCHANGE:", exchange)
 
-	if err := mexc.Start(); err != nil {
-		log.Fatal(err)
+	// Канал для получения рыночных данных
+	marketDataCh := make(chan models.MarketData, 1000)
+
+	var c collector.Collector
+	switch exchange {
+	case "mexc":
+		c = collector.NewMEXCCollector([]string{"BTCUSDT", "ETHUSDT"})
+	case "kucoin":
+		c = collector.NewKuCoinCollector([]string{"BTC-USDT", "ETH-USDT"})
+	case "okx":
+		c = collector.NewOKXCollector([]string{"BTC-USDT", "ETH-USDT"})
+	default:
+		panic("unknown exchange: " + exchange)
 	}
 
-	// корректное завершение по Ctrl+C
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
+	fmt.Println("Starting collector:", c.Name())
+	if err := c.Start(marketDataCh); err != nil {
+		panic(err)
+	}
+	defer c.Stop()
 
-	log.Println("Stopping collector...")
-	mexc.Stop()
+	// Consumer
+	go func() {
+		for data := range marketDataCh {
+			fmt.Printf("[%s] %s bid=%.8f ask=%.8f\n",
+				data.Exchange, data.Symbol, data.Bid, data.Ask)
+		}
+	}()
+
+	select {}
 }
