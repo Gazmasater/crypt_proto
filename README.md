@@ -63,7 +63,7 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (c *MEXCCollector) readLoop() {
+func (c *MEXCCollector) readLoop(out chan<- models.MarketData) {
 	_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
 
 	for {
@@ -96,7 +96,11 @@ func (c *MEXCCollector) readLoop() {
 			continue
 		}
 
-		c.handleWrapper(&wrap)
+		// handleWrapper теперь возвращает MarketData
+		md := c.handleWrapper(&wrap)
+		if md != nil {
+			out <- *md
+		}
 	}
 }
 
