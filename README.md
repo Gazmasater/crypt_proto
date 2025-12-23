@@ -65,52 +65,28 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package main
-
-import (
-	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
-)
-
-func main() {
-	log.Println("EXCHANGE: mexc")
-	log.Println("Starting collector: mexc")
-
-	marketDataCh := make(chan models.MarketData, 1000)
-
-	var c collector.Collector
-	c = collector.NewMEXCCollector([]string{
-		"BTCUSDT",
-		"ETHUSDT",
-		"ETHBTC",
-	})
-
-	if err := c.Start(marketDataCh); err != nil {
-		log.Fatal(err)
-	}
-
-	// читаем данные в фоне
-	go func() {
-		for data := range marketDataCh {
-			log.Printf("[%s] %s bid=%.4f ask=%.4f\n",
-				data.Exchange, data.Symbol, data.Bid, data.Ask)
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidIfaceAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidIfaceAssign"
 		}
-	}()
-
-	// корректное завершение по Ctrl+C
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-
-	log.Println("Stopping collector...")
-	if err := c.Stop(); err != nil {
-		log.Println("Stop error:", err)
-	}
-}
+	},
+	"severity": 8,
+	"message": "cannot use collector.NewMEXCCollector([]string{…}) (value of type *collector.MEXCCollector) as collector.Collector value in assignment: *collector.MEXCCollector does not implement collector.Collector (missing method Name)",
+	"source": "compiler",
+	"startLineNumber": 19,
+	"startColumn": 6,
+	"endLineNumber": 23,
+	"endColumn": 4,
+	"origin": "extHost1"
+}]
 
 
 
