@@ -1,53 +1,32 @@
 package main
 
 import (
-	"fmt"
-	"os"
-	"strings"
-
 	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
-
-	"github.com/joho/godotenv"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
-	_ = godotenv.Load(".env")
-	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
-	if exchange == "" {
-		exchange = "mexc"
+	log.Println("EXCHANGE: mexc")
+	log.Println("Starting collector: mexc")
+
+	mexc := collector.NewMEXCCollector([]string{
+		"BTCUSDT",
+		"ETHUSDT",
+		"ETHBTC",
+	})
+
+	if err := mexc.Start(); err != nil {
+		log.Fatal(err)
 	}
 
-	fmt.Println("EXCHANGE:", exchange)
+	// корректное завершение по Ctrl+C
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
 
-	marketDataCh := make(chan models.MarketData, 1000)
-
-	if exchange != "mexc" && exchange != "okx" {
-		panic("unknown exchange")
-	}
-
-	// два символа
-	symbols := []string{"BTCUSDT", "ETHUSDT"}
-
-	var c collector.Collector
-	if exchange == "mexc" {
-		c = collector.NewMEXCCollector(symbols)
-	} else {
-		c = collector.NewOKXCollector()
-	}
-
-	fmt.Println("Starting collector:", c.Name())
-	if err := c.Start(marketDataCh); err != nil {
-		panic(err)
-	}
-
-	// consumer
-	go func() {
-		for data := range marketDataCh {
-			fmt.Printf("[%s] %s bid=%.4f ask=%.4f\n",
-				data.Exchange, data.Symbol, data.Bid, data.Ask)
-		}
-	}()
-
-	select {}
+	log.Println("Stopping collector...")
+	mexc.Stop()
 }
