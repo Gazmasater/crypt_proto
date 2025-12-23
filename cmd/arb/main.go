@@ -1,19 +1,22 @@
 package main
 
 import (
-	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
+
+	"crypt_proto/internal/collector"
+	"crypt_proto/pkg/models"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
+	_ = godotenv.Load(".env")
+	exchange := os.Getenv("EXCHANGE")
 	if exchange == "" {
-		exchange = "mexc"
+		log.Fatal("EXCHANGE не задан. Используй MEXC, OKX или KuCoin")
 	}
 	log.Println("EXCHANGE:", exchange)
 
@@ -22,30 +25,36 @@ func main() {
 	var c collector.Collector
 
 	switch exchange {
-	case "mexc":
+	case "MEXC":
 		c = collector.NewMEXCCollector([]string{
 			"BTCUSDT",
 			"ETHUSDT",
 			"ETHBTC",
 		})
-	case "okx":
+	case "OKX":
 		c = collector.NewOKXCollector([]string{
 			"BTC-USDT",
 			"ETH-USDT",
 			"ETH-BTC",
 		})
+	case "KuCoin":
+		c = collector.NewKuCoinCollector([]string{
+			"BTC-USDT",
+			"ETH-USDT",
+			"ETH-BTC",
+		})
 	default:
-		log.Fatal("unknown exchange")
+		log.Fatal("Неподдерживаемый EXCHANGE:", exchange)
 	}
 
 	if err := c.Start(marketDataCh); err != nil {
-		log.Fatal(err)
+		log.Fatal("Start error:", err)
 	}
 
 	// читаем данные в фоне
 	go func() {
 		for data := range marketDataCh {
-			log.Printf("[%s] %s bid=%.4f ask=%.4f\n",
+			log.Printf("[%s] %s bid=%.6f ask=%.6f\n",
 				data.Exchange, data.Symbol, data.Bid, data.Ask)
 		}
 	}()
