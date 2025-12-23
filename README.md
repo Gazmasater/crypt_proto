@@ -68,69 +68,35 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 package main
 
 import (
-	"fmt"
-	"os"
-	"strings"
-
 	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
-
-	"github.com/joho/godotenv"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
-	// Загружаем .env
-	_ = godotenv.Load(".env")
+	log.Println("EXCHANGE: mexc")
+	log.Println("Starting collector: mexc")
 
-	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
-	if exchange == "" {
-		exchange = "mexc"
-	}
-	fmt.Println("EXCHANGE:", exchange)
+	mexc := collector.NewMEXCCollector([]string{
+		"BTCUSDT",
+		"ETHUSDT",
+		"ETHBTC",
+	})
 
-	// Канал для получения рыночных данных
-	marketDataCh := make(chan models.MarketData, 1000)
-
-	var c collector.Collector
-	switch exchange {
-	case "mexc":
-		c = collector.NewMEXCCollector([]string{"BTCUSDT", "ETHUSDT"})
-	case "kucoin":
-		c = collector.NewKuCoinCollector([]string{"BTC-USDT", "ETH-USDT"})
-	case "okx":
-		c = collector.NewOKXCollector() // у OKX нет аргументов
-	default:
-		panic("unknown exchange: " + exchange)
+	if err := mexc.Start(); err != nil {
+		log.Fatal(err)
 	}
 
-	fmt.Println("Starting collector:", c.Name())
-	if err := c.Start(marketDataCh); err != nil {
-		panic(err)
-	}
-	defer c.Stop()
+	// корректное завершение по Ctrl+C
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
 
-	// Consumer
-	go func() {
-		for data := range marketDataCh {
-			fmt.Printf("[%s] %s bid=%.8f ask=%.8f\n",
-				data.Exchange, data.Symbol, data.Bid, data.Ask)
-		}
-	}()
-
-	select {}
+	log.Println("Stopping collector...")
+	mexc.Stop()
 }
-
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-EXCHANGE: kucoin
-Starting collector: KuCoin
-panic: dial tcp: lookup ws.kucoin.com on 127.0.0.53:53: no such host
-
-goroutine 1 [running]:
-main.main()
-        /home/gaz358/myprog/crypt_proto/cmd/arb/main.go:41 +0x2c5
-exit status 2
 
 
 
