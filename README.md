@@ -226,6 +226,16 @@ go test ./...
 
 package market
 
+// Pair — нормализованная торговая пара
+// BTC/USDT, ETH/BTC и т.п.
+type Pair struct {
+	Base  string
+	Quote string
+}
+
+
+package market
+
 import "strings"
 
 func ParsePair(normalized string) Pair {
@@ -245,26 +255,5 @@ func ParsePair(normalized string) Pair {
 }
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/market/pair.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: Pair",
-	"source": "compiler",
-	"startLineNumber": 5,
-	"startColumn": 35,
-	"endLineNumber": 5,
-	"endColumn": 39,
-	"origin": "extHost1"
-}]
+
 
