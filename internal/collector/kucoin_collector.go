@@ -2,7 +2,10 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"crypt_proto/configs"
@@ -15,6 +18,7 @@ type KuCoinCollector struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	symbols []string
+	conn    *websocket.Conn
 }
 
 func NewKuCoinCollector(symbols []string) *KuCoinCollector {
@@ -29,25 +33,24 @@ func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
 	if err != nil {
 		return err
 	}
+	c.conn = conn
+	log.Println("[KuCoin] connected")
 
 	// subscribe
-	// KuCoin требует "subscribe": "level2/ticker:BTC-USDT" и т.д
-	params := make([]string, 0, len(c.symbols))
 	for _, s := range c.symbols {
-		params = append(params, "level2/ticker:"+s)
-	}
-	sub := map[string]interface{}{
-		"id":             1,
-		"type":           "subscribe",
-		"topic":          params,
-		"privateChannel": false,
-		"response":       true,
-	}
-	if err := conn.WriteJSON(sub); err != nil {
-		return err
+		sub := map[string]interface{}{
+			"id":       time.Now().Unix(),
+			"type":     "subscribe",
+			"topic":    "level2/ticker:" + s,
+			"response": true,
+		}
+		if err := conn.WriteJSON(sub); err != nil {
+			return err
+		}
+		log.Println("[KuCoin] subscribed:", s)
 	}
 
-	// ping
+	// ping loop
 	go func() {
 		t := time.NewTicker(configs.KUCOIN_PING_INTERVAL)
 		defer t.Stop()
@@ -74,13 +77,27 @@ func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
 					log.Println("[KuCoin] read error:", err)
 					return
 				}
-				_ = msg
-				// parse if needed
-				out <- models.MarketData{
-					Exchange: "KuCoin",
-					Symbol:   "",
-					Bid:      0,
-					Ask:      0,
+
+				var data map[string]interface{}
+				if err := json.Unmarshal(msg, &data); err != nil {
+					continue
+				}
+
+				// проверяем, что это update
+				if data["type"] == "message" {
+					topic := data["topic"].(string)
+					symbol := strings.Split(topic, ":")[1]
+
+					body := data["data"].(map[string]interface{})
+					bid, _ := parseStringToFloat(body["bestBid"].(string))
+					ask, _ := parseStringToFloat(body["bestAsk"].(string))
+
+					out <- models.MarketData{
+						Exchange: "KuCoin",
+						Symbol:   symbol,
+						Bid:      bid,
+						Ask:      ask,
+					}
 				}
 			}
 		}
@@ -92,4 +109,9 @@ func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
 func (c *KuCoinCollector) Stop() error {
 	c.cancel()
 	return nil
+}
+
+// вспомогательная функция
+func parseStringToFloat(s string) (float64, error) {
+	return strconv.ParseFloat(s, 64)
 }
