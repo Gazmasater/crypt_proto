@@ -63,23 +63,51 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
-	conn, _, err := websocket.DefaultDialer.Dial(configs.MEXC_WS, nil)
-	if err != nil {
-		return err
-	}
-	c.conn = conn
-	log.Println("[MEXC] connected")
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidIfaceAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidIfaceAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use collector.NewMEXCCollector([]string{…}) (value of type *collector.MEXCCollector) as collector.Collector value in assignment: *collector.MEXCCollector does not implement collector.Collector (wrong type for method Stop)\n\t\thave Stop()\n\t\twant Stop() error",
+	"source": "compiler",
+	"startLineNumber": 20,
+	"startColumn": 6,
+	"endLineNumber": 24,
+	"endColumn": 4,
+	"origin": "extHost1"
+}]
 
-	if err := c.subscribe(); err != nil {
-		return err
-	}
-
-	go c.pingLoop()
-	go c.readLoop(out) // передаём канал в readLoop
-
-	return nil
-}
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "too many arguments in call to c.readLoop\n\thave (chan<- models.MarketData)\n\twant ()",
+	"source": "compiler",
+	"startLineNumber": 52,
+	"startColumn": 16,
+	"endLineNumber": 52,
+	"endColumn": 19,
+	"origin": "extHost1"
+}]
 
 
 
