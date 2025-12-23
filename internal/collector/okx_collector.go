@@ -2,7 +2,9 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
 	"log"
+	"strconv"
 	"time"
 
 	"crypt_proto/configs"
@@ -15,6 +17,7 @@ type OKXCollector struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	symbols []string
+	conn    *websocket.Conn
 }
 
 func NewOKXCollector(symbols []string) *OKXCollector {
@@ -29,24 +32,26 @@ func (c *OKXCollector) Start(out chan<- models.MarketData) error {
 	if err != nil {
 		return err
 	}
+	c.conn = conn
+	log.Println("[OKX] connected")
 
-	// subscribe
-	params := make([]map[string]string, 0, len(c.symbols))
+	// Подписка на книги заявок
+	args := make([]map[string]string, 0, len(c.symbols))
 	for _, s := range c.symbols {
-		params = append(params, map[string]string{
+		args = append(args, map[string]string{
 			"channel": "books5",
 			"instId":  s,
 		})
 	}
 	sub := map[string]interface{}{
 		"op":   "subscribe",
-		"args": params,
+		"args": args,
 	}
 	if err := conn.WriteJSON(sub); err != nil {
 		return err
 	}
 
-	// ping
+	// Ping
 	go func() {
 		t := time.NewTicker(configs.OKX_PING_INTERVAL)
 		defer t.Stop()
@@ -60,7 +65,7 @@ func (c *OKXCollector) Start(out chan<- models.MarketData) error {
 		}
 	}()
 
-	// read loop
+	// Read loop
 	go func() {
 		defer conn.Close()
 		for {
@@ -73,12 +78,38 @@ func (c *OKXCollector) Start(out chan<- models.MarketData) error {
 					log.Println("[OKX] read error:", err)
 					return
 				}
-				_ = msg
+
+				var resp struct {
+					Arg struct {
+						InstID string `json:"instId"`
+					} `json:"arg"`
+					Data []struct {
+						Asks [][]string `json:"asks"`
+						Bids [][]string `json:"bids"`
+					} `json:"data"`
+				}
+
+				if err := json.Unmarshal(msg, &resp); err != nil {
+					continue
+				}
+
+				if len(resp.Data) == 0 {
+					continue
+				}
+
+				var bid, ask float64
+				if len(resp.Data[0].Bids) > 0 {
+					bid, _ = strconv.ParseFloat(resp.Data[0].Bids[0][0], 64)
+				}
+				if len(resp.Data[0].Asks) > 0 {
+					ask, _ = strconv.ParseFloat(resp.Data[0].Asks[0][0], 64)
+				}
+
 				out <- models.MarketData{
 					Exchange: "OKX",
-					Symbol:   "",
-					Bid:      0,
-					Ask:      0,
+					Symbol:   resp.Arg.InstID,
+					Bid:      bid,
+					Ask:      ask,
 				}
 			}
 		}
