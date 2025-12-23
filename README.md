@@ -224,3 +224,10 @@ go test ./internal/market
 go test ./...
 
 
+FAIL: TestParsePair (0.00s)
+    market_test.go:41: ParsePair("BTC/") = {Base:BTC Quote:}, want Base="" Quote=""
+FAIL
+FAIL    crypt_proto/internal/market     0.002s
+FAIL
+
+
