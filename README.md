@@ -62,14 +62,66 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/internal/market$ go test ./...
-# crypt_proto/internal/market [crypt_proto/internal/market.test]
-./pair_normaliz.go:5:6: ParsePair redeclared in this block
-        ./pair.go:5:6: other declaration of ParsePair
-./key.go:6:26: undefined: NormalizeSymbol
-./market_test.go:19:10: undefined: NormalizeSymbol
-FAIL    crypt_proto/internal/market [build failed]
-FAIL
+package market
+
+import "strings"
+
+// NormalizeSymbol приводит символ биржи к общему виду BTC/USDT
+func NormalizeSymbol(exchange, symbol string) string {
+	s := strings.ToUpper(symbol)
+
+	switch exchange {
+	case "mexc":
+		// BTCUSDT → BTC/USDT
+		if len(s) > 4 {
+			return s[:len(s)-4] + "/" + s[len(s)-4:]
+		}
+
+	case "okx":
+		// BTC-USDT → BTC/USDT
+		return strings.ReplaceAll(s, "-", "/")
+
+	case "kucoin":
+		// BTC-USDT → BTC/USDT
+		return strings.ReplaceAll(s, "-", "/")
+	}
+
+	return ""
+}
+
+
+
+package market
+
+import "strings"
+
+// BuildKey формирует ключ для store / redis
+// Пример: mexc:BTC/USDT
+func BuildKey(exchange, normalizedSymbol string) string {
+	return strings.ToLower(exchange) + ":" + normalizedSymbol
+}
+
+
+
+
+package market
+
+import "strings"
+
+func ParsePair(normalized string) Pair {
+	parts := strings.Split(normalized, "/")
+	if len(parts) != 2 {
+		return Pair{}
+	}
+	if parts[0] == "" || parts[1] == "" {
+		return Pair{}
+	}
+
+	return Pair{
+		Base:  parts[0],
+		Quote: parts[1],
+	}
+}
 
 
 
