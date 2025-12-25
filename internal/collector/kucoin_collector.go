@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"crypt_proto/internal/market"
 	"crypt_proto/pkg/models"
 
 	"github.com/gorilla/websocket"
@@ -186,7 +187,8 @@ func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
 				continue
 			}
 
-			symbol := strings.TrimPrefix(topic, "/market/ticker:")
+			rawsymbol := strings.TrimPrefix(topic, "/market/ticker:")
+			symbol := market.NormalizeSymbol_Full(rawsymbol)
 
 			bid := parseFloat(data["bestBid"])
 			ask := parseFloat(data["bestAsk"])
