@@ -1,5 +1,5 @@
 package market
 
 func Key(exchange, symbol string) string {
-	return exchange + ":" + NormalizeSymbol(symbol)
+	return exchange + ":" + NormalizeSymbol_Full(symbol)
 }

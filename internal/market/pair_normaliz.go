@@ -3,36 +3,38 @@ package market
 import "strings"
 
 var knownQuotes = []string{
-	"USDT",
-	"USDC",
-	"USD",
-	"EUR",
+	"USDT", "USDC", "USD", "EUR", "BTC", "ETH",
 }
 
-func NormalizeSymbol(s string) string {
+// NormalizeSymbol_Full приводит символ к виду BASE/QUOTE
+// возвращает "" если формат неполный или некорректный
+func NormalizeSymbol_Full(s string) string {
 	s = strings.TrimSpace(strings.ToUpper(s))
 	if s == "" {
-		return s
+		return ""
 	}
 
-	// если уже с разделителем
+	// уже с разделителем
 	if strings.ContainsAny(s, "-/") {
 		s = strings.ReplaceAll(s, "-", "/")
 		parts := strings.Split(s, "/")
-		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-			return parts[0] + "/" + parts[1]
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return ""
 		}
-		return s
+		return parts[0] + "/" + parts[1]
 	}
 
-	// формат BTCUSDT → BTC/USDT (только известные quote)
+	// слитные символы, пытаемся найти quote
 	for _, q := range knownQuotes {
 		if strings.HasSuffix(s, q) && len(s) > len(q) {
 			base := strings.TrimSuffix(s, q)
+			if base == "" {
+				return ""
+			}
 			return base + "/" + q
 		}
 	}
 
-	// неизвестный формат — не ломаем
-	return s
+	// неизвестный формат — возвращаем "" (т.к. без quote)
+	return ""
 }
