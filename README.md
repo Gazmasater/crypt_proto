@@ -61,94 +61,38 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 (pprof) quit
 
 
-package main
+package market
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-/* =======================
-   ЛОГИКА
-======================= */
-
-type Pair struct {
-	Base  string
-	Quote string
-}
-
-var knownQuotes = []string{
-	"USDT",
-	"USDC",
-	"USD",
-	"EUR",
-}
-
-func NormalizeSymbol(s string) string {
-	s = strings.TrimSpace(strings.ToUpper(s))
-	if s == "" {
-		return s
-	}
-
-	// если уже с разделителем
-	if strings.ContainsAny(s, "-/") {
-		s = strings.ReplaceAll(s, "-", "/")
-		parts := strings.Split(s, "/")
-		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-			return parts[0] + "/" + parts[1]
-		}
-		return s
-	}
-
-	// формат BTCUSDT → BTC/USDT (только известные quote)
-	for _, q := range knownQuotes {
-		if strings.HasSuffix(s, q) && len(s) > len(q) {
-			base := strings.TrimSuffix(s, q)
-			return base + "/" + q
-		}
-	}
-
-	// неизвестный формат — не ломаем
-	return s
-}
-
-func ParsePair(s string) Pair {
-	if !strings.Contains(s, "/") {
-		return Pair{}
-	}
-
-	parts := strings.Split(s, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return Pair{}
-	}
-
-	return Pair{
-		Base:  parts[0],
-		Quote: parts[1],
-	}
-}
-
-func Key(exchange, symbol string) string {
-	return exchange + ":" + NormalizeSymbol(symbol)
-}
-
-/* =======================
-   ТЕСТЫ
-======================= */
-
-func TestNormalizeSymbol(t *testing.T) {
+func TestNormalizeSymbol_Full(t *testing.T) {
 	tests := []struct {
 		in   string
 		want string
 	}{
+		// стандартные форматы
 		{"BTCUSDT", "BTC/USDT"},
 		{"btcusdt", "BTC/USDT"},
 		{"BTC-USDT", "BTC/USDT"},
+		{"BTC_USDT", "BTC/USDT"},
+		{"ETH/BTC", "ETH/BTC"},
 		{"eth-btc", "ETH/BTC"},
-		{"ETHBTC", "ETHBTC"}, // неизвестный формат — не ломаем
 		{"  btcusdt  ", "BTC/USDT"},
-	}
 
+		// слитные символы, неизвестный формат
+		{"ETHBTC", "ETHBTC"},
+		{"ethbtc", "ETHBTC"},
+
+		// пустые и неполные
+		{"BTC/", ""},
+		{"BTC", ""},
+		{"", ""},
+
+		// нестандартные/неизвестные валюты
+		{"XYZABC", "XYZABC"},
+		{"xyz/abc", "XYZ/ABC"},
+		{"abc-xyz", "ABC/XYZ"},
+	}
 	for _, tt := range tests {
 		got := NormalizeSymbol(tt.in)
 		if got != tt.want {
@@ -157,7 +101,7 @@ func TestNormalizeSymbol(t *testing.T) {
 	}
 }
 
-func TestParsePair(t *testing.T) {
+func TestParsePair_Full(t *testing.T) {
 	tests := []struct {
 		in        string
 		wantBase  string
@@ -167,8 +111,10 @@ func TestParsePair(t *testing.T) {
 		{"ETH/BTC", "ETH", "BTC"},
 		{"INVALID", "", ""},
 		{"BTC/", "", ""},
+		{"", "", ""},
+		{"ABC/XYZ", "ABC", "XYZ"},
+		{"abc/xyz", "abc", "xyz"},
 	}
-
 	for _, tt := range tests {
 		p := ParsePair(tt.in)
 		if p.Base != tt.wantBase || p.Quote != tt.wantQuote {
@@ -180,17 +126,25 @@ func TestParsePair(t *testing.T) {
 	}
 }
 
-func TestKey(t *testing.T) {
+func TestKey_Full(t *testing.T) {
 	tests := []struct {
 		exchange string
 		symbol   string
 		want     string
 	}{
+		// разные форматы для известных бирж
 		{"MEXC", "BTCUSDT", "MEXC:BTC/USDT"},
+		{"MEXC", "ethbtc", "MEXC:ETHBTC"},
 		{"OKX", "BTC-USDT", "OKX:BTC/USDT"},
+		{"OKX", "eth-btc", "OKX:ETH/BTC"},
 		{"KuCoin", "eth-btc", "KuCoin:ETH/BTC"},
-	}
+		{"KuCoin", "XYZABC", "KuCoin:XYZABC"},
 
+		// пустые
+		{"MEXC", "", "MEXC:"},
+		{"", "BTCUSDT", ":BTC/USDT"},
+		{"", "", ":"},
+	}
 	for _, tt := range tests {
 		got := Key(tt.exchange, tt.symbol)
 		if got != tt.want {
@@ -199,6 +153,7 @@ func TestKey(t *testing.T) {
 		}
 	}
 }
+
 
 
 
