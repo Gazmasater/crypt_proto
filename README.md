@@ -64,12 +64,9 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-rawsymbol := strings.TrimPrefix(topic, "/market/ticker:")
-
-// KuCoin always BASE-QUOTE → BASE/QUOTE
-rawsymbol = strings.ReplaceAll(rawsymbol, "-", "/")
-
-symbol := market.NormalizeSymbol_Full(rawsymbol)
-
+symbol = market.NormalizeSymbol_Full(symbol)
+		if symbol == "" {
+			return nil
+		}
 
 
