@@ -64,64 +64,124 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 package market
 
-import "strings"
+import "testing"
 
-// NormalizeSymbol приводит символ биржи к общему виду BTC/USDT
-func NormalizeSymbol(exchange, symbol string) string {
-	s := strings.ToUpper(symbol)
+func TestNormalizeSymbol(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"BTCUSDT", "BTC/USDT"},
+		{"btcusdt", "BTC/USDT"},
+		{"BTC-USDT", "BTC/USDT"},
+		{"eth-btc", "ETH/BTC"},
+		{"ETHBTC", "ETHBTC"}, // неизвестный формат — не ломаем
+		{"  btcusdt  ", "BTC/USDT"},
+	}
 
-	switch exchange {
-	case "mexc":
-		// BTCUSDT → BTC/USDT
-		if len(s) > 4 {
-			return s[:len(s)-4] + "/" + s[len(s)-4:]
+	for _, tt := range tests {
+		got := NormalizeSymbol(tt.in)
+		if got != tt.want {
+			t.Errorf("NormalizeSymbol(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
 
-	case "okx":
-		// BTC-USDT → BTC/USDT
-		return strings.ReplaceAll(s, "-", "/")
-
-	case "kucoin":
-		// BTC-USDT → BTC/USDT
-		return strings.ReplaceAll(s, "-", "/")
+func TestParsePair(t *testing.T) {
+	tests := []struct {
+		in        string
+		wantBase  string
+		wantQuote string
+	}{
+		{"BTC/USDT", "BTC", "USDT"},
+		{"ETH/BTC", "ETH", "BTC"},
+		{"INVALID", "", ""},
+		{"BTC/", "", ""},
 	}
 
-	return ""
+	for _, tt := range tests {
+		p := ParsePair(tt.in)
+		if p.Base != tt.wantBase || p.Quote != tt.wantQuote {
+			t.Errorf(
+				"ParsePair(%q) = %+v, want Base=%q Quote=%q",
+				tt.in, p, tt.wantBase, tt.wantQuote,
+			)
+		}
+	}
+}
+
+func TestKey(t *testing.T) {
+	tests := []struct {
+		exchange string
+		symbol   string
+		want     string
+	}{
+		{"MEXC", "BTCUSDT", "MEXC:BTC/USDT"},
+		{"OKX", "BTC-USDT", "OKX:BTC/USDT"},
+		{"KuCoin", "eth-btc", "KuCoin:ETH/BTC"},
+	}
+
+	for _, tt := range tests {
+		got := Key(tt.exchange, tt.symbol)
+		if got != tt.want {
+			t.Errorf("Key(%q, %q) = %q, want %q",
+				tt.exchange, tt.symbol, got, tt.want)
+		}
+	}
 }
 
 
 
-package market
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/market/market_test.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "not enough arguments in call to NormalizeSymbol\n\thave (string)\n\twant (string, string)",
+	"source": "compiler",
+	"startLineNumber": 19,
+	"startColumn": 31,
+	"endLineNumber": 19,
+	"endColumn": 31,
+	"origin": "extHost1"
+}]
 
-import "strings"
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/market/market_test.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: Key",
+	"source": "compiler",
+	"startLineNumber": 61,
+	"startColumn": 10,
+	"endLineNumber": 61,
+	"endColumn": 13,
+	"origin": "extHost1"
+}]
 
-// BuildKey формирует ключ для store / redis
-// Пример: mexc:BTC/USDT
-func BuildKey(exchange, normalizedSymbol string) string {
-	return strings.ToLower(exchange) + ":" + normalizedSymbol
-}
 
 
 
 
-package market
-
-import "strings"
-
-func ParsePair(normalized string) Pair {
-	parts := strings.Split(normalized, "/")
-	if len(parts) != 2 {
-		return Pair{}
-	}
-	if parts[0] == "" || parts[1] == "" {
-		return Pair{}
-	}
-
-	return Pair{
-		Base:  parts[0],
-		Quote: parts[1],
-	}
-}
 
 
 
