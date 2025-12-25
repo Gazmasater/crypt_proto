@@ -64,119 +64,84 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 package market
 
-import "testing"
+import "strings"
 
-func TestNormalizeSymbol(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-	}{
-		{"BTCUSDT", "BTC/USDT"},
-		{"btcusdt", "BTC/USDT"},
-		{"BTC-USDT", "BTC/USDT"},
-		{"eth-btc", "ETH/BTC"},
-		{"ETHBTC", "ETHBTC"}, // неизвестный формат — не ломаем
-		{"  btcusdt  ", "BTC/USDT"},
-	}
-
-	for _, tt := range tests {
-		got := NormalizeSymbol(tt.in)
-		if got != tt.want {
-			t.Errorf("NormalizeSymbol(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
+type Pair struct {
+	Base  string
+	Quote string
 }
 
-func TestParsePair(t *testing.T) {
-	tests := []struct {
-		in        string
-		wantBase  string
-		wantQuote string
-	}{
-		{"BTC/USDT", "BTC", "USDT"},
-		{"ETH/BTC", "ETH", "BTC"},
-		{"INVALID", "", ""},
-		{"BTC/", "", ""},
+func ParsePair(s string) Pair {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return Pair{}
 	}
 
-	for _, tt := range tests {
-		p := ParsePair(tt.in)
-		if p.Base != tt.wantBase || p.Quote != tt.wantQuote {
-			t.Errorf(
-				"ParsePair(%q) = %+v, want Base=%q Quote=%q",
-				tt.in, p, tt.wantBase, tt.wantQuote,
-			)
-		}
-	}
-}
-
-func TestKey(t *testing.T) {
-	tests := []struct {
-		exchange string
-		symbol   string
-		want     string
-	}{
-		{"MEXC", "BTCUSDT", "MEXC:BTC/USDT"},
-		{"OKX", "BTC-USDT", "OKX:BTC/USDT"},
-		{"KuCoin", "eth-btc", "KuCoin:ETH/BTC"},
+	parts := strings.Split(s, "/")
+	if len(parts) != 2 {
+		return Pair{}
 	}
 
-	for _, tt := range tests {
-		got := Key(tt.exchange, tt.symbol)
-		if got != tt.want {
-			t.Errorf("Key(%q, %q) = %q, want %q",
-				tt.exchange, tt.symbol, got, tt.want)
-		}
+	if parts[0] == "" || parts[1] == "" {
+		return Pair{}
+	}
+
+	return Pair{
+		Base:  parts[0],
+		Quote: parts[1],
 	}
 }
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/market/market_test.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "WrongArgCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongArgCount"
-		}
-	},
-	"severity": 8,
-	"message": "not enough arguments in call to NormalizeSymbol\n\thave (string)\n\twant (string, string)",
-	"source": "compiler",
-	"startLineNumber": 19,
-	"startColumn": 31,
-	"endLineNumber": 19,
-	"endColumn": 31,
-	"origin": "extHost1"
-}]
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/market/market_test.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
+package market
+
+import "strings"
+
+var knownQuotes = []string{
+	"USDT", "USDC", "BTC", "ETH", "EUR", "USD",
+}
+
+// NormalizeSymbol приводит символ к виду BTC/USDT
+func NormalizeSymbol(s string) string {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if s == "" {
+		return s
+	}
+
+	// заменяем -
+	s = strings.ReplaceAll(s, "-", "/")
+
+	// уже нормальный формат
+	if strings.Contains(s, "/") {
+		parts := strings.Split(s, "/")
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			return parts[0] + "/" + parts[1]
 		}
-	},
-	"severity": 8,
-	"message": "undefined: Key",
-	"source": "compiler",
-	"startLineNumber": 61,
-	"startColumn": 10,
-	"endLineNumber": 61,
-	"endColumn": 13,
-	"origin": "extHost1"
-}]
+		return s
+	}
+
+	// пробуем угадать BTCUSDT
+	for _, q := range knownQuotes {
+		if strings.HasSuffix(s, q) && len(s) > len(q) {
+			base := strings.TrimSuffix(s, q)
+			return base + "/" + q
+		}
+	}
+
+	// неизвестный формат — не ломаем
+	return s
+}
+
+
+
+
+package market
+
+func Key(exchange, symbol string) string {
+	return exchange + ":" + NormalizeSymbol(symbol)
+}
 
 
 
