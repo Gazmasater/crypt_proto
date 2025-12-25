@@ -64,7 +64,6 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-
 package main
 
 import (
@@ -72,7 +71,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"strings"
 	"time"
 
@@ -80,45 +78,42 @@ import (
 )
 
 type MarketData struct {
-	Symbol string
-	Bid    float64
-	Ask    float64
+	Exchange string
+	Symbol   string
+	Bid      float64
+	Ask      float64
 }
 
-// NormalizeSymbol для KuCoin (делаем дефис)
-func NormalizeSymbol(s string) string {
-	s = strings.ToUpper(strings.TrimSpace(s))
-	if strings.ContainsAny(s, "-/") {
-		return strings.ReplaceAll(s, "/", "-")
-	}
-	if strings.HasSuffix(s, "USDT") && len(s) > 4 {
-		return s[:len(s)-4] + "-USDT"
-	}
-	return s
+type KuCoinCollector struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	symbols []string
+	conn    *websocket.Conn
+	wsURL   string
 }
 
-func main() {
-	symbols := []string{"BTCUSDT", "ETHUSDT", "ETHBTC"}
+func NewKuCoinCollector(symbols []string) *KuCoinCollector {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// 1) Получаем endpoint и token
-	wsURL, err := getKuCoinWS()
-	if err != nil {
-		log.Fatal(err)
+	return &KuCoinCollector{
+		ctx:     ctx,
+		cancel:  cancel,
+		symbols: symbols,
+		wsURL:   "wss://ws-api-spot.kucoin.com/endpoint", // песочница без REST token
 	}
+}
 
-	// 2) Подключаемся
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+func (c *KuCoinCollector) Start(out chan<- MarketData) error {
+	// Подключаемся
+	conn, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	defer conn.Close()
+	c.conn = conn
 	log.Println("Connected to KuCoin WS")
 
-	// 3) Подписка на Level2/Ticker
-	for _, s := range symbols {
-		topic := "level2/ticker:" + NormalizeSymbol(s)
+	// Подписка на пары
+	for _, s := range c.symbols {
+		topic := "level2/ticker:" + strings.ToUpper(s)
 		sub := map[string]interface{}{
 			"id":       time.Now().UnixNano(),
 			"type":     "subscribe",
@@ -126,101 +121,113 @@ func main() {
 			"response": true,
 		}
 		if err := conn.WriteJSON(sub); err != nil {
-			log.Println("subscribe error:", err)
-		} else {
-			log.Println("subscribed:", topic)
+			return err
 		}
+		log.Println("subscribed:", topic)
 	}
 
-	// 4) Read loop с выводом первых данных
+	// Ping
 	go func() {
+		t := time.NewTicker(20 * time.Second)
+		defer t.Stop()
 		for {
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				log.Println("read error:", err)
+			select {
+			case <-c.ctx.Done():
 				return
-			}
-
-			var data map[string]interface{}
-			if err := json.Unmarshal(msg, &data); err != nil {
-				continue
-			}
-
-			if data["type"] == "message" {
-				body, ok := data["data"].(map[string]interface{})
-				if !ok {
-					continue
-				}
-				topic := data["topic"].(string)
-				symbol := strings.Split(topic, ":")[1]
-
-				bid, _ := parseFloat(body["bestBid"])
-				ask, _ := parseFloat(body["bestAsk"])
-
-				md := MarketData{
-					Symbol: symbol,
-					Bid:    bid,
-					Ask:    ask,
-				}
-				fmt.Println("MarketData:", md)
+			case <-t.C:
+				_ = conn.WriteMessage(websocket.PingMessage, nil)
 			}
 		}
 	}()
 
-	// держим соединение 20 секунд для теста
-	select {
-	case <-ctx.Done():
-	case <-time.After(20 * time.Second):
+	// Read loop
+	go func() {
+		defer log.Println("readLoop stopped")
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			default:
+				_, msg, err := conn.ReadMessage()
+				if err != nil {
+					if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+						log.Println("WS closed normally")
+						return
+					}
+					log.Println("read error:", err)
+					return
+				}
+
+				var data map[string]interface{}
+				if err := json.Unmarshal(msg, &data); err != nil {
+					continue
+				}
+
+				if data["type"] == "message" {
+					topic, ok := data["topic"].(string)
+					if !ok {
+						continue
+					}
+					symbol := strings.Split(topic, ":")[1]
+
+					body, ok := data["data"].(map[string]interface{})
+					if !ok {
+						continue
+					}
+
+					bid := parseFloat(body["bestBid"])
+					ask := parseFloat(body["bestAsk"])
+
+					out <- MarketData{
+						Exchange: "KuCoin",
+						Symbol:   symbol,
+						Bid:      bid,
+						Ask:      ask,
+					}
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (c *KuCoinCollector) Stop() {
+	c.cancel()
+	if c.conn != nil {
+		c.conn.Close()
 	}
 }
 
-// =================== helpers ===================
-
-func getKuCoinWS() (string, error) {
-	resp, err := http.Post("https://api.kucoin.com/api/v1/bullet-public", "application/json", strings.NewReader("{}"))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Code string `json:"code"`
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", err
-	}
-	if len(r.Data.InstanceServers) == 0 {
-		return "", fmt.Errorf("no KuCoin WS endpoints returned")
-	}
-
-	endpoint := r.Data.InstanceServers[0].Endpoint
-	wsURL := fmt.Sprintf("%s?token=%s&connectId=%d", endpoint, r.Data.Token, time.Now().UnixNano())
-	return wsURL, nil
-}
-
-func parseFloat(v interface{}) (float64, error) {
+func parseFloat(v interface{}) float64 {
 	switch t := v.(type) {
 	case string:
-		return strconv.ParseFloat(t, 64)
+		f, _ := strconv.ParseFloat(t, 64)
+		return f
 	case float64:
-		return t, nil
-	default:
-		return 0, fmt.Errorf("unknown type")
+		return t
 	}
+	return 0
 }
 
+// ====== пример запуска для песочницы ======
+func main() {
+	out := make(chan MarketData)
+	collector := NewKuCoinCollector([]string{"BTC-USDT", "ETH-USDT"})
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/arb_test$ go run .
-2025/12/25 06:13:58 Connected to KuCoin WS
-2025/12/25 06:13:58 subscribed: level2/ticker:BTC-USDT
-2025/12/25 06:13:58 subscribed: level2/ticker:ETH-USDT
-2025/12/25 06:13:58 subscribed: level2/ticker:ETHBTC
-2025/12/25 06:14:18 read error: read tcp 192.168.1.71:46574->108.157.229.12:443: use of closed network connection
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/arb_test$ 
+	if err := collector.Start(out); err != nil {
+		log.Fatal(err)
+	}
+
+	go func() {
+		for md := range out {
+			fmt.Printf("MarketData: %+v\n", md)
+		}
+	}()
+
+	// Run 30 секунд
+	time.Sleep(30 * time.Second)
+	collector.Stop()
+	close(out)
+}
+
