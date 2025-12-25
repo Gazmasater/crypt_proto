@@ -62,13 +62,81 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
- market_test.go:21: NormalizeSymbol("BTCUSDT") = "BTCUSDT", want "BTC/USDT"
---- FAIL: TestKey (0.00s)
-    market_test.go:63: Key("MEXC", "BTCUSDT") = "MEXC:BTCUSDT", want "MEXC:BTC/USDT"
-FAIL
-FAIL    crypt_proto/internal/market     0.003s
-FAIL
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/internal/market$ 
+package market
 
+import "strings"
+
+var knownQuotes = []string{
+	"USDT",
+	"USDC",
+	"USD",
+	"EUR",
+	"BTC",
+	"ETH",
+}
+
+func NormalizeSymbol(s string) string {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if s == "" {
+		return s
+	}
+
+	// если уже с разделителем
+	if strings.ContainsAny(s, "-/") {
+		s = strings.ReplaceAll(s, "-", "/")
+		parts := strings.Split(s, "/")
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			return parts[0] + "/" + parts[1]
+		}
+		return s
+	}
+
+	// формат BTCUSDT → BTC/USDT
+	for _, q := range knownQuotes {
+		if strings.HasSuffix(s, q) && len(s) > len(q) {
+			base := strings.TrimSuffix(s, q)
+			return base + "/" + q
+		}
+	}
+
+	// неизвестный формат → как есть
+	return s
+}
+
+
+
+
+package market
+
+func Key(exchange, symbol string) string {
+	return exchange + ":" + NormalizeSymbol(symbol)
+}
+
+
+
+package market
+
+import "strings"
+
+type Pair struct {
+	Base  string
+	Quote string
+}
+
+func ParsePair(s string) Pair {
+	if !strings.Contains(s, "/") {
+		return Pair{}
+	}
+
+	parts := strings.Split(s, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return Pair{}
+	}
+
+	return Pair{
+		Base:  parts[0],
+		Quote: parts[1],
+	}
+}
 
 
