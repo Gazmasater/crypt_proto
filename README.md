@@ -274,3 +274,14 @@ func main() {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/arb_test$ go run .
+2025/12/25 06:58:48 [KuCoin] Connected to WS
+2025/12/25 06:58:48 [KuCoin] Subscribed: BTC-USDT
+2025/12/25 06:58:48 [KuCoin] Subscribed: ETH-USDT
+2025/12/25 06:58:48 [KuCoin] Subscribed: XRP-USDT
+2025/12/25 06:58:48 [KuCoin] Subscribed: DOGE-USDT
+2025/12/25 06:58:58 No ticks received in 10 seconds
+2025/12/25 06:58:58 [KuCoin] read error: read tcp 192.168.1.71:36038->108.157.229.104:443: use of closed network connection
+2025/12/25 06:58:58 [KuCoin] readLoop stopped
+
+
