@@ -62,88 +62,13 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package market
-
-import "strings"
-
-type Pair struct {
-	Base  string
-	Quote string
-}
-
-func ParsePair(s string) Pair {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return Pair{}
-	}
-
-	parts := strings.Split(s, "/")
-	if len(parts) != 2 {
-		return Pair{}
-	}
-
-	if parts[0] == "" || parts[1] == "" {
-		return Pair{}
-	}
-
-	return Pair{
-		Base:  parts[0],
-		Quote: parts[1],
-	}
-}
-
-
-
-
-package market
-
-import "strings"
-
-var knownQuotes = []string{
-	"USDT", "USDC", "BTC", "ETH", "EUR", "USD",
-}
-
-// NormalizeSymbol приводит символ к виду BTC/USDT
-func NormalizeSymbol(s string) string {
-	s = strings.TrimSpace(strings.ToUpper(s))
-	if s == "" {
-		return s
-	}
-
-	// заменяем -
-	s = strings.ReplaceAll(s, "-", "/")
-
-	// уже нормальный формат
-	if strings.Contains(s, "/") {
-		parts := strings.Split(s, "/")
-		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-			return parts[0] + "/" + parts[1]
-		}
-		return s
-	}
-
-	// пробуем угадать BTCUSDT
-	for _, q := range knownQuotes {
-		if strings.HasSuffix(s, q) && len(s) > len(q) {
-			base := strings.TrimSuffix(s, q)
-			return base + "/" + q
-		}
-	}
-
-	// неизвестный формат — не ломаем
-	return s
-}
-
-
-
-
-package market
-
-func Key(exchange, symbol string) string {
-	return exchange + ":" + NormalizeSymbol(symbol)
-}
-
-
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/internal/market$ go test ./...
+--- FAIL: TestNormalizeSymbol (0.00s)
+    market_test.go:21: NormalizeSymbol("ETHBTC") = "ETH/BTC", want "ETHBTC"
+FAIL
+FAIL    crypt_proto/internal/market     0.001s
+FAIL
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/internal/market$ 
 
 
 
