@@ -80,11 +80,28 @@ func (c *KuCoinCollector) Stop() error {
 }
 
 func (c *KuCoinCollector) initWS() error {
-	resp, err := http.Get("https://api.kucoin.com/api/v1/bullet-public")
+	req, err := http.NewRequest(
+		"POST",
+		"https://api.kucoin.com/api/v1/bullet-public",
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("kucoin bullet status: %s", resp.Status)
+	}
 
 	var r struct {
 		Data struct {
@@ -100,7 +117,7 @@ func (c *KuCoinCollector) initWS() error {
 	}
 
 	if len(r.Data.InstanceServers) == 0 {
-		return fmt.Errorf("no ws endpoints")
+		return fmt.Errorf("no kucoin ws endpoints")
 	}
 
 	c.wsURL = fmt.Sprintf(
