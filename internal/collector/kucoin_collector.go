@@ -188,6 +188,7 @@ func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
 			}
 
 			rawsymbol := strings.TrimPrefix(topic, "/market/ticker:")
+
 			symbol := market.NormalizeSymbol_Full(rawsymbol)
 
 			bid := parseFloat(data["bestBid"])
