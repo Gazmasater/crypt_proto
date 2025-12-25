@@ -220,3 +220,9 @@ func main() {
 	readLoop(ctx, conn)
 }
 
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/arb_test$ go run .
+2025/12/25 06:28:31 Connected to KuCoin WS
+2025/12/25 06:28:31 subscribed: level2/ticker:BTC-USDT
+2025/12/25 06:28:31 subscribed: level2/ticker:ETH-USDT
