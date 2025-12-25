@@ -298,4 +298,18 @@ func main() {
 }
 
 
+2025/12/25 17:52:46 [KuCoin] Connected to WS
+2025/12/25 17:52:46 [KuCoin] Snapshot subscribed: BTC-USDT
+2025/12/25 17:52:46 [KuCoin] Snapshot subscribed: ETH-USDT
+2025/12/25 17:52:46 [KuCoin] Snapshot subscribed: XRP-USDT
+2025/12/25 17:52:46 [KuCoin] Snapshot subscribed: DOGE-USDT
+2025/12/25 17:52:46 [KuCoin] Subscribed: BTC-USDT
+2025/12/25 17:52:46 [KuCoin] Subscribed: ETH-USDT
+2025/12/25 17:52:46 [KuCoin] Subscribed: XRP-USDT
+2025/12/25 17:52:46 [KuCoin] Subscribed: DOGE-USDT
+2025/12/25 17:53:16 No more ticks received in 30s, exiting
+2025/12/25 17:53:16 [KuCoin] read error: read tcp 192.168.1.71:42788->108.157.229.12:443: use of closed network connection
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/arb_test$ 
+
+
 
