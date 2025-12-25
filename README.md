@@ -62,12 +62,14 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/internal/market$ go test ./...
-# crypt_proto/internal/market [crypt_proto/internal/market.test]
-./key.go:4:26: undefined: NormalizeSymbol_Full
-./market_test.go:34:10: undefined: NormalizeSymbol_Full
-FAIL    crypt_proto/internal/market [build failed]
+--- FAIL: TestNormalizeSymbol_Full (0.00s)
+    market_test.go:36: NormalizeSymbol("BTC_USDT") = "BTC_/USDT", want "BTC/USDT"
+    market_test.go:36: NormalizeSymbol("BTC/") = "BTC/", want ""
+    market_test.go:36: NormalizeSymbol("BTC") = "BTC", want ""
 FAIL
-
+FAIL    crypt_proto/internal/market     0.002s
+FAIL
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/internal/market$ 
 
 
 
