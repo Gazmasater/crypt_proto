@@ -62,11 +62,41 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-2025/12/25 05:00:36 EXCHANGE: kucoin
-2025/12/25 05:00:36 malformed ws or wss URL
-exit status 1
+func (c *KuCoinCollector) initWS() error {
+	resp, err := http.Get(configs.KUCOIN_REST_PUBLIC)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
 
-	KUCOIN_REST_PUBLIC   = "https://api.kucoin.com/api/v1/bullet-public"
+	var r struct {
+		Code string `json:"code"`
+		Data struct {
+			InstanceServers []struct {
+				Endpoint string `json:"endpoint"`
+				Encrypt  bool   `json:"encrypt"`
+			} `json:"instanceServers"`
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return err
+	}
+
+	if len(r.Data.InstanceServers) == 0 {
+		return fmt.Errorf("no KuCoin WS endpoints returned")
+	}
+
+	endpoint := r.Data.InstanceServers[0].Endpoint
+	if !strings.HasPrefix(endpoint, "ws") {
+		endpoint = "wss://" + endpoint
+	}
+
+	c.wsURL = fmt.Sprintf("%s?token=%s&connectId=%d", endpoint, r.Data.Token, time.Now().Unix())
+
+	return nil
+}
+
 
 
