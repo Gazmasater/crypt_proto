@@ -60,17 +60,35 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 (pprof) list parsePBWrapperMid
 (pprof) quit
 
+func NormalizeSymbol_Full(s string) string {
+	orig := s
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if s == "" {
+		return ""
+	}
 
---- FAIL: TestNormalizeSymbol_Full (0.00s)
-    market_test.go:36: NormalizeSymbol("ETHBTC") = "", want "ETHBTC"
-    market_test.go:36: NormalizeSymbol("ethbtc") = "", want "ETHBTC"
-    market_test.go:36: NormalizeSymbol("XYZABC") = "", want "XYZABC"
---- FAIL: TestKey_Full (0.00s)
-    market_test.go:88: Key("MEXC", "ethbtc") = "MEXC:", want "MEXC:ETHBTC"
-    market_test.go:88: Key("KuCoin", "XYZABC") = "KuCoin:", want "KuCoin:XYZABC"
-FAIL
-FAIL    crypt_proto/internal/market     0.003s
-FAIL
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/internal/market$ 
+	// заменяем все известные разделители на "/"
+	s = strings.ReplaceAll(s, "-", "/")
+	s = strings.ReplaceAll(s, "_", "/")
+
+	parts := strings.Split(s, "/")
+	if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+		return parts[0] + "/" + parts[1]
+	}
+
+	// если нет разделителя, пробуем определить по известным квотам
+	for _, q := range knownQuotes {
+		if strings.HasSuffix(s, q) && len(s) > len(q) {
+			base := strings.TrimSuffix(s, q)
+			if base != "" {
+				return base + "/" + q
+			}
+		}
+	}
+
+	// неизвестный формат → возвращаем исходное значение в верхнем регистре
+	return strings.ToUpper(strings.TrimSpace(orig))
+}
+
 
 
