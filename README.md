@@ -319,3 +319,17 @@ func main() {
 
 
 
+
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/arb_test$ go run .
+2025/12/25 18:00:15 [KuCoin] snapshot error: empty snapshot for BTC/USDT
+2025/12/25 18:00:16 [KuCoin] snapshot error: empty snapshot for ETH/USDT
+2025/12/25 18:00:16 [KuCoin] snapshot error: empty snapshot for XRP/USDT
+2025/12/25 18:00:16 [KuCoin] snapshot error: empty snapshot for DOGE/USDT
+2025/12/25 18:00:18 [KuCoin] Connected to WS
+2025/12/25 18:00:18 [KuCoin] Subscribed: BTC/USDT
+2025/12/25 18:00:18 [KuCoin] Subscribed: ETH/USDT
+2025/12/25 18:00:18 [KuCoin] Subscribed: XRP/USDT
+2025/12/25 18:00:18 [KuCoin] Subscribed: DOGE/USDT
+
+
+
