@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"crypt_proto/configs"
 	"crypt_proto/pkg/models"
 
 	"github.com/gorilla/websocket"
@@ -36,55 +35,37 @@ func NewKuCoinCollector(symbols []string) *KuCoinCollector {
 func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
 func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
-	// 1) Получаем токен для WS
 	if err := c.initWS(); err != nil {
 		return err
 	}
 
-	// 2) Подключаемся
 	conn, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
 	if err != nil {
 		return err
 	}
 	c.conn = conn
-	log.Println("[KuCoin] connected")
 
-	// 3) ping loop
-	go func() {
-		t := time.NewTicker(configs.KUCOIN_PING_INTERVAL)
-		defer t.Stop()
-		for {
-			select {
-			case <-c.ctx.Done():
-				return
-			case <-t.C:
-				_ = conn.WriteMessage(websocket.PingMessage, nil)
-			}
-		}
-	}()
+	log.Println("[KuCoin] Connected to WS")
 
-	// 4) сначала REST-снапшот для каждой пары
+	// subscribe
 	for _, s := range c.symbols {
-		if err := c.fetchSnapshot(s, out); err != nil {
-			log.Println("[KuCoin] snapshot error:", err)
-		}
-	}
+		sym := normalizeKucoinSymbol(s)
 
-	// 5) подписка на инкременты Level2
-	for _, s := range c.symbols {
-		sub := map[string]interface{}{
+		sub := map[string]any{
 			"id":       time.Now().UnixNano(),
 			"type":     "subscribe",
-			"topic":    "level2:" + strings.ToUpper(s),
+			"topic":    "/market/ticker:" + sym,
 			"response": true,
 		}
+
 		if err := conn.WriteJSON(sub); err != nil {
 			return err
 		}
-		log.Println("[KuCoin] subscribed:", s)
+
+		log.Println("[KuCoin] Subscribed:", sym)
 	}
 
-	// 6) read loop
+	go c.pingLoop()
 	go c.readLoop(out)
 
 	return nil
@@ -93,83 +74,61 @@ func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
 func (c *KuCoinCollector) Stop() error {
 	c.cancel()
 	if c.conn != nil {
-		c.conn.Close()
+		_ = c.conn.Close()
 	}
 	return nil
 }
 
-// ================= private ==================
-
 func (c *KuCoinCollector) initWS() error {
-	resp, err := http.Post(configs.KUCOIN_REST_PUBLIC, "application/json", nil)
+	resp, err := http.Get("https://api.kucoin.com/api/v1/bullet-public")
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
 	var r struct {
-		Code string `json:"code"`
 		Data struct {
+			Token           string `json:"token"`
 			InstanceServers []struct {
 				Endpoint string `json:"endpoint"`
 			} `json:"instanceServers"`
-			Token string `json:"token"`
 		} `json:"data"`
 	}
+
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return err
 	}
 
 	if len(r.Data.InstanceServers) == 0 {
-		return fmt.Errorf("no KuCoin WS endpoints returned")
+		return fmt.Errorf("no ws endpoints")
 	}
 
-	endpoint := r.Data.InstanceServers[0].Endpoint
-	c.wsURL = fmt.Sprintf("%s?token=%s&connectId=%d", endpoint, r.Data.Token, time.Now().UnixNano())
-	return nil
-}
-
-// REST snapshot для Level2 top100
-func (c *KuCoinCollector) fetchSnapshot(symbol string, out chan<- models.MarketData) error {
-	url := fmt.Sprintf("https://api.kucoin.com/api/v1/market/orderbook/level2_100?symbol=%s", strings.ToUpper(symbol))
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var snap struct {
-		Code string `json:"code"`
-		Data struct {
-			Time int64      `json:"time"`
-			Bids [][]string `json:"bids"`
-			Asks [][]string `json:"asks"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
-		return err
-	}
-
-	if len(snap.Data.Bids) == 0 || len(snap.Data.Asks) == 0 {
-		return fmt.Errorf("empty snapshot for %s", symbol)
-	}
-
-	// Берем лучший bid/ask
-	bid, _ := strconv.ParseFloat(snap.Data.Bids[0][0], 64)
-	ask, _ := strconv.ParseFloat(snap.Data.Asks[0][0], 64)
-
-	out <- models.MarketData{
-		Exchange:  "KuCoin",
-		Symbol:    symbol,
-		Bid:       bid,
-		Ask:       ask,
-		Timestamp: snap.Data.Time,
-	}
+	c.wsURL = fmt.Sprintf(
+		"%s?token=%s&connectId=%d",
+		r.Data.InstanceServers[0].Endpoint,
+		r.Data.Token,
+		time.Now().UnixNano(),
+	)
 
 	return nil
 }
 
-// readLoop обрабатывает инкрементальные обновления
+func (c *KuCoinCollector) pingLoop() {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			_ = c.conn.WriteJSON(map[string]string{
+				"type": "ping",
+			})
+		}
+	}
+}
+
 func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
 	defer func() {
 		if c.conn != nil {
@@ -188,42 +147,65 @@ func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
 				return
 			}
 
-			var data map[string]interface{}
-			if err := json.Unmarshal(msg, &data); err != nil {
+			var raw map[string]any
+			if err := json.Unmarshal(msg, &raw); err != nil {
 				continue
 			}
 
-			if data["type"] == "message" {
-				topic, ok := data["topic"].(string)
-				if !ok {
-					continue
-				}
-				symbol := strings.Split(topic, ":")[1]
+			typ, _ := raw["type"].(string)
 
-				body, ok := data["data"].(map[string]interface{})
-				if !ok {
-					continue
-				}
+			// служебные
+			if typ == "welcome" || typ == "ack" {
+				continue
+			}
 
-				bids, okB := body["bids"].([]interface{})
-				asks, okA := body["asks"].([]interface{})
-				if !okB || !okA || len(bids) == 0 || len(asks) == 0 {
-					continue
-				}
+			if typ != "message" {
+				continue
+			}
 
-				bestBid := bids[0].([]interface{})[0].(string)
-				bestAsk := asks[0].([]interface{})[0].(string)
-				bid, _ := strconv.ParseFloat(bestBid, 64)
-				ask, _ := strconv.ParseFloat(bestAsk, 64)
+			topic, _ := raw["topic"].(string)
+			data, ok := raw["data"].(map[string]any)
+			if !ok {
+				continue
+			}
 
-				out <- models.MarketData{
-					Exchange:  "KuCoin",
-					Symbol:    symbol,
-					Bid:       bid,
-					Ask:       ask,
-					Timestamp: time.Now().UnixMilli(),
-				}
+			symbol := strings.TrimPrefix(topic, "/market/ticker:")
+
+			bid := parseFloat(data["bestBid"])
+			ask := parseFloat(data["bestAsk"])
+
+			if bid == 0 || ask == 0 {
+				continue
+			}
+
+			out <- models.MarketData{
+				Exchange: "KuCoin",
+				Symbol:   symbol,
+				Bid:      bid,
+				Ask:      ask,
 			}
 		}
+	}
+}
+
+func normalizeKucoinSymbol(s string) string {
+	if strings.Contains(s, "-") {
+		return s
+	}
+	if strings.HasSuffix(s, "USDT") {
+		return strings.Replace(s, "USDT", "-USDT", 1)
+	}
+	return s
+}
+
+func parseFloat(v any) float64 {
+	switch t := v.(type) {
+	case string:
+		f, _ := strconv.ParseFloat(t, 64)
+		return f
+	case float64:
+		return t
+	default:
+		return 0
 	}
 }
