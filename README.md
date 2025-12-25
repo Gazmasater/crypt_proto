@@ -164,13 +164,32 @@ func main() {
 }
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/arb_test$ go run .
-2025/12/26 00:27:53 ✅ connected
-{"id":"1766698072350895818","type":"welcome"}
-{"id":"1766698073681334730","type":"ack"}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87953.9","bestAskSize":"0.59800291","bestBid":"87953.8","bestBidSize":"0.31142342","price":"87953.9","sequence":"25178475757","size":"0.00056846","time":1766698072551}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87953.9","bestAskSize":"0.59800291","bestBid":"87953.8","bestBidSize":"0.31142342","price":"87953.9","sequence":"25178475765","size":"0.00056846","time":1766698072551}}
-
+2025/12/26 00:33:40 ✅ connected
+{"id":"1766698419918079443","type":"welcome"}
+{"id":"1766698420962179455","type":"ack"}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512486","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512491","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512501","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512505","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512509","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512519","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512543","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512547","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512549","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512559","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512569","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512570","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512575","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512583","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512595","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512602","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512605","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512612","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512617","size":"0.00002263","time":1766698420140}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27301401","bestBid":"87956","bestBidSize":"0.73628248","price":"87956.1","sequence":"25178512645","size":"0.00009686","time":1766698424245}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27301401","bestBid":"87956","bestBidSize":"0.73628248","price":"87956.1","sequence":"25178512652","size":"0.00009686","time":1766698424245}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27301401","bestBid":"87956","bestBidSize":"0.73628248","price":"87956.1","sequence":"25178512662","size":"0.00009686","time":1766698424245}}
+^Csignal: interrupt
 
 
 
