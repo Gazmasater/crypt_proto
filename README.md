@@ -64,9 +64,10 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-symbol = market.NormalizeSymbol_Full(symbol)
-		if symbol == "" {
-			return nil
-		}
+// === НОРМАЛИЗАЦИЯ ===
+				symbol := market.NormalizeSymbol_Full(resp.Arg.InstID)
+				if symbol == "" {
+					continue
+				}
 
 
