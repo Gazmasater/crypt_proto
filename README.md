@@ -215,3 +215,12 @@ func parseFloat(v interface{}) (float64, error) {
 		return 0, fmt.Errorf("unknown type")
 	}
 }
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/arb_test$ go run .
+2025/12/25 06:13:58 Connected to KuCoin WS
+2025/12/25 06:13:58 subscribed: level2/ticker:BTC-USDT
+2025/12/25 06:13:58 subscribed: level2/ticker:ETH-USDT
+2025/12/25 06:13:58 subscribed: level2/ticker:ETHBTC
+2025/12/25 06:14:18 read error: read tcp 192.168.1.71:46574->108.157.229.12:443: use of closed network connection
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/arb_test$ 
