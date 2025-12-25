@@ -64,17 +64,108 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+package collector
+
+import (
+	"context"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"crypt_proto/internal/market"
+	"crypt_proto/pkg/models"
+
+	"github.com/gorilla/websocket"
+)
+
+type KuCoinCollector struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	symbols  []string
+	conn     *websocket.Conn
+	wsURL    string
+	lastData map[string]struct {
+		Bid, Ask, BidSize, AskSize float64
+	}
+}
+
+func NewKuCoinCollector(symbols []string) *KuCoinCollector {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &KuCoinCollector{
+		ctx:      ctx,
+		cancel:   cancel,
+		symbols:  symbols,
+		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
+	}
+}
+
+func (c *KuCoinCollector) Name() string { return "KuCoin" }
+
+func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
+	if err := c.initWS(); err != nil {
+		return err
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
+	if err != nil {
+		return err
+	}
+	c.conn = conn
+	log.Println("[KuCoin] Connected to WS")
+
+	// subscribe
+	for _, s := range c.symbols {
+		sym := normalizeKucoinSymbol(s)
+
+		sub := map[string]any{
+			"id":       time.Now().UnixNano(),
+			"type":     "subscribe",
+			"topic":    "/market/ticker:" + sym,
+			"response": true,
+		}
+
+		if err := conn.WriteJSON(sub); err != nil {
+			return err
+		}
+
+		log.Println("[KuCoin] Subscribed:", sym)
+	}
+
+	go c.pingLoop()
+	go c.readLoop(out)
+
+	return nil
+}
+
+func (c *KuCoinCollector) Stop() error {
+	c.cancel()
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+	return nil
+}
+
+func (c *KuCoinCollector) pingLoop() {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			_ = c.conn.WriteJSON(map[string]string{"type": "ping"})
+		}
+	}
+}
+
 func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
 	defer func() {
 		if c.conn != nil {
 			c.conn.Close()
 		}
 	}()
-
-	// Храним последние данные по каждому символу
-	lastData := make(map[string]struct {
-		Bid, Ask, BidSize, AskSize float64
-	})
 
 	for {
 		select {
@@ -105,6 +196,9 @@ func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
 
 			rawsymbol := strings.TrimPrefix(topic, "/market/ticker:")
 			symbol := market.NormalizeSymbol_Full(rawsymbol)
+			if symbol == "" {
+				continue
+			}
 
 			bid := parseFloat(data["bestBid"])
 			ask := parseFloat(data["bestAsk"])
@@ -116,14 +210,14 @@ func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
 			}
 
 			// фильтрация повторов
-			if last, exists := lastData[symbol]; exists {
+			if last, exists := c.lastData[symbol]; exists {
 				if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
 					continue // ничего не поменялось — пропускаем
 				}
 			}
 
 			// обновляем последние данные
-			lastData[symbol] = struct {
+			c.lastData[symbol] = struct {
 				Bid, Ask, BidSize, AskSize float64
 			}{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
 
@@ -132,11 +226,32 @@ func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
 				Symbol:   symbol,
 				Bid:      bid,
 				Ask:      ask,
-				// при желании можно добавить объёмы в MarketData
+				// при желании можно добавить объёмы
 			}
 		}
 	}
 }
 
+func normalizeKucoinSymbol(s string) string {
+	if strings.Contains(s, "-") {
+		return s
+	}
+	if strings.HasSuffix(s, "USDT") {
+		return strings.Replace(s, "USDT", "-USDT", 1)
+	}
+	return s
+}
+
+func parseFloat(v any) float64 {
+	switch t := v.(type) {
+	case string:
+		f, _ := strconv.ParseFloat(t, 64)
+		return f
+	case float64:
+		return t
+	default:
+		return 0
+	}
+}
 
 
