@@ -113,7 +113,7 @@ func getWS() (string, time.Duration, error) {
 }
 
 func main() {
-	ctx := context.Background()
+	_ = context.Background()
 
 	wsURL, pingInterval, err := getWS()
 	if err != nil {
@@ -162,5 +162,15 @@ func main() {
 		fmt.Println(string(msg))
 	}
 }
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/arb_test$ go run .
+2025/12/26 00:27:53 ✅ connected
+{"id":"1766698072350895818","type":"welcome"}
+{"id":"1766698073681334730","type":"ack"}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87953.9","bestAskSize":"0.59800291","bestBid":"87953.8","bestBidSize":"0.31142342","price":"87953.9","sequence":"25178475757","size":"0.00056846","time":1766698072551}}
+{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87953.9","bestAskSize":"0.59800291","bestBid":"87953.8","bestBidSize":"0.31142342","price":"87953.9","sequence":"25178475765","size":"0.00056846","time":1766698072551}}
+
+
 
 
