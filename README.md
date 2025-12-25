@@ -72,187 +72,125 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-type MarketData struct {
-	Exchange string
-	Symbol   string
-	Bid      float64
-	Ask      float64
+const KuCoinPublicAPI = "https://api.kucoin.com/api/v1/bullet-public"
+
+type KuCoinWS struct {
+	ctx          context.Context
+	cancel       context.CancelFunc
+	conn         *websocket.Conn
+	wsURL        string
+	symbols      []string
+	pingInterval time.Duration
+	noTickTimeout time.Duration
+	lastTick     time.Time
 }
 
-type KuCoinCollector struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	symbols []string
-	conn    *websocket.Conn
-	wsURL   string
+type wsTokenResponse struct {
+	Code string `json:"code"`
+	Data struct {
+		Token           string `json:"token"`
+		InstanceServers []struct {
+			Endpoint     string `json:"endpoint"`
+			Encrypt      bool   `json:"encrypt"`
+			PingInterval int    `json:"pingInterval"`
+		} `json:"instanceServers"`
+	} `json:"data"`
 }
 
-func NewKuCoinCollector(symbols []string) *KuCoinCollector {
+func NewKuCoinWS(symbols []string) *KuCoinWS {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &KuCoinCollector{
-		ctx:     ctx,
-		cancel:  cancel,
-		symbols: symbols,
+	return &KuCoinWS{
+		ctx:           ctx,
+		cancel:        cancel,
+		symbols:       symbols,
+		noTickTimeout: 30 * time.Second,
 	}
 }
 
-func (c *KuCoinCollector) Start(out chan<- MarketData) error {
-	// 1) Получаем WS endpoint и token
-	if err := c.initWS(); err != nil {
-		return err
-	}
-
-	// 2) Делаем REST snapshot для первой котировки
-	for _, s := range c.symbols {
-		data, err := c.snapshotREST(s)
-		if err != nil {
-			log.Printf("[KuCoin] snapshot error: %v", err)
-			continue
-		}
-		out <- data
-		log.Printf("[KuCoin] Snapshot sent: %s", s)
-	}
-
-	// 3) Подключаемся к WS
-	conn, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
-	if err != nil {
-		return err
-	}
-	c.conn = conn
-	log.Println("[KuCoin] Connected to WS")
-
-	// 4) Подписка на Level2 ticker
-	for _, s := range c.symbols {
-		topic := "level2/ticker:" + strings.ReplaceAll(s, "/", "-")
-		sub := map[string]interface{}{
-			"id":       time.Now().UnixNano(),
-			"type":     "subscribe",
-			"topic":    topic,
-			"response": true,
-		}
-		if err := conn.WriteJSON(sub); err != nil {
-			return err
-		}
-		log.Printf("[KuCoin] Subscribed: %s", s)
-	}
-
-	// 5) Ping loop
-	go func() {
-		t := time.NewTicker(18 * time.Second) // KuCoin рекомендует ~18s
-		defer t.Stop()
-		for {
-			select {
-			case <-c.ctx.Done():
-				return
-			case <-t.C:
-				_ = conn.WriteMessage(websocket.PingMessage, nil)
-			}
-		}
-	}()
-
-	// 6) Read loop
-	go c.readLoop(out)
-
-	return nil
-}
-
-func (c *KuCoinCollector) Stop() error {
-	c.cancel()
-	if c.conn != nil {
-		c.conn.Close()
-	}
-	return nil
-}
-
-// ===================== private =====================
-
-func (c *KuCoinCollector) initWS() error {
-	resp, err := http.Post("https://api.kucoin.com/api/v1/bullet-public", "application/json", nil)
+// Получаем токен и endpoint
+func (k *KuCoinWS) init() error {
+	resp, err := http.Post(KuCoinPublicAPI, "application/json", strings.NewReader("{}"))
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	var r struct {
-		Code string `json:"code"`
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-				Encrypt  bool   `json:"encrypt"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-
+	var r wsTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return err
 	}
 
 	if len(r.Data.InstanceServers) == 0 {
-		return fmt.Errorf("no KuCoin WS endpoints returned")
+		return fmt.Errorf("no WS endpoints returned")
 	}
 
-	endpoint := r.Data.InstanceServers[0].Endpoint
-	c.wsURL = fmt.Sprintf("%s?token=%s&connectId=%d", endpoint, r.Data.Token, time.Now().UnixNano())
+	server := r.Data.InstanceServers[0]
+	k.pingInterval = time.Duration(server.PingInterval) * time.Millisecond
+	k.wsURL = fmt.Sprintf("%s?token=%s&connectId=%d", server.Endpoint, r.Data.Token, time.Now().UnixNano())
 	return nil
 }
 
-func (c *KuCoinCollector) snapshotREST(symbol string) (MarketData, error) {
-	url := fmt.Sprintf("https://api.kucoin.com/api/v1/market/orderbook/level2_1?symbol=%s", strings.ReplaceAll(symbol, "/", "-"))
-	resp, err := http.Get(url)
+func (k *KuCoinWS) Start() error {
+	if err := k.init(); err != nil {
+		return err
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(k.wsURL, nil)
 	if err != nil {
-		return MarketData{}, err
+		return err
 	}
-	defer resp.Body.Close()
+	k.conn = conn
+	log.Println("[KuCoin] Connected to WS")
 
-	var r struct {
-		Code string `json:"code"`
-		Data struct {
-			Bids [][]string `json:"bids"`
-			Asks [][]string `json:"asks"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return MarketData{}, err
-	}
-
-	if len(r.Data.Bids) == 0 || len(r.Data.Asks) == 0 {
-		return MarketData{}, fmt.Errorf("empty snapshot for %s", symbol)
-	}
-
-	bid, _ := strconv.ParseFloat(r.Data.Bids[0][0], 64)
-	ask, _ := strconv.ParseFloat(r.Data.Asks[0][0], 64)
-
-	return MarketData{
-		Exchange: "KuCoin",
-		Symbol:   symbol,
-		Bid:      bid,
-		Ask:      ask,
-	}, nil
-}
-
-func (c *KuCoinCollector) readLoop(out chan<- MarketData) {
-	defer func() {
-		if c.conn != nil {
-			c.conn.Close()
+	// Подписываемся на тикеры
+	for _, s := range k.symbols {
+		topic := fmt.Sprintf("level2/ticker:%s", s)
+		msg := map[string]interface{}{
+			"id":       time.Now().UnixNano(),
+			"type":     "subscribe",
+			"topic":    topic,
+			"response": true,
 		}
-		log.Println("[KuCoin] readLoop stopped")
+		if err := conn.WriteJSON(msg); err != nil {
+			return err
+		}
+		log.Println("[KuCoin] Subscribed:", s)
+	}
+
+	// Ping loop
+	go func() {
+		ticker := time.NewTicker(k.pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-k.ctx.Done():
+				return
+			case <-ticker.C:
+				_ = conn.WriteMessage(websocket.PingMessage, nil)
+			}
+		}
 	}()
 
+	// Read loop
+	go k.readLoop()
+
+	return nil
+}
+
+func (k *KuCoinWS) readLoop() {
+	k.lastTick = time.Now()
 	for {
 		select {
-		case <-c.ctx.Done():
+		case <-k.ctx.Done():
 			return
 		default:
-			_, msg, err := c.conn.ReadMessage()
+			_, msg, err := k.conn.ReadMessage()
 			if err != nil {
 				log.Println("[KuCoin] read error:", err)
 				return
@@ -264,72 +202,44 @@ func (c *KuCoinCollector) readLoop(out chan<- MarketData) {
 			}
 
 			if data["type"] == "message" {
-				topic, ok := data["topic"].(string)
-				if !ok {
-					continue
-				}
-				symbol := strings.Split(topic, ":")[1]
-
-				body, ok := data["data"].(map[string]interface{})
-				if !ok {
-					continue
-				}
-
-				bidStr, _ := body["bestBid"].(string)
-				askStr, _ := body["bestAsk"].(string)
-
-				bid, _ := strconv.ParseFloat(bidStr, 64)
-				ask, _ := strconv.ParseFloat(askStr, 64)
-
-				out <- MarketData{
-					Exchange: "KuCoin",
-					Symbol:   symbol,
-					Bid:      bid,
-					Ask:      ask,
-				}
+				k.lastTick = time.Now()
+				topic, _ := data["topic"].(string)
+				body, _ := data["data"].(map[string]interface{})
+				log.Printf("[KuCoin] Tick %s: %+v\n", topic, body)
 			}
 		}
 	}
 }
 
-// ===================== main =====================
-
-func main() {
-	tickers := []string{"BTC/USDT", "ETH/USDT", "XRP/USDT", "DOGE/USDT"}
-	out := make(chan MarketData)
-
-	collector := NewKuCoinCollector(tickers)
-	if err := collector.Start(out); err != nil {
-		log.Fatal(err)
-	}
-
-	// Читаем данные 30 секунд
-	timeout := time.After(30 * time.Second)
+func (k *KuCoinWS) MonitorNoTicks() {
 	for {
-		select {
-		case md := <-out:
-			log.Printf("[Tick] %s %s bid=%.4f ask=%.4f", md.Exchange, md.Symbol, md.Bid, md.Ask)
-		case <-timeout:
-			log.Println("No more ticks received in 30s, exiting")
-			collector.Stop()
+		time.Sleep(5 * time.Second)
+		if time.Since(k.lastTick) > k.noTickTimeout {
+			log.Println("[KuCoin] No more ticks received in 30s, exiting")
+			k.Stop()
 			return
 		}
 	}
 }
 
+func (k *KuCoinWS) Stop() {
+	k.cancel()
+	if k.conn != nil {
+		k.conn.Close()
+	}
+	log.Println("[KuCoin] WS closed normally")
+}
 
+func main() {
+	symbols := []string{"BTC-USDT", "ETH-USDT", "XRP-USDT", "DOGE-USDT"}
+	k := NewKuCoinWS(symbols)
+	if err := k.Start(); err != nil {
+		log.Fatal(err)
+	}
 
+	k.MonitorNoTicks()
+}
 
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/arb_test$ go run .
-2025/12/25 18:00:15 [KuCoin] snapshot error: empty snapshot for BTC/USDT
-2025/12/25 18:00:16 [KuCoin] snapshot error: empty snapshot for ETH/USDT
-2025/12/25 18:00:16 [KuCoin] snapshot error: empty snapshot for XRP/USDT
-2025/12/25 18:00:16 [KuCoin] snapshot error: empty snapshot for DOGE/USDT
-2025/12/25 18:00:18 [KuCoin] Connected to WS
-2025/12/25 18:00:18 [KuCoin] Subscribed: BTC/USDT
-2025/12/25 18:00:18 [KuCoin] Subscribed: ETH/USDT
-2025/12/25 18:00:18 [KuCoin] Subscribed: XRP/USDT
-2025/12/25 18:00:18 [KuCoin] Subscribed: DOGE/USDT
 
 
 
