@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"crypt_proto/configs"
+	"crypt_proto/internal/market"
 	"crypt_proto/pkg/models"
 
 	"github.com/gorilla/websocket"
@@ -105,9 +106,15 @@ func (c *OKXCollector) Start(out chan<- models.MarketData) error {
 					ask, _ = strconv.ParseFloat(resp.Data[0].Asks[0][0], 64)
 				}
 
+				// === НОРМАЛИЗАЦИЯ ===
+				symbol := market.NormalizeSymbol_Full(resp.Arg.InstID)
+				if symbol == "" {
+					continue
+				}
+
 				out <- models.MarketData{
 					Exchange: "OKX",
-					Symbol:   resp.Arg.InstID,
+					Symbol:   symbol,
 					Bid:      bid,
 					Ask:      ask,
 				}
