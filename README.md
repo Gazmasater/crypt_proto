@@ -64,6 +64,10 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-c.symbols = []string{"BTC-USDT", "ETH-USDT", "XRP-USDT", "DOGE-USDT"}
+2025/12/25 06:45:13 Connected to KuCoin WS
+2025/12/25 06:45:13 subscribed: level2/ticker:BTC-USDT
+2025/12/25 06:45:13 subscribed: level2/ticker:ETH-USDT
+2025/12/25 06:45:13 subscribed: level2/ticker:XRP-USDT
+2025/12/25 06:45:13 subscribed: level2/ticker:DOGE-USDT
 
 
