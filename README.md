@@ -64,10 +64,79 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-// === НОРМАЛИЗАЦИЯ ===
-				symbol := market.NormalizeSymbol_Full(resp.Arg.InstID)
-				if symbol == "" {
-					continue
+func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
+	defer func() {
+		if c.conn != nil {
+			c.conn.Close()
+		}
+	}()
+
+	// Храним последние данные по каждому символу
+	lastData := make(map[string]struct {
+		Bid, Ask, BidSize, AskSize float64
+	})
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			_, msg, err := c.conn.ReadMessage()
+			if err != nil {
+				log.Println("[KuCoin] read error:", err)
+				return
+			}
+
+			var raw map[string]any
+			if err := json.Unmarshal(msg, &raw); err != nil {
+				continue
+			}
+
+			typ, _ := raw["type"].(string)
+			if typ == "welcome" || typ == "ack" || typ != "message" {
+				continue
+			}
+
+			topic, _ := raw["topic"].(string)
+			data, ok := raw["data"].(map[string]any)
+			if !ok {
+				continue
+			}
+
+			rawsymbol := strings.TrimPrefix(topic, "/market/ticker:")
+			symbol := market.NormalizeSymbol_Full(rawsymbol)
+
+			bid := parseFloat(data["bestBid"])
+			ask := parseFloat(data["bestAsk"])
+			bidSize := parseFloat(data["sizeBid"])
+			askSize := parseFloat(data["sizeAsk"])
+
+			if bid == 0 || ask == 0 {
+				continue
+			}
+
+			// фильтрация повторов
+			if last, exists := lastData[symbol]; exists {
+				if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+					continue // ничего не поменялось — пропускаем
 				}
+			}
+
+			// обновляем последние данные
+			lastData[symbol] = struct {
+				Bid, Ask, BidSize, AskSize float64
+			}{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
+
+			out <- models.MarketData{
+				Exchange: "KuCoin",
+				Symbol:   symbol,
+				Bid:      bid,
+				Ask:      ask,
+				// при желании можно добавить объёмы в MarketData
+			}
+		}
+	}
+}
+
 
 
