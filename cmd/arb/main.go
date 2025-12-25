@@ -16,7 +16,7 @@ func main() {
 	_ = godotenv.Load(".env")
 	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
 	if exchange == "" {
-		exchange = "mexc"
+		log.Fatal("Set EXCHANGE env variable: mexc | okx | kucoin")
 	}
 	log.Println("EXCHANGE:", exchange)
 
@@ -26,30 +26,24 @@ func main() {
 
 	switch exchange {
 	case "mexc":
-		c = collector.NewMEXCCollector([]string{
-			"BTCUSDT",
-			"ETHUSDT",
-			"ETHBTC",
-		})
+		c = collector.NewMEXCCollector([]string{"BTCUSDT", "ETHUSDT", "ETHBTC"})
 	case "okx":
-		c = collector.NewOKXCollector([]string{
-			"BTC-USDT",
-			"ETH-USDT",
-			"ETH-BTC",
-		})
-
+		c = collector.NewOKXCollector([]string{"BTC-USDT", "ETH-USDT", "ETH-BTC"})
+	case "kucoin":
+		c = collector.NewKuCoinCollector([]string{"BTCUSDT", "ETHUSDT", "ETHBTC"})
 	default:
-		log.Fatal("unknown exchange")
+		log.Fatal("Unknown exchange:", exchange)
 	}
 
+	// стартуем
 	if err := c.Start(marketDataCh); err != nil {
 		log.Fatal(err)
 	}
 
-	// читаем данные в фоне
+	// выводим данные
 	go func() {
 		for data := range marketDataCh {
-			log.Printf("[%s] %s bid=%.4f ask=%.4f\n",
+			log.Printf("[%s] %s bid=%.8f ask=%.8f\n",
 				data.Exchange, data.Symbol, data.Bid, data.Ask)
 		}
 	}()
