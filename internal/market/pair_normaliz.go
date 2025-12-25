@@ -7,8 +7,6 @@ var knownQuotes = []string{
 	"USDC",
 	"USD",
 	"EUR",
-	"BTC",
-	"ETH",
 }
 
 func NormalizeSymbol(s string) string {
@@ -27,7 +25,7 @@ func NormalizeSymbol(s string) string {
 		return s
 	}
 
-	// формат BTCUSDT → BTC/USDT
+	// формат BTCUSDT → BTC/USDT (только известные quote)
 	for _, q := range knownQuotes {
 		if strings.HasSuffix(s, q) && len(s) > len(q) {
 			base := strings.TrimSuffix(s, q)
@@ -35,6 +33,6 @@ func NormalizeSymbol(s string) string {
 		}
 	}
 
-	// неизвестный формат → как есть
+	// неизвестный формат — не ломаем
 	return s
 }
