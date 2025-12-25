@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"crypt_proto/configs"
+	"crypt_proto/internal/market"
 	pb "crypt_proto/pb"
 	"crypt_proto/pkg/models"
 
@@ -149,6 +150,11 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 				symbol = parts[len(parts)-1]
 
 			}
+		}
+
+		symbol = market.NormalizeSymbol_Full(symbol)
+		if symbol == "" {
+			return nil
 		}
 
 		ts := time.Now().UnixMilli()
