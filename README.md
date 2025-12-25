@@ -62,17 +62,49 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/internal/market$ go test ./...
---- FAIL: TestNormalizeSymbol (0.00s)
-    market_test.go:21: NormalizeSymbol("ETHBTC") = "ETH/BTC", want "ETHBTC"
-FAIL
-FAIL    crypt_proto/internal/market     0.001s
-FAIL
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/internal/market$ 
+package market
 
+import "strings"
 
+var knownQuotes = []string{
+	"USDT", "USDC", "BTC", "ETH", "EUR", "USD",
+}
 
+func NormalizeSymbol(s string) string {
+	orig := s
+	s = strings.TrimSpace(s)
 
+	if s == "" {
+		return s
+	}
+
+	upper := strings.ToUpper(s)
+
+	// если есть явный разделитель — нормализуем
+	if strings.ContainsAny(upper, "-/") {
+		upper = strings.ReplaceAll(upper, "-", "/")
+		parts := strings.Split(upper, "/")
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			return parts[0] + "/" + parts[1]
+		}
+		return upper
+	}
+
+	// если строка уже полностью UPPER и без разделителей — НЕ трогаем
+	if orig == upper {
+		return upper
+	}
+
+	// иначе (например btcusdt) — пробуем угадать quote
+	for _, q := range knownQuotes {
+		if strings.HasSuffix(upper, q) && len(upper) > len(q) {
+			base := strings.TrimSuffix(upper, q)
+			return base + "/" + q
+		}
+	}
+
+	return upper
+}
 
 
 
