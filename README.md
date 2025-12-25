@@ -64,56 +64,12 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (c *KuCoinCollector) initWS() error {
-	req, err := http.NewRequest(
-		"POST",
-		"https://api.kucoin.com/api/v1/bullet-public",
-		nil,
-	)
-	if err != nil {
-		return err
-	}
+rawsymbol := strings.TrimPrefix(topic, "/market/ticker:")
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+// KuCoin always BASE-QUOTE → BASE/QUOTE
+rawsymbol = strings.ReplaceAll(rawsymbol, "-", "/")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("kucoin bullet status: %s", resp.Status)
-	}
-
-	var r struct {
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return err
-	}
-
-	if len(r.Data.InstanceServers) == 0 {
-		return fmt.Errorf("no kucoin ws endpoints")
-	}
-
-	c.wsURL = fmt.Sprintf(
-		"%s?token=%s&connectId=%d",
-		r.Data.InstanceServers[0].Endpoint,
-		r.Data.Token,
-		time.Now().UnixNano(),
-	)
-
-	return nil
-}
+symbol := market.NormalizeSymbol_Full(rawsymbol)
 
 
 
