@@ -62,61 +62,11 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-import (
-	"crypt_proto/internal/market" // <- сюда добавляем пакет с NormalizeSymbol
-)
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+2025/12/25 05:00:36 EXCHANGE: kucoin
+2025/12/25 05:00:36 malformed ws or wss URL
+exit status 1
 
-// ...
-
-func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
-	defer func() {
-		if c.conn != nil {
-			c.conn.Close()
-		}
-	}()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-			_, msg, err := c.conn.ReadMessage()
-			if err != nil {
-				log.Println("[KuCoin] read error:", err)
-				return
-			}
-
-			var data map[string]interface{}
-			if err := json.Unmarshal(msg, &data); err != nil {
-				continue
-			}
-
-			if data["type"] == "message" {
-				topic, ok := data["topic"].(string)
-				if !ok {
-					continue
-				}
-				rawSymbol := strings.Split(topic, ":")[1]
-				symbol := market.NormalizeSymbol(rawSymbol) // <- нормализация
-
-				body, ok := data["data"].(map[string]interface{})
-				if !ok {
-					continue
-				}
-
-				bid, _ := parseStringToFloat(body["bestBid"].(string))
-				ask, _ := parseStringToFloat(body["bestAsk"].(string))
-
-				out <- models.MarketData{
-					Exchange:  "KuCoin",
-					Symbol:    symbol,
-					Bid:       bid,
-					Ask:       ask,
-					Timestamp: time.Now().UnixMilli(),
-				}
-			}
-		}
-	}
-}
+	KUCOIN_REST_PUBLIC   = "https://api.kucoin.com/api/v1/bullet-public"
 
 
