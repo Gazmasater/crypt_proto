@@ -12,7 +12,7 @@ const (
 
 // --- KuCoin ---
 const (
-	KUCOIN_WS            = "wss://ws.kucoin.com/endpoint"
+	KUCOIN_REST_PUBLIC   = "https://api.kucoin.com/api/v1/bullet-public"
 	KUCOIN_PING_INTERVAL = 30 * time.Second
 	KUCOIN_READ_TIMEOUT  = 60 * time.Second
 )
