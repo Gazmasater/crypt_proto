@@ -62,99 +62,61 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package market
+import (
+	"crypt_proto/internal/market" // <- сюда добавляем пакет с NormalizeSymbol
+)
 
-import "strings"
+// ...
 
-var knownQuotes = []string{
-	"USDT", "USDC", "USD", "EUR", "BTC", "ETH",
-}
-
-// NormalizeSymbol_Full приводит символ к виду BASE/QUOTE
-// возвращает "" если формат неполный или некорректный
-func NormalizeSymbol_Full(s string) string {
-	s = strings.TrimSpace(strings.ToUpper(s))
-	if s == "" {
-		return ""
-	}
-
-	// уже с разделителем
-	if strings.ContainsAny(s, "-/") {
-		s = strings.ReplaceAll(s, "-", "/")
-		parts := strings.Split(s, "/")
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return ""
+func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
+	defer func() {
+		if c.conn != nil {
+			c.conn.Close()
 		}
-		return parts[0] + "/" + parts[1]
-	}
+	}()
 
-	// слитные символы, пытаемся найти quote
-	for _, q := range knownQuotes {
-		if strings.HasSuffix(s, q) && len(s) > len(q) {
-			base := strings.TrimSuffix(s, q)
-			if base == "" {
-				return ""
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			_, msg, err := c.conn.ReadMessage()
+			if err != nil {
+				log.Println("[KuCoin] read error:", err)
+				return
 			}
-			return base + "/" + q
-		}
-	}
 
-	// неизвестный формат — возвращаем "" (т.к. без quote)
-	return ""
-}
+			var data map[string]interface{}
+			if err := json.Unmarshal(msg, &data); err != nil {
+				continue
+			}
 
+			if data["type"] == "message" {
+				topic, ok := data["topic"].(string)
+				if !ok {
+					continue
+				}
+				rawSymbol := strings.Split(topic, ":")[1]
+				symbol := market.NormalizeSymbol(rawSymbol) // <- нормализация
 
+				body, ok := data["data"].(map[string]interface{})
+				if !ok {
+					continue
+				}
 
+				bid, _ := parseStringToFloat(body["bestBid"].(string))
+				ask, _ := parseStringToFloat(body["bestAsk"].(string))
 
-
-package market
-
-import "testing"
-
-func TestNormalizeSymbol_Full(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-	}{
-		{"BTCUSDT", "BTC/USDT"},
-		{"btcusdt", "BTC/USDT"},
-		{"BTC-USDT", "BTC/USDT"},
-		{"eth-btc", "ETH/BTC"},
-		{"ETHBTC", "ETH/BTC"},
-		{"BTC", ""},      // неполный символ
-		{"BTC/", ""},     // неполный символ
-		{"XYZABC", ""},   // неизвестный формат
-		{"  btcusdt  ", "BTC/USDT"},
-	}
-
-	for _, tt := range tests {
-		got := NormalizeSymbol_Full(tt.in)
-		if got != tt.want {
-			t.Errorf("NormalizeSymbol_Full(%q) = %q, want %q", tt.in, got, tt.want)
+				out <- models.MarketData{
+					Exchange:  "KuCoin",
+					Symbol:    symbol,
+					Bid:       bid,
+					Ask:       ask,
+					Timestamp: time.Now().UnixMilli(),
+				}
+			}
 		}
 	}
 }
-
-func TestKey_Full(t *testing.T) {
-	tests := []struct {
-		exchange string
-		symbol   string
-		want     string
-	}{
-		{"MEXC", "BTCUSDT", "MEXC:BTC/USDT"},
-		{"OKX", "BTC-USDT", "OKX:BTC/USDT"},
-		{"KuCoin", "eth-btc", "KuCoin:ETH/BTC"},
-		{"MEXC", "BTC", "MEXC:"},        // неполный символ
-		{"KuCoin", "XYZABC", "KuCoin:"}, // неизвестный символ
-	}
-
-	for _, tt := range tests {
-		got := Key_Full(tt.exchange, tt.symbol)
-		if got != tt.want {
-			t.Errorf("Key_Full(%q, %q) = %q, want %q", tt.exchange, tt.symbol, got, tt.want)
-		}
-	}
-}
-
 
 
