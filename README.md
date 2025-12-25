@@ -64,132 +64,217 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package main
+package collector
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
+
+	"crypt_proto/pkg/models"
 
 	"github.com/gorilla/websocket"
 )
 
-const bulletURL = "https://api.kucoin.com/api/v1/bullet-public"
-
-type BulletResp struct {
-	Data struct {
-		Token string `json:"token"`
-		InstanceServers []struct {
-			Endpoint     string `json:"endpoint"`
-			PingInterval int    `json:"pingInterval"`
-		} `json:"instanceServers"`
-	} `json:"data"`
+type KuCoinCollector struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	symbols []string
+	conn    *websocket.Conn
+	wsURL   string
 }
 
-func getWS() (string, time.Duration, error) {
-	resp, err := http.Post(bulletURL, "application/json", bytes.NewBuffer([]byte("{}")))
+func NewKuCoinCollector(symbols []string) *KuCoinCollector {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &KuCoinCollector{
+		ctx:     ctx,
+		cancel:  cancel,
+		symbols: symbols,
+	}
+}
+
+func (c *KuCoinCollector) Name() string { return "KuCoin" }
+
+func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
+	if err := c.initWS(); err != nil {
+		return err
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
 	if err != nil {
-		return "", 0, err
+		return err
+	}
+	c.conn = conn
+
+	log.Println("[KuCoin] Connected to WS")
+
+	// subscribe
+	for _, s := range c.symbols {
+		sym := normalizeKucoinSymbol(s)
+
+		sub := map[string]any{
+			"id":       time.Now().UnixNano(),
+			"type":     "subscribe",
+			"topic":    "/market/ticker:" + sym,
+			"response": true,
+		}
+
+		if err := conn.WriteJSON(sub); err != nil {
+			return err
+		}
+
+		log.Println("[KuCoin] Subscribed:", sym)
+	}
+
+	go c.pingLoop()
+	go c.readLoop(out)
+
+	return nil
+}
+
+func (c *KuCoinCollector) Stop() error {
+	c.cancel()
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+	return nil
+}
+
+func (c *KuCoinCollector) initWS() error {
+	resp, err := http.Get("https://api.kucoin.com/api/v1/bullet-public")
+	if err != nil {
+		return err
 	}
 	defer resp.Body.Close()
 
-	var r BulletResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", 0, err
+	var r struct {
+		Data struct {
+			Token           string `json:"token"`
+			InstanceServers []struct {
+				Endpoint string `json:"endpoint"`
+			} `json:"instanceServers"`
+		} `json:"data"`
 	}
 
-	s := r.Data.InstanceServers[0]
-	url := fmt.Sprintf("%s?token=%s&connectId=%d",
-		s.Endpoint,
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return err
+	}
+
+	if len(r.Data.InstanceServers) == 0 {
+		return fmt.Errorf("no ws endpoints")
+	}
+
+	c.wsURL = fmt.Sprintf(
+		"%s?token=%s&connectId=%d",
+		r.Data.InstanceServers[0].Endpoint,
 		r.Data.Token,
 		time.Now().UnixNano(),
 	)
 
-	return url, time.Duration(s.PingInterval) * time.Millisecond, nil
+	return nil
 }
 
-func main() {
-	_ = context.Background()
+func (c *KuCoinCollector) pingLoop() {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
 
-	wsURL, pingInterval, err := getWS()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		log.Fatal("dial:", err)
-	}
-	defer conn.Close()
-
-	log.Println("✅ connected")
-
-	// подписка
-	sub := map[string]any{
-		"id":       time.Now().UnixNano(),
-		"type":     "subscribe",
-		"topic":    "/market/ticker:BTC-USDT",
-		"response": true,
-	}
-
-	if err := conn.WriteJSON(sub); err != nil {
-		log.Fatal("subscribe error:", err)
-	}
-
-	// ping loop (ВАЖНО: JSON ping!)
-	go func() {
-		t := time.NewTicker(pingInterval)
-		for range t.C {
-			_ = conn.WriteJSON(map[string]any{
-				"id":   time.Now().UnixNano(),
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			_ = c.conn.WriteJSON(map[string]string{
 				"type": "ping",
 			})
 		}
-	}()
-
-	// read loop
-	for {
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			log.Println("read error:", err)
-			return
-		}
-
-		fmt.Println(string(msg))
 	}
 }
 
+func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
+	defer func() {
+		if c.conn != nil {
+			c.conn.Close()
+		}
+	}()
 
-2025/12/26 00:33:40 ✅ connected
-{"id":"1766698419918079443","type":"welcome"}
-{"id":"1766698420962179455","type":"ack"}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512486","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512491","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512501","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512505","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512509","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.74174027","price":"87956","sequence":"25178512519","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512543","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.26876662","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512547","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512549","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512559","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512569","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512570","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512575","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512583","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512595","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512602","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512605","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512612","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27311087","bestBid":"87956","bestBidSize":"0.73628248","price":"87956","sequence":"25178512617","size":"0.00002263","time":1766698420140}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27301401","bestBid":"87956","bestBidSize":"0.73628248","price":"87956.1","sequence":"25178512645","size":"0.00009686","time":1766698424245}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27301401","bestBid":"87956","bestBidSize":"0.73628248","price":"87956.1","sequence":"25178512652","size":"0.00009686","time":1766698424245}}
-{"topic":"/market/ticker:BTC-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"87956.1","bestAskSize":"0.27301401","bestBid":"87956","bestBidSize":"0.73628248","price":"87956.1","sequence":"25178512662","size":"0.00009686","time":1766698424245}}
-^Csignal: interrupt
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			_, msg, err := c.conn.ReadMessage()
+			if err != nil {
+				log.Println("[KuCoin] read error:", err)
+				return
+			}
+
+			var raw map[string]any
+			if err := json.Unmarshal(msg, &raw); err != nil {
+				continue
+			}
+
+			typ, _ := raw["type"].(string)
+
+			// служебные
+			if typ == "welcome" || typ == "ack" {
+				continue
+			}
+
+			if typ != "message" {
+				continue
+			}
+
+			topic, _ := raw["topic"].(string)
+			data, ok := raw["data"].(map[string]any)
+			if !ok {
+				continue
+			}
+
+			symbol := strings.TrimPrefix(topic, "/market/ticker:")
+
+			bid := parseFloat(data["bestBid"])
+			ask := parseFloat(data["bestAsk"])
+
+			if bid == 0 || ask == 0 {
+				continue
+			}
+
+			out <- models.MarketData{
+				Exchange: "KuCoin",
+				Symbol:   symbol,
+				Bid:      bid,
+				Ask:      ask,
+			}
+		}
+	}
+}
+
+func normalizeKucoinSymbol(s string) string {
+	if strings.Contains(s, "-") {
+		return s
+	}
+	if strings.HasSuffix(s, "USDT") {
+		return strings.Replace(s, "USDT", "-USDT", 1)
+	}
+	return s
+}
+
+func parseFloat(v any) float64 {
+	switch t := v.(type) {
+	case string:
+		f, _ := strconv.ParseFloat(t, 64)
+		return f
+	case float64:
+		return t
+	default:
+		return 0
+	}
+}
 
 
 
