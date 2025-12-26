@@ -312,6 +312,30 @@ func chunkSymbols(src []string, size int) [][]string {
 	}
 
 
+	[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingReturn",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingReturn"
+		}
+	},
+	"severity": 8,
+	"message": "missing return",
+	"source": "compiler",
+	"startLineNumber": 248,
+	"startColumn": 1,
+	"endLineNumber": 248,
+	"endColumn": 2,
+	"origin": "extHost1"
+}]
+
+
 
 
 
