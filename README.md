@@ -80,7 +80,7 @@ type MEXCExchangeInfo struct {
 		Symbol            string `json:"symbol"`
 		BaseAsset         string `json:"baseAsset"`
 		QuoteAsset        string `json:"quoteAsset"`
-		Status            string `json:"state"` // "ENABLED" / "DISABLED"
+		State             string `json:"state"`
 		PricePrecision    int    `json:"pricePrecision"`
 		QuantityPrecision int    `json:"quantityPrecision"`
 		MinOrderQty       string `json:"minOrderQty"`
@@ -92,21 +92,30 @@ type Market struct {
 	Symbol   string
 	Base     string
 	Quote    string
-	Status   string
 	LotSize  string
 	MinQty   string
 	MaxQty   string
 	TickSize string
 }
 
-// Определяем направление ноги
-func determineDirection(from, to, base, quote string) string {
-	if strings.EqualFold(from, base) && strings.EqualFold(to, quote) {
-		return "SELL"
-	} else if strings.EqualFold(from, quote) && strings.EqualFold(to, base) {
-		return "BUY"
+func pow10neg(n int) string {
+	if n <= 0 {
+		return "1"
 	}
-	return "UNKNOWN"
+	return "0." + strings.Repeat("0", n-1) + "1"
+}
+
+// BUY если from=quote → to=base
+// SELL если from=base → to=quote
+func direction(from, to, base, quote string) string {
+	switch {
+	case strings.EqualFold(from, base) && strings.EqualFold(to, quote):
+		return "SELL"
+	case strings.EqualFold(from, quote) && strings.EqualFold(to, base):
+		return "BUY"
+	default:
+		return "UNKNOWN"
+	}
 }
 
 func main() {
@@ -115,43 +124,57 @@ func main() {
 	inputCSV := "triangles_markets.csv"
 	outputCSV := "triangles_routes_full.csv"
 
-	// 1. Получаем данные с MEXC
-	resp, err := http.Get("https://www.mexc.com/api/v2/market/symbols")
+	// === HTTP REQUEST WITH HEADERS (IMPORTANT) ===
+	req, err := http.NewRequest("GET", "https://www.mexc.com/api/v2/market/symbols", nil)
 	if err != nil {
-		log.Fatalf("cannot get exchangeInfo: %v", err)
+		log.Fatal(err)
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatalf("request failed: %v", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Fatalf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
 
 	var info MEXCExchangeInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		log.Fatalf("decode exchangeInfo: %v", err)
 	}
 
+	// === BUILD MARKET MAP ===
 	markets := make(map[string]Market)
+
 	for _, s := range info.Data {
-		if s.Status != "ENABLED" {
+		if s.State != "ENABLED" {
 			continue
 		}
-		lotStep := fmt.Sprintf("%.*f", s.QuantityPrecision, 1.0/float64Pow(10, s.QuantityPrecision))
-		priceStep := fmt.Sprintf("%.*f", s.PricePrecision, 1.0/float64Pow(10, s.PricePrecision))
-		m := Market{
+
+		markets[s.Symbol] = Market{
 			Symbol:   s.Symbol,
 			Base:     s.BaseAsset,
 			Quote:    s.QuoteAsset,
-			Status:   s.Status,
-			LotSize:  lotStep,
+			LotSize:  pow10neg(s.QuantityPrecision),
+			TickSize: pow10neg(s.PricePrecision),
 			MinQty:   s.MinOrderQty,
 			MaxQty:   s.MaxOrderQty,
-			TickSize: priceStep,
 		}
-		markets[s.Symbol] = m
 	}
-	log.Printf("Loaded markets: %d", len(markets))
 
-	// 2. Читаем исходный CSV маршрутов
+	log.Printf("Loaded active markets: %d", len(markets))
+
+	// === READ TRIANGLE ROUTES ===
 	inFile, err := os.Open(inputCSV)
 	if err != nil {
-		log.Fatalf("open input CSV: %v", err)
+		log.Fatalf("open input csv: %v", err)
 	}
 	defer inFile.Close()
 
@@ -160,97 +183,99 @@ func main() {
 	if err != nil {
 		log.Fatalf("read header: %v", err)
 	}
+
 	if len(header) < 6 {
-		log.Fatalf("CSV must have 6 columns: base1,quote1,base2,quote2,base3,quote3")
+		log.Fatalf("CSV must contain 6 columns")
 	}
 
-	// 3. Создаём выходной CSV
+	// === OUTPUT FILE ===
 	outFile, err := os.Create(outputCSV)
 	if err != nil {
-		log.Fatalf("create output CSV: %v", err)
+		log.Fatalf("create output csv: %v", err)
 	}
 	defer outFile.Close()
 
 	writer := csv.NewWriter(outFile)
 	defer writer.Flush()
 
-	// Заголовок
 	writer.Write([]string{
-		"leg1_symbol", "leg1_from", "leg1_to", "leg1_lotSize", "leg1_minQty", "leg1_maxQty", "leg1_tickSize",
-		"leg2_symbol", "leg2_from", "leg2_to", "leg2_lotSize", "leg2_minQty", "leg2_maxQty", "leg2_tickSize",
-		"leg3_symbol", "leg3_from", "leg3_to", "leg3_lotSize", "leg3_minQty", "leg3_maxQty", "leg3_tickSize",
-		"start_amt", "end_amt", "fail_reason",
+		"leg1_symbol", "leg1_from", "leg1_to", "leg1_lot", "leg1_min", "leg1_max", "leg1_tick",
+		"leg2_symbol", "leg2_from", "leg2_to", "leg2_lot", "leg2_min", "leg2_max", "leg2_tick",
+		"leg3_symbol", "leg3_from", "leg3_to", "leg3_lot", "leg3_min", "leg3_max", "leg3_tick",
+		"start_amount",
+		"fail_reason",
 	})
 
-	// 4. Обрабатываем строки
 	for {
 		row, err := reader.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			log.Fatalf("read row: %v", err)
+			log.Fatal(err)
 		}
+
 		base1, quote1 := row[0], row[1]
 		base2, quote2 := row[2], row[3]
 		base3, quote3 := row[4], row[5]
 
-		legs := []struct{ From, To, Base, Quote string }{
-			{From: base1, To: quote1, Base: base1, Quote: quote1},
-			{From: base2, To: quote2, Base: base2, Quote: quote2},
-			{From: base3, To: quote3, Base: base3, Quote: quote3},
+		legs := []struct {
+			From  string
+			To    string
+			Base  string
+			Quote string
+		}{
+			{base1, quote1, base1, quote1},
+			{base2, quote2, base2, quote2},
+			{base3, quote3, base3, quote3},
 		}
 
-		outRow := make([]string, 0, 30)
+		out := make([]string, 0, 30)
 		fail := ""
 
 		for _, leg := range legs {
 			found := false
+
 			for _, m := range markets {
-				if (strings.EqualFold(leg.Base, m.Base) && strings.EqualFold(leg.Quote, m.Quote)) ||
-					(strings.EqualFold(leg.Base, m.Quote) && strings.EqualFold(leg.Quote, m.Base)) {
-					dir := determineDirection(leg.From, leg.To, m.Base, m.Quote)
+				if (m.Base == leg.Base && m.Quote == leg.Quote) ||
+					(m.Base == leg.Quote && m.Quote == leg.Base) {
+
+					dir := direction(leg.From, leg.To, m.Base, m.Quote)
 					if dir == "UNKNOWN" {
-						fail = "cannot determine direction"
+						fail = "direction_error"
 					}
-					outRow = append(outRow, m.Symbol, leg.From, leg.To, m.LotSize, m.MinQty, m.MaxQty, m.TickSize)
+
+					out = append(out,
+						m.Symbol,
+						leg.From,
+						leg.To,
+						m.LotSize,
+						m.MinQty,
+						m.MaxQty,
+						m.TickSize,
+					)
 					found = true
 					break
 				}
 			}
+
 			if !found {
-				outRow = append(outRow, "", leg.From, leg.To, "", "", "", "")
+				out = append(out, "", leg.From, leg.To, "", "", "", "")
 				if fail == "" {
-					fail = "pair not found"
+					fail = "pair_not_found"
 				}
 			}
 		}
 
-		// start_amt, end_amt, fail_reason
-		outRow = append(outRow, "25.0", "", fail)
+		out = append(out, "25.0", fail)
 
-		if err := writer.Write(outRow); err != nil {
-			log.Fatalf("write row: %v", err)
+		if err := writer.Write(out); err != nil {
+			log.Fatal(err)
 		}
 	}
 
-	log.Printf("Done! Output saved to %s", outputCSV)
+	log.Printf("DONE → %s", outputCSV)
 }
-
-// Вспомогательная функция степени для float64
-func float64Pow(x, y int) float64 {
-	res := 1.0
-	for i := 0; i < y; i++ {
-		res /= 10
-	}
-	return res
-}
-
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/mexctriangl$ go run .
-2025/12/26 19:25:07.198175 decode exchangeInfo: invalid character '<' looking for beginning of value
-exit status 1
 
 
 
