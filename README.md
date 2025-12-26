@@ -62,88 +62,220 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.001.pb.gz
-File: arb
-Build ID: 2f2a4b34fa41455b1a30bee46dd74b5e51f355d0
-Type: cpu
-Time: 2025-12-26 03:57:21 MSK
-Duration: 30s, Total samples = 150ms (  0.5%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top 
-Showing nodes accounting for 150ms, 100% of 150ms total
-Showing top 10 nodes out of 53
-      flat  flat%   sum%        cum   cum%
-      80ms 53.33% 53.33%       80ms 53.33%  internal/runtime/syscall.Syscall6
-      10ms  6.67% 60.00%       10ms  6.67%  crypto/internal/fips140/aes.encryptBlock
-      10ms  6.67% 66.67%       10ms  6.67%  gogo
-      10ms  6.67% 73.33%       10ms  6.67%  google.golang.org/protobuf/internal/impl.offset.IsValid
-      10ms  6.67% 80.00%       10ms  6.67%  os.(*File).write
-      10ms  6.67% 86.67%       10ms  6.67%  reflect.(*rtype).Elem
-      10ms  6.67% 93.33%       10ms  6.67%  runtime.newobject
-      10ms  6.67%   100%       10ms  6.67%  sync.(*Pool).pin
-         0     0%   100%       80ms 53.33%  bufio.(*Reader).Peek
-         0     0%   100%       80ms 53.33%  bufio.(*Reader).fill
-(pprof) 
+package main
 
+import (
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"sort"
+)
 
+// Структура под /api/v3/exchangeInfo (нужны только нужные поля)
+type exchangeInfo struct {
+	Symbols []struct {
+		Symbol     string `json:"symbol"`
+		BaseAsset  string `json:"baseAsset"`
+		QuoteAsset string `json:"quoteAsset"`
+		Status     string `json:"status"`
+	} `json:"symbols"`
+}
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.002.pb.gz
-File: arb
-Build ID: 2f2a4b34fa41455b1a30bee46dd74b5e51f355d0
-Type: cpu
-Time: 2025-12-26 03:59:12 MSK
-Duration: 30s, Total samples = 100ms ( 0.33%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 100ms, 100% of 100ms total
-Showing top 10 nodes out of 56
-      flat  flat%   sum%        cum   cum%
-      60ms 60.00% 60.00%       60ms 60.00%  internal/runtime/syscall.Syscall6
-      10ms 10.00% 70.00%       10ms 10.00%  encoding/json.checkValid
-      10ms 10.00% 80.00%       10ms 10.00%  runtime.futex
-      10ms 10.00% 90.00%       10ms 10.00%  runtime.write1
-      10ms 10.00%   100%       10ms 10.00%  strconv.atof64
-         0     0%   100%       40ms 40.00%  bufio.(*Reader).Peek
-         0     0%   100%       40ms 40.00%  bufio.(*Reader).fill
-         0     0%   100%       40ms 40.00%  bytes.(*Buffer).ReadFrom
-         0     0%   100%       70ms 70.00%  crypt_proto/internal/collector.(*OKXCollector).Start.func2
-         0     0%   100%       40ms 40.00%  crypto/tls.(*Conn).Read
-(pprof) 
+// Маркет (одна торговая пара)
+type pairMarket struct {
+	Symbol string
+	Base   string
+	Quote  string
+}
 
+// Ключ валютной пары без направления (min, max)
+type pairKey struct {
+	A, B string
+}
 
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
+	// 1) Тянем exchangeInfo
+	resp, err := http.Get("https://api.mexc.com/api/v3/exchangeInfo")
+	if err != nil {
+		log.Fatalf("get exchangeInfo: %v", err)
+	}
+	defer resp.Body.Close()
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.003.pb.gz
-File: arb
-Build ID: 2f2a4b34fa41455b1a30bee46dd74b5e51f355d0
-Type: cpu
-Time: 2025-12-26 04:00:51 MSK
-Duration: 30s, Total samples = 110ms ( 0.37%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 110ms, 100% of 110ms total
-Showing top 10 nodes out of 63
-      flat  flat%   sum%        cum   cum%
-      30ms 27.27% 27.27%       30ms 27.27%  internal/runtime/syscall.Syscall6
-      10ms  9.09% 36.36%       60ms 54.55%  bufio.(*Reader).fill
-      10ms  9.09% 45.45%       10ms  9.09%  runtime.(*itabTableType).find
-      10ms  9.09% 54.55%       10ms  9.09%  runtime.futex
-      10ms  9.09% 63.64%       10ms  9.09%  runtime.gogo
-      10ms  9.09% 72.73%       10ms  9.09%  runtime.nextFreeFast
-      10ms  9.09% 81.82%       10ms  9.09%  runtime.typePointers.next
-      10ms  9.09% 90.91%       10ms  9.09%  runtime.write1
-      10ms  9.09%   100%       10ms  9.09%  strings.Replace
-         0     0%   100%       60ms 54.55%  bufio.(*Reader).Peek
-(pprof) 
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		log.Fatalf("exchangeInfo status %d: %s", resp.StatusCode, string(b))
+	}
 
+	var info exchangeInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		log.Fatalf("decode exchangeInfo: %v", err)
+	}
 
+	log.Printf("total symbols from API: %d", len(info.Symbols))
 
+	// 2) Фильтруем маркеты
+	markets := make([]pairMarket, 0, len(info.Symbols))
+	for _, s := range info.Symbols {
+		base := s.BaseAsset
+		quote := s.QuoteAsset
+		if base == "" || quote == "" {
+			continue
+		}
+
+		// Мягкий фильтр по статусу: берём всё "торгуемое"
+		// (на MEXC это может быть "ENABLED", "TRADING", "1" и т.п.)
+		if s.Status != "" &&
+			s.Status != "ENABLED" &&
+			s.Status != "TRADING" &&
+			s.Status != "1" {
+			continue
+		}
+
+		markets = append(markets, pairMarket{
+			Symbol: s.Symbol,
+			Base:   base,
+			Quote:  quote,
+		})
+	}
+	log.Printf("filtered markets: %d", len(markets))
+
+	// 3) Строим pairmap и граф валют
+	pairmap := make(map[pairKey][]pairMarket)
+	adj := make(map[string]map[string]struct{})
+
+	addEdge := func(a, b string) {
+		if adj[a] == nil {
+			adj[a] = make(map[string]struct{})
+		}
+		adj[a][b] = struct{}{}
+	}
+
+	for _, m := range markets {
+		a, b := m.Base, m.Quote
+		key := pairKey{A: a, B: b}
+		if a > b {
+			key = pairKey{A: b, B: a}
+		}
+		pairmap[key] = append(pairmap[key], m)
+
+		addEdge(a, b)
+		addEdge(b, a)
+	}
+
+	log.Printf("currencies (vertices): %d, pair keys: %d", len(adj), len(pairmap))
+
+	// 4) Индексация валют
+	coins := make([]string, 0, len(adj))
+	for c := range adj {
+		coins = append(coins, c)
+	}
+	sort.Strings(coins)
+
+	idx := make(map[string]int, len(coins))
+	for i, c := range coins {
+		idx[c] = i
+	}
+
+	neighbors := make([]map[int]struct{}, len(coins))
+	for i := range neighbors {
+		neighbors[i] = make(map[int]struct{})
+	}
+	for c, neighs := range adj {
+		i := idx[c]
+		for nb := range neighs {
+			j := idx[nb]
+			neighbors[i][j] = struct{}{}
+		}
+	}
+
+	// 5) Поиск валютных треугольников (A,B,C с A<B<C)
+	type triangle struct {
+		A, B, C string
+	}
+
+	triangles := make([]triangle, 0)
+
+	for i := 0; i < len(coins); i++ {
+		ni := neighbors[i]
+
+		for j := range ni {
+			if j <= i {
+				continue
+			}
+			nj := neighbors[j]
+
+			for k := range ni {
+				if k <= j {
+					continue
+				}
+				if _, ok := nj[k]; ok {
+					triangles = append(triangles, triangle{
+						A: coins[i],
+						B: coins[j],
+						C: coins[k],
+					})
+				}
+			}
+		}
+	}
+	log.Printf("found currency triangles: %d", len(triangles))
+
+	// 6) Пишем в CSV реальные маркеты для пар (A,B), (B,C), (A,C)
+	outFile := "triangles_markets.csv"
+	f, err := os.Create(outFile)
+	if err != nil {
+		log.Fatalf("create %s: %v", outFile, err)
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write([]string{"base1", "quote1", "base2", "quote2", "base3", "quote3"}); err != nil {
+		log.Fatalf("write header: %v", err)
+	}
+
+	pick := func(x, y string) (pairMarket, bool) {
+		key := pairKey{A: x, B: y}
+		if x > y {
+			key = pairKey{A: y, B: x}
+		}
+		list := pairmap[key]
+		if len(list) == 0 {
+			return pairMarket{}, false
+		}
+		return list[0], true
+	}
+
+	count := 0
+	for _, t := range triangles {
+		m1, ok1 := pick(t.A, t.B)
+		m2, ok2 := pick(t.B, t.C)
+		m3, ok3 := pick(t.A, t.C)
+		if !ok1 || !ok2 || !ok3 {
+			continue
+		}
+
+		rec := []string{
+			m1.Base, m1.Quote,
+			m2.Base, m2.Quote,
+			m3.Base, m3.Quote,
+		}
+		if err := w.Write(rec); err != nil {
+			log.Fatalf("write record: %v", err)
+		}
+		count++
+	}
+
+	log.Printf("written triangles to %s: %d", outFile, count)
+	fmt.Println("Готово, файл:", outFile)
+}
 
 
 
