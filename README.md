@@ -306,34 +306,23 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 // ------------------------------------------------------------
 
 func chunkSymbols(src []string, size int) [][]string {
-	var out [][]string
-	for size < len(src) {
-		src, out = src[size:], append(out, src[:size:size])
+	if size <= 0 {
+		return nil
 	}
 
+	var out [][]string
+	for len(src) > size {
+		out = append(out, src[:size])
+		src = src[size:]
+	}
 
-	[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingReturn",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingReturn"
-		}
-	},
-	"severity": 8,
-	"message": "missing return",
-	"source": "compiler",
-	"startLineNumber": 248,
-	"startColumn": 1,
-	"endLineNumber": 248,
-	"endColumn": 2,
-	"origin": "extHost1"
-}]
+	if len(src) > 0 {
+		out = append(out, src)
+	}
+
+	return out
+}
+
 
 
 
