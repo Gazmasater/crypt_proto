@@ -72,209 +72,182 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sort"
+	"strings"
 )
 
-// Ответ KuCoin
-type kucoinExchangeInfo struct {
-	Code string `json:"code"`
-	Data []struct {
-		Symbol         string `json:"symbol"`
-		BaseCurrency   string `json:"baseCurrency"`
-		QuoteCurrency  string `json:"quoteCurrency"`
-		EnableTrading  bool   `json:"enableTrading"`
-	} `json:"data"`
+type ExchangeInfo struct {
+	Symbols []struct {
+		Symbol   string `json:"symbol"`
+		Status   string `json:"status"`
+		BaseAsset  string `json:"baseAsset"`
+		QuoteAsset string `json:"quoteAsset"`
+		Filters []struct {
+			FilterType string `json:"filterType"`
+			StepSize   string `json:"stepSize"`   // lotSize
+			MinQty     string `json:"minQty"`    // минимальный объём
+			MaxQty     string `json:"maxQty"`    // максимальный объём
+			TickSize   string `json:"tickSize"`  // шаг цены
+			MaxNotional string `json:"maxNotional"` // максимальная сумма
+		} `json:"filters"`
+	} `json:"symbols"`
 }
 
-// Маркет
-type pairMarket struct {
-	Symbol string
-	Base   string
-	Quote  string
+type Market struct {
+	Symbol     string
+	Base       string
+	Quote      string
+	Status     string
+	LotSize    string
+	MinQty     string
+	MaxQty     string
+	TickSize   string
+	MaxNotional string
 }
 
-// ключ без направления
-type pairKey struct {
-	A, B string
+// Определяем направление ноги
+func determineDirection(from, to, base, quote string) string {
+	if strings.EqualFold(from, base) && strings.EqualFold(to, quote) {
+		return "SELL"
+	} else if strings.EqualFold(from, quote) && strings.EqualFold(to, base) {
+		return "BUY"
+	}
+	return "UNKNOWN"
 }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	resp, err := http.Get("https://api.kucoin.com/api/v2/symbols")
+	inputCSV := "triangles_routes.csv"
+	outputCSV := "triangles_routes_full.csv"
+
+	// 1. Загружаем exchangeInfo с MEXC
+	resp, err := http.Get("https://www.mexc.com/api/v3/exchangeInfo")
 	if err != nil {
-		log.Fatalf("get symbols: %v", err)
+		log.Fatalf("cannot get exchangeInfo: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		log.Fatalf("status %d: %s", resp.StatusCode, string(b))
-	}
-
-	var info kucoinExchangeInfo
+	var info ExchangeInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		log.Fatalf("decode: %v", err)
+		log.Fatalf("decode exchangeInfo: %v", err)
 	}
 
-	log.Printf("symbols from API: %d", len(info.Data))
-
-	// 1) фильтрация маркетов
-	markets := make([]pairMarket, 0, len(info.Data))
-	for _, s := range info.Data {
-		if !s.EnableTrading {
+	markets := make(map[string]Market)
+	for _, s := range info.Symbols {
+		if s.Status != "TRADING" && s.Status != "ENABLED" && s.Status != "1" {
 			continue
 		}
-		if s.BaseCurrency == "" || s.QuoteCurrency == "" {
-			continue
-		}
-
-		markets = append(markets, pairMarket{
+		m := Market{
 			Symbol: s.Symbol,
-			Base:   s.BaseCurrency,
-			Quote:  s.QuoteCurrency,
-		})
-	}
-
-	log.Printf("filtered markets: %d", len(markets))
-
-	// 2) строим граф валют
-	pairmap := make(map[pairKey][]pairMarket)
-	adj := make(map[string]map[string]struct{})
-
-	addEdge := func(a, b string) {
-		if adj[a] == nil {
-			adj[a] = make(map[string]struct{})
+			Base:   s.BaseAsset,
+			Quote:  s.QuoteAsset,
+			Status: s.Status,
 		}
-		adj[a][b] = struct{}{}
-	}
-
-	for _, m := range markets {
-		a, b := m.Base, m.Quote
-
-		key := pairKey{A: a, B: b}
-		if a > b {
-			key = pairKey{A: b, B: a}
-		}
-
-		pairmap[key] = append(pairmap[key], m)
-
-		addEdge(a, b)
-		addEdge(b, a)
-	}
-
-	log.Printf("currencies: %d, pair keys: %d", len(adj), len(pairmap))
-
-	// 3) индексация валют
-	coins := make([]string, 0, len(adj))
-	for c := range adj {
-		coins = append(coins, c)
-	}
-	sort.Strings(coins)
-
-	idx := make(map[string]int, len(coins))
-	for i, c := range coins {
-		idx[c] = i
-	}
-
-	neighbors := make([]map[int]struct{}, len(coins))
-	for i := range neighbors {
-		neighbors[i] = make(map[int]struct{})
-	}
-
-	for c, neighs := range adj {
-		i := idx[c]
-		for nb := range neighs {
-			j := idx[nb]
-			neighbors[i][j] = struct{}{}
-		}
-	}
-
-	// 4) поиск треугольников валют
-	type triangle struct {
-		A, B, C string
-	}
-
-	var triangles []triangle
-
-	for i := 0; i < len(coins); i++ {
-		ni := neighbors[i]
-
-		for j := range ni {
-			if j <= i {
-				continue
-			}
-			nj := neighbors[j]
-
-			for k := range ni {
-				if k <= j {
-					continue
-				}
-				if _, ok := nj[k]; ok {
-					triangles = append(triangles, triangle{
-						A: coins[i],
-						B: coins[j],
-						C: coins[k],
-					})
+		// ищем фильтры
+		for _, f := range s.Filters {
+			switch strings.ToUpper(f.FilterType) {
+			case "LOT_SIZE":
+				m.LotSize = f.StepSize
+				m.MinQty = f.MinQty
+				m.MaxQty = f.MaxQty
+			case "PRICE_FILTER":
+				m.TickSize = f.TickSize
+				if f.MaxNotional != "" {
+					m.MaxNotional = f.MaxNotional
 				}
 			}
 		}
+		markets[s.Symbol] = m
 	}
+	log.Printf("Loaded markets: %d", len(markets))
 
-	log.Printf("currency triangles: %d", len(triangles))
-
-	// 5) запись CSV
-	outFile := "triangles_markets_kucoin.csv"
-	f, err := os.Create(outFile)
+	// 2. Читаем исходный CSV маршрутов
+	inFile, err := os.Open(inputCSV)
 	if err != nil {
-		log.Fatalf("create %s: %v", outFile, err)
+		log.Fatalf("open input CSV: %v", err)
 	}
-	defer f.Close()
+	defer inFile.Close()
 
-	w := csv.NewWriter(f)
-	defer w.Flush()
+	reader := csv.NewReader(inFile)
+	header, err := reader.Read()
+	if err != nil {
+		log.Fatalf("read header: %v", err)
+	}
+	if len(header) < 6 {
+		log.Fatalf("CSV must have 6 columns: base1,quote1,base2,quote2,base3,quote3")
+	}
 
-	_ = w.Write([]string{
-		"base1", "quote1",
-		"base2", "quote2",
-		"base3", "quote3",
+	// 3. Создаём выходной CSV
+	outFile, err := os.Create(outputCSV)
+	if err != nil {
+		log.Fatalf("create output CSV: %v", err)
+	}
+	defer outFile.Close()
+
+	writer := csv.NewWriter(outFile)
+	defer writer.Flush()
+
+	// Заголовок
+	writer.Write([]string{
+		"leg1_symbol", "leg1_from", "leg1_to", "leg1_lotSize", "leg1_minQty", "leg1_maxQty", "leg1_tickSize", "leg1_maxNotional",
+		"leg2_symbol", "leg2_from", "leg2_to", "leg2_lotSize", "leg2_minQty", "leg2_maxQty", "leg2_tickSize", "leg2_maxNotional",
+		"leg3_symbol", "leg3_from", "leg3_to", "leg3_lotSize", "leg3_minQty", "leg3_maxQty", "leg3_tickSize", "leg3_maxNotional",
+		"start_amt", "end_amt", "fail_reason",
 	})
 
-	pick := func(x, y string) (pairMarket, bool) {
-		key := pairKey{A: x, B: y}
-		if x > y {
-			key = pairKey{A: y, B: x}
+	// 4. Обрабатываем строки
+	for {
+		row, err := reader.Read()
+		if err == io.EOF {
+			break
 		}
-		list := pairmap[key]
-		if len(list) == 0 {
-			return pairMarket{}, false
+		if err != nil {
+			log.Fatalf("read row: %v", err)
 		}
-		return list[0], true
+		base1, quote1 := row[0], row[1]
+		base2, quote2 := row[2], row[3]
+		base3, quote3 := row[4], row[5]
+
+		legs := []struct{From, To string; Base, Quote string}{
+			{From: base1, To: quote1, Base: base1, Quote: quote1},
+			{From: base2, To: quote2, Base: base2, Quote: quote2},
+			{From: base3, To: quote3, Base: base3, Quote: quote3},
+		}
+
+		outRow := make([]string, 0, 30)
+		fail := ""
+
+		for _, leg := range legs {
+			found := false
+			for _, m := range markets {
+				if (strings.EqualFold(leg.Base, m.Base) && strings.EqualFold(leg.Quote, m.Quote)) ||
+					(strings.EqualFold(leg.Base, m.Quote) && strings.EqualFold(leg.Quote, m.Base)) {
+					dir := determineDirection(leg.From, leg.To, m.Base, m.Quote)
+					if dir == "UNKNOWN" {
+						fail = "cannot determine direction"
+					}
+					outRow = append(outRow, m.Symbol, leg.From, leg.To, m.LotSize, m.MinQty, m.MaxQty, m.TickSize, m.MaxNotional)
+					found = true
+					break
+				}
+			}
+			if !found {
+				outRow = append(outRow, "", leg.From, leg.To, "", "", "", "", "")
+				if fail == "" {
+					fail = "pair not found"
+				}
+			}
+		}
+
+		// start_amt, end_amt, fail_reason
+		outRow = append(outRow, "25.0", "", fail)
+
+		if err := writer.Write(outRow); err != nil {
+			log.Fatalf("write row: %v", err)
+		}
 	}
 
-	count := 0
-	for _, t := range triangles {
-		m1, ok1 := pick(t.A, t.B)
-		m2, ok2 := pick(t.B, t.C)
-		m3, ok3 := pick(t.A, t.C)
-		if !ok1 || !ok2 || !ok3 {
-			continue
-		}
-
-		rec := []string{
-			m1.Base, m1.Quote,
-			m2.Base, m2.Quote,
-			m3.Base, m3.Quote,
-		}
-
-		if err := w.Write(rec); err != nil {
-			log.Fatalf("write record: %v", err)
-		}
-		count++
-	}
-
-	log.Printf("written triangles to %s: %d", outFile, count)
-	fmt.Println("Готово:", outFile)
+	log.Printf("Done! Output saved to %s", outputCSV)
 }
 
 
