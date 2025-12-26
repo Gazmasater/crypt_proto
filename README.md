@@ -63,78 +63,50 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-csvPath := "triangles_usdt_routes.csv" // твой CSV с белым списком
-symbols, err := readSymbolsFromCSV(csvPath)
-if err != nil {
-	log.Fatal("read CSV symbols:", err)
+type MEXCCollector struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	symbols []string
+
+	conns []*websocket.Conn
+	mu    sync.Mutex
+
+	lastData map[string]struct {
+		Bid, Ask, BidSize, AskSize float64
+	}
 }
-log.Printf("Subscribing to %d symbols", len(symbols))
 
 
-csvPath := "triangles_usdt_routes.csv" // твой CSV с белым списком
-symbols, err := readSymbolsFromCSV(csvPath)
-if err != nil {
-	log.Fatal("read CSV symbols:", err)
+
+
+func NewMEXCCollector(symbols []string) *MEXCCollector {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	return &MEXCCollector{
+		ctx:      ctx,
+		cancel:   cancel,
+		symbols:  symbols,
+		conns:    make([]*websocket.Conn, 0),
+		lastData: make(map[string]struct {
+			Bid, Ask, BidSize, AskSize float64
+		}),
+	}
 }
-log.Printf("Subscribing to %d symbols", len(symbols))
 
 
 
-
-
-
-
-
-func readSymbolsFromCSV(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+const mexcChunkSize = 25
+func chunkSymbols(src []string, size int) [][]string {
+	var res [][]string
+	for size < len(src) {
+		src, res = src[size:], append(res, src[:size:size])
 	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	header, err := r.Read()
-	if err != nil {
-		return nil, err
-	}
-
-	// находим индексы колонок leg1/2/3
-	idx := map[string]int{}
-	for i, h := range header {
-		idx[strings.ToLower(strings.TrimSpace(h))] = i
-	}
-
-	legs := []string{"leg1_symbol", "leg2_symbol", "leg3_symbol"}
-	var indices []int
-	for _, l := range legs {
-		if i, ok := idx[l]; ok {
-			indices = append(indices, i)
-		} else {
-			return nil, &csv.ParseError{StartLine: 0, Err: csv.ErrFieldCount}
-		}
-	}
-
-	set := map[string]struct{}{}
-	for {
-		row, err := r.Read()
-		if err != nil {
-			break
-		}
-		for _, i := range indices {
-			s := strings.TrimSpace(row[i])
-			if s != "" {
-				set[s] = struct{}{}
-			}
-		}
-	}
-
-	var symbols []string
-	for s := range set {
-		symbols = append(symbols, s)
-	}
-
-	return symbols, nil
+	res = append(res, src)
+	return res
 }
+
+
 
 
 
