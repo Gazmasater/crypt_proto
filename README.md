@@ -73,26 +73,28 @@ import (
 	"strings"
 	"time"
 
+	"crypt_proto/configs"
 	"crypt_proto/internal/market"
+	pb "crypt_proto/pb"
 	"crypt_proto/pkg/models"
 
 	"github.com/gorilla/websocket"
+	"google.golang.org/protobuf/proto"
 )
 
-type KuCoinCollector struct {
+type MEXCCollector struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
-	symbols  []string
 	conn     *websocket.Conn
-	wsURL    string
+	symbols  []string
 	lastData map[string]struct {
 		Bid, Ask, BidSize, AskSize float64
 	}
 }
 
-func NewKuCoinCollector(symbols []string) *KuCoinCollector {
+func NewMEXCCollector(symbols []string) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &KuCoinCollector{
+	return &MEXCCollector{
 		ctx:      ctx,
 		cancel:   cancel,
 		symbols:  symbols,
@@ -100,36 +102,20 @@ func NewKuCoinCollector(symbols []string) *KuCoinCollector {
 	}
 }
 
-func (c *KuCoinCollector) Name() string { return "KuCoin" }
+func (c *MEXCCollector) Name() string {
+	return "MEXC"
+}
 
-func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
-	if err := c.initWS(); err != nil {
-		return err
-	}
-
-	conn, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
+func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
+	conn, _, err := websocket.DefaultDialer.Dial(configs.MEXC_WS, nil)
 	if err != nil {
 		return err
 	}
 	c.conn = conn
-	log.Println("[KuCoin] Connected to WS")
+	log.Println("[MEXC] connected")
 
-	// subscribe
-	for _, s := range c.symbols {
-		sym := normalizeKucoinSymbol(s)
-
-		sub := map[string]any{
-			"id":       time.Now().UnixNano(),
-			"type":     "subscribe",
-			"topic":    "/market/ticker:" + sym,
-			"response": true,
-		}
-
-		if err := conn.WriteJSON(sub); err != nil {
-			return err
-		}
-
-		log.Println("[KuCoin] Subscribed:", sym)
+	if err := c.subscribe(); err != nil {
+		return err
 	}
 
 	go c.pingLoop()
@@ -138,7 +124,7 @@ func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
 	return nil
 }
 
-func (c *KuCoinCollector) Stop() error {
+func (c *MEXCCollector) Stop() error {
 	c.cancel()
 	if c.conn != nil {
 		_ = c.conn.Close()
@@ -146,8 +132,24 @@ func (c *KuCoinCollector) Stop() error {
 	return nil
 }
 
-func (c *KuCoinCollector) pingLoop() {
-	t := time.NewTicker(15 * time.Second)
+// --- приватные методы ---
+
+func (c *MEXCCollector) subscribe() error {
+	params := make([]string, 0, len(c.symbols))
+	for _, s := range c.symbols {
+		params = append(params, "spot@public.aggre.bookTicker.v3.api.pb@100ms@"+s)
+	}
+
+	sub := map[string]interface{}{
+		"method": "SUBSCRIPTION",
+		"params": params,
+	}
+
+	return c.conn.WriteJSON(sub)
+}
+
+func (c *MEXCCollector) pingLoop() {
+	t := time.NewTicker(configs.MEXC_PING_INTERVAL)
 	defer t.Stop()
 
 	for {
@@ -155,102 +157,101 @@ func (c *KuCoinCollector) pingLoop() {
 		case <-c.ctx.Done():
 			return
 		case <-t.C:
-			_ = c.conn.WriteJSON(map[string]string{"type": "ping"})
+			_ = c.conn.WriteMessage(websocket.PingMessage, []byte("hb"))
 		}
 	}
 }
 
-func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
-	defer func() {
-		if c.conn != nil {
-			c.conn.Close()
-		}
-	}()
+func (c *MEXCCollector) readLoop(out chan<- models.MarketData) {
+	_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
 
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
-			_, msg, err := c.conn.ReadMessage()
-			if err != nil {
-				log.Println("[KuCoin] read error:", err)
-				return
-			}
+		}
 
-			var raw map[string]any
-			if err := json.Unmarshal(msg, &raw); err != nil {
-				continue
-			}
+		mt, raw, err := c.conn.ReadMessage()
+		if err != nil {
+			log.Printf("[MEXC] read error: %v\n", err)
+			return
+		}
 
-			typ, _ := raw["type"].(string)
-			if typ == "welcome" || typ == "ack" || typ != "message" {
-				continue
-			}
+		_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
 
-			topic, _ := raw["topic"].(string)
-			data, ok := raw["data"].(map[string]any)
-			if !ok {
-				continue
-			}
+		if mt == websocket.TextMessage {
+			log.Printf("[MEXC] text: %s\n", raw)
+			continue
+		}
+		if mt != websocket.BinaryMessage {
+			continue
+		}
 
-			rawsymbol := strings.TrimPrefix(topic, "/market/ticker:")
-			symbol := market.NormalizeSymbol_Full(rawsymbol)
-			if symbol == "" {
-				continue
-			}
+		var wrap pb.PushDataV3ApiWrapper
+		if err := proto.Unmarshal(raw, &wrap); err != nil {
+			continue
+		}
 
-			bid := parseFloat(data["bestBid"])
-			ask := parseFloat(data["bestAsk"])
-			bidSize := parseFloat(data["sizeBid"])
-			askSize := parseFloat(data["sizeAsk"])
-
-			if bid == 0 || ask == 0 {
-				continue
-			}
-
-			// фильтрация повторов
-			if last, exists := c.lastData[symbol]; exists {
-				if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
-					continue // ничего не поменялось — пропускаем
-				}
-			}
-
-			// обновляем последние данные
-			c.lastData[symbol] = struct {
-				Bid, Ask, BidSize, AskSize float64
-			}{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
-
-			out <- models.MarketData{
-				Exchange: "KuCoin",
-				Symbol:   symbol,
-				Bid:      bid,
-				Ask:      ask,
-				// при желании можно добавить объёмы
-			}
+		md := c.handleWrapper(&wrap)
+		if md != nil {
+			out <- *md
 		}
 	}
 }
 
-func normalizeKucoinSymbol(s string) string {
-	if strings.Contains(s, "-") {
-		return s
-	}
-	if strings.HasSuffix(s, "USDT") {
-		return strings.Replace(s, "USDT", "-USDT", 1)
-	}
-	return s
-}
+func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.MarketData {
+	switch body := wrap.GetBody().(type) {
+	case *pb.PushDataV3ApiWrapper_PublicAggreBookTicker:
+		bt := body.PublicAggreBookTicker
 
-func parseFloat(v any) float64 {
-	switch t := v.(type) {
-	case string:
-		f, _ := strconv.ParseFloat(t, 64)
-		return f
-	case float64:
-		return t
+		bid, _ := strconv.ParseFloat(bt.GetBidPrice(), 64)
+		ask, _ := strconv.ParseFloat(bt.GetAskPrice(), 64)
+		bidSize, _ := strconv.ParseFloat(bt.GetBidQty(), 64)
+		askSize, _ := strconv.ParseFloat(bt.GetAskQty(), 64)
+
+		symbol := wrap.GetSymbol()
+		if symbol == "" {
+			ch := wrap.GetChannel()
+			if ch != "" {
+				parts := strings.Split(ch, "@")
+				symbol = parts[len(parts)-1]
+			}
+		}
+
+		symbol = market.NormalizeSymbol_Full(symbol)
+		if symbol == "" {
+			return nil
+		}
+
+		// фильтрация повторов
+		if last, exists := c.lastData[symbol]; exists {
+			if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+				return nil
+			}
+		}
+
+		// обновляем последние данные
+		c.lastData[symbol] = struct {
+			Bid, Ask, BidSize, AskSize float64
+		}{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
+
+		ts := time.Now().UnixMilli()
+		if t := wrap.GetSendTime(); t > 0 {
+			ts = t
+		}
+
+		return &models.MarketData{
+			Exchange:  "MEXC",
+			Symbol:    symbol,
+			Bid:       bid,
+			Ask:       ask,
+			BidSize:   bidSize,
+			AskSize:   askSize,
+			Timestamp: ts,
+		}
 	default:
-		return 0
+		return nil
 	}
 }
 
