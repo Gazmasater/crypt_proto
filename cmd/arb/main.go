@@ -37,18 +37,23 @@ func main() {
 	// === читаем whitelist из CSV ===
 	csvPath := "mexc_triangles_usdt_routes.csv"
 
+	// symbols для подписки
 	symbols, err := readSymbolsFromCSV(csvPath)
 	if err != nil {
 		log.Fatalf("read CSV symbols: %v", err)
 	}
-
 	log.Printf("Loaded %d unique symbols from %s", len(symbols), csvPath)
+
+	// создаём whitelist
+	whitelist := make([]string, len(symbols))
+	copy(whitelist, symbols)
 
 	var c collector.Collector
 
 	switch exchange {
 	case "mexc":
-		c = collector.NewMEXCCollector(symbols)
+		// передаём whitelist
+		c = collector.NewMEXCCollector(symbols, whitelist)
 
 	case "okx":
 		c = collector.NewOKXCollector(symbols)
@@ -152,5 +157,3 @@ func readSymbolsFromCSV(path string) ([]string, error) {
 
 	return out, nil
 }
-
-// ------------------------------------------------------------

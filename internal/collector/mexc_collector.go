@@ -17,30 +17,29 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const mexcChunkSize = 25
-
 type MEXCCollector struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-
-	symbols []string
-
-	conns []*websocket.Conn
-	mu    sync.Mutex
-
+	ctx      context.Context
+	cancel   context.CancelFunc
+	conn     *websocket.Conn
+	symbols  []string
+	allowed  map[string]struct{} // whitelist
 	lastData map[string]struct {
 		Bid, Ask, BidSize, AskSize float64
 	}
+	mu sync.Mutex
 }
 
-func NewMEXCCollector(symbols []string) *MEXCCollector {
+func NewMEXCCollector(symbols []string, whitelist []string) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
-
+	allowed := make(map[string]struct{}, len(whitelist))
+	for _, s := range whitelist {
+		allowed[market.NormalizeSymbol_Full(s)] = struct{}{}
+	}
 	return &MEXCCollector{
 		ctx:      ctx,
 		cancel:   cancel,
 		symbols:  symbols,
-		conns:    make([]*websocket.Conn, 0),
+		allowed:  allowed,
 		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
 	}
 }
@@ -49,77 +48,54 @@ func (c *MEXCCollector) Name() string {
 	return "MEXC"
 }
 
-// ------------------------------------------------------------
-// START
-// ------------------------------------------------------------
-
 func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
-	chunks := chunkSymbols(c.symbols, mexcChunkSize)
-
-	for i, chunk := range chunks {
-		conn, _, err := websocket.DefaultDialer.Dial(configs.MEXC_WS, nil)
-		if err != nil {
-			return err
-		}
-
-		log.Printf("[MEXC] connected chunk %d/%d (%d symbols)", i+1, len(chunks), len(chunk))
-
-		c.mu.Lock()
-		c.conns = append(c.conns, conn)
-		c.mu.Unlock()
-
-		if err := c.subscribe(conn, chunk); err != nil {
-			return err
-		}
-
-		go c.pingLoop(conn)
-		go c.readLoop(conn, out)
+	conn, _, err := websocket.DefaultDialer.Dial(configs.MEXC_WS, nil)
+	if err != nil {
+		return err
 	}
+	c.conn = conn
+	log.Println("[MEXC] connected")
+
+	// подписка чанками
+	if err := c.subscribeChunks(25); err != nil {
+		return err
+	}
+
+	go c.pingLoop()
+	go c.readLoop(out)
 
 	return nil
 }
-
-// ------------------------------------------------------------
-// STOP
-// ------------------------------------------------------------
 
 func (c *MEXCCollector) Stop() error {
 	c.cancel()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for _, conn := range c.conns {
-		_ = conn.Close()
+	if c.conn != nil {
+		_ = c.conn.Close()
 	}
-
 	return nil
 }
 
-// ------------------------------------------------------------
-// SUBSCRIBE
-// ------------------------------------------------------------
+// ----------------- приватные методы -----------------
 
-func (c *MEXCCollector) subscribe(conn *websocket.Conn, symbols []string) error {
-	params := make([]string, 0, len(symbols))
-
-	for _, s := range symbols {
-		params = append(params, "spot@public.aggre.bookTicker.v3.api.pb@100ms@"+s)
+func (c *MEXCCollector) subscribeChunks(chunkSize int) error {
+	chunks := chunkSymbols(c.symbols, chunkSize)
+	for _, chunk := range chunks {
+		params := make([]string, 0, len(chunk))
+		for _, s := range chunk {
+			params = append(params, "spot@public.aggre.bookTicker.v3.api.pb@100ms@"+s)
+		}
+		sub := map[string]interface{}{
+			"method": "SUBSCRIPTION",
+			"params": params,
+		}
+		if err := c.conn.WriteJSON(sub); err != nil {
+			return err
+		}
 	}
-
-	req := map[string]any{
-		"method": "SUBSCRIPTION",
-		"params": params,
-	}
-
-	return conn.WriteJSON(req)
+	return nil
 }
 
-// ------------------------------------------------------------
-// PING
-// ------------------------------------------------------------
-
-func (c *MEXCCollector) pingLoop(conn *websocket.Conn) {
+func (c *MEXCCollector) pingLoop() {
 	t := time.NewTicker(configs.MEXC_PING_INTERVAL)
 	defer t.Stop()
 
@@ -128,17 +104,13 @@ func (c *MEXCCollector) pingLoop(conn *websocket.Conn) {
 		case <-c.ctx.Done():
 			return
 		case <-t.C:
-			_ = conn.WriteMessage(websocket.PingMessage, []byte("hb"))
+			_ = c.conn.WriteMessage(websocket.PingMessage, []byte("hb"))
 		}
 	}
 }
 
-// ------------------------------------------------------------
-// READ LOOP
-// ------------------------------------------------------------
-
-func (c *MEXCCollector) readLoop(conn *websocket.Conn, out chan<- models.MarketData) {
-	_ = conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
+func (c *MEXCCollector) readLoop(out chan<- models.MarketData) {
+	_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
 
 	for {
 		select {
@@ -147,13 +119,17 @@ func (c *MEXCCollector) readLoop(conn *websocket.Conn, out chan<- models.MarketD
 		default:
 		}
 
-		mt, raw, err := conn.ReadMessage()
+		mt, raw, err := c.conn.ReadMessage()
 		if err != nil {
-			log.Printf("[MEXC] read error: %v", err)
+			log.Printf("[MEXC] read error: %v\n", err)
 			return
 		}
 
-		_ = conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
+		_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
+
+		if mt == websocket.TextMessage {
+			continue // игнорируем текст
+		}
 
 		if mt != websocket.BinaryMessage {
 			continue
@@ -164,16 +140,11 @@ func (c *MEXCCollector) readLoop(conn *websocket.Conn, out chan<- models.MarketD
 			continue
 		}
 
-		md := c.handleWrapper(&wrap)
-		if md != nil {
+		if md := c.handleWrapper(&wrap); md != nil {
 			out <- *md
 		}
 	}
 }
-
-// ------------------------------------------------------------
-// MESSAGE HANDLER
-// ------------------------------------------------------------
 
 func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.MarketData {
 	switch body := wrap.GetBody().(type) {
@@ -183,7 +154,7 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 		bid, _ := strconv.ParseFloat(bt.GetBidPrice(), 64)
 		ask, _ := strconv.ParseFloat(bt.GetAskPrice(), 64)
 		bidSize, _ := strconv.ParseFloat(bt.GetBidQuantity(), 64)
-		askSize, _ := strconv.ParseFloat(bt.AskQuantity, 64)
+		askSize, _ := strconv.ParseFloat(bt.GetAskQuantity(), 64)
 
 		symbol := wrap.GetSymbol()
 		if symbol == "" {
@@ -199,17 +170,25 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 			return nil
 		}
 
-		// фильтрация повторов
-		if last, exists := c.lastData[symbol]; exists {
-			if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+		// фильтрация по whitelist
+		if len(c.allowed) > 0 {
+			if _, ok := c.allowed[symbol]; !ok {
 				return nil
 			}
 		}
 
-		// обновляем последние данные
+		// дедупликация
+		c.mu.Lock()
+		last, ok := c.lastData[symbol]
+		if ok && last.Bid == bid && last.Ask == ask &&
+			last.BidSize == bidSize && last.AskSize == askSize {
+			c.mu.Unlock()
+			return nil
+		}
 		c.lastData[symbol] = struct {
 			Bid, Ask, BidSize, AskSize float64
-		}{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
+		}{bid, ask, bidSize, askSize}
+		c.mu.Unlock()
 
 		ts := time.Now().UnixMilli()
 		if t := wrap.GetSendTime(); t > 0 {
@@ -225,29 +204,19 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 			AskSize:   askSize,
 			Timestamp: ts,
 		}
+
 	default:
 		return nil
 	}
 }
 
-// ------------------------------------------------------------
-// HELPERS
-// ------------------------------------------------------------
-
+// разбивает слайс на чанки
 func chunkSymbols(src []string, size int) [][]string {
-	if size <= 0 {
-		return nil
-	}
-
 	var out [][]string
-	for len(src) > size {
-		out = append(out, src[:size])
+	for size < len(src) {
+		out = append(out, src[:size:size])
 		src = src[size:]
 	}
-
-	if len(src) > 0 {
-		out = append(out, src)
-	}
-
+	out = append(out, src)
 	return out
 }
