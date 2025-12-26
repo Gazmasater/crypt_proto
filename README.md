@@ -451,5 +451,53 @@ func readSymbolsFromCSV(path string) ([]string, error) {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidIfaceAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidIfaceAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use collector.NewMEXCCollector(symbols, whitelist, marketDataPool) (value of type *collector.MEXCCollector) as collector.Collector value in assignment: *collector.MEXCCollector does not implement collector.Collector (wrong type for method Start)\n\t\thave Start(chan<- *models.MarketData) error\n\t\twant Start(chan<- models.MarketData) error",
+	"source": "compiler",
+	"startLine[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use marketDataCh (variable of type chan *models.MarketData) as chan<- models.MarketData value in argument to c.Start",
+	"source": "compiler",
+	"startLineNumber": 76,
+	"startColumn": 20,
+	"endLineNumber": 76,
+	"endColumn": 32,
+	"origin": "extHost1"
+}]Number": 63,
+	"startColumn": 7,
+	"endLineNumber": 63,
+	"endColumn": 69,
+	"origin": "extHost1"
+}]
+
+
+
+
+
 
 
