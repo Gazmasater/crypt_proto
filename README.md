@@ -250,6 +250,9 @@ func main() {
 	log.Printf("Done! Output saved to %s", outputCSV)
 }
 
+go run .
+2025/12/26 14:15:23.823606 decode exchangeInfo: invalid character '<' looking for beginning of value
+exit status 1
 
 
 
