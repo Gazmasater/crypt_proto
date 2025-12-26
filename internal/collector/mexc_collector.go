@@ -17,18 +17,22 @@ import (
 )
 
 type MEXCCollector struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	conn    *websocket.Conn
-	symbols []string
+	ctx      context.Context
+	cancel   context.CancelFunc
+	conn     *websocket.Conn
+	symbols  []string
+	lastData map[string]struct {
+		Bid, Ask, BidSize, AskSize float64
+	}
 }
 
 func NewMEXCCollector(symbols []string) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &MEXCCollector{
-		ctx:     ctx,
-		cancel:  cancel,
-		symbols: symbols,
+		ctx:      ctx,
+		cancel:   cancel,
+		symbols:  symbols,
+		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
 	}
 }
 
@@ -139,8 +143,11 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 	switch body := wrap.GetBody().(type) {
 	case *pb.PushDataV3ApiWrapper_PublicAggreBookTicker:
 		bt := body.PublicAggreBookTicker
+
 		bid, _ := strconv.ParseFloat(bt.GetBidPrice(), 64)
 		ask, _ := strconv.ParseFloat(bt.GetAskPrice(), 64)
+		bidSize, _ := strconv.ParseFloat(bt.GetBidQuantity(), 64)
+		askSize, _ := strconv.ParseFloat(bt.AskQuantity, 64)
 
 		symbol := wrap.GetSymbol()
 		if symbol == "" {
@@ -148,7 +155,6 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 			if ch != "" {
 				parts := strings.Split(ch, "@")
 				symbol = parts[len(parts)-1]
-
 			}
 		}
 
@@ -156,6 +162,18 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 		if symbol == "" {
 			return nil
 		}
+
+		// фильтрация повторов
+		if last, exists := c.lastData[symbol]; exists {
+			if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+				return nil
+			}
+		}
+
+		// обновляем последние данные
+		c.lastData[symbol] = struct {
+			Bid, Ask, BidSize, AskSize float64
+		}{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
 
 		ts := time.Now().UnixMilli()
 		if t := wrap.GetSendTime(); t > 0 {
@@ -167,14 +185,11 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 			Symbol:    symbol,
 			Bid:       bid,
 			Ask:       ask,
+			BidSize:   bidSize,
+			AskSize:   askSize,
 			Timestamp: ts,
 		}
 	default:
 		return nil
 	}
 }
-
-// простой split (чтобы не импортировать strings, если уже не использовано)
-//func split(s, sep string) []string {
-//	return []string{}
-//}
