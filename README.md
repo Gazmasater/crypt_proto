@@ -75,28 +75,25 @@ import (
 	"sort"
 )
 
-// ===== OKX response =====
-
-type okxInstrumentsResp struct {
-	Code string           `json:"code"`
-	Data []okxInstrument `json:"data"`
+// Ответ KuCoin
+type kucoinExchangeInfo struct {
+	Code string `json:"code"`
+	Data []struct {
+		Symbol         string `json:"symbol"`
+		BaseCurrency   string `json:"baseCurrency"`
+		QuoteCurrency  string `json:"quoteCurrency"`
+		EnableTrading  bool   `json:"enableTrading"`
+	} `json:"data"`
 }
 
-type okxInstrument struct {
-	InstID   string `json:"instId"`
-	BaseCcy string `json:"baseCcy"`
-	QuoteCcy string `json:"quoteCcy"`
-	State    string `json:"state"`
-}
-
-// ===== internal structs =====
-
+// Маркет
 type pairMarket struct {
 	Symbol string
 	Base   string
 	Quote  string
 }
 
+// ключ без направления
 type pairKey struct {
 	A, B string
 }
@@ -104,55 +101,44 @@ type pairKey struct {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	url := "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
-
-	resp, err := http.Get(url)
+	resp, err := http.Get("https://api.kucoin.com/api/v2/symbols")
 	if err != nil {
-		log.Fatalf("get instruments: %v", err)
+		log.Fatalf("get symbols: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		log.Fatalf("bad status %d: %s", resp.StatusCode, string(b))
+		log.Fatalf("status %d: %s", resp.StatusCode, string(b))
 	}
 
-	var data okxInstrumentsResp
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		log.Fatalf("decode json: %v", err)
+	var info kucoinExchangeInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		log.Fatalf("decode: %v", err)
 	}
 
-	if data.Code != "0" {
-		log.Fatalf("api error code=%s", data.Code)
-	}
+	log.Printf("symbols from API: %d", len(info.Data))
 
-	log.Printf("total instruments from OKX: %d", len(data.Data))
-
-	// ============================
-	// 1. фильтрация рынков
-	// ============================
-	markets := make([]pairMarket, 0, len(data.Data))
-
-	for _, s := range data.Data {
-		if s.BaseCcy == "" || s.QuoteCcy == "" {
+	// 1) фильтрация маркетов
+	markets := make([]pairMarket, 0, len(info.Data))
+	for _, s := range info.Data {
+		if !s.EnableTrading {
 			continue
 		}
-		if s.State != "live" {
+		if s.BaseCurrency == "" || s.QuoteCurrency == "" {
 			continue
 		}
 
 		markets = append(markets, pairMarket{
-			Symbol: s.InstID,
-			Base:   s.BaseCcy,
-			Quote:  s.QuoteCcy,
+			Symbol: s.Symbol,
+			Base:   s.BaseCurrency,
+			Quote:  s.QuoteCurrency,
 		})
 	}
 
-	log.Printf("filtered spot markets: %d", len(markets))
+	log.Printf("filtered markets: %d", len(markets))
 
-	// ============================
-	// 2. строим граф валют
-	// ============================
+	// 2) строим граф валют
 	pairmap := make(map[pairKey][]pairMarket)
 	adj := make(map[string]map[string]struct{})
 
@@ -177,11 +163,9 @@ func main() {
 		addEdge(b, a)
 	}
 
-	log.Printf("currencies: %d, pair-keys: %d", len(adj), len(pairmap))
+	log.Printf("currencies: %d, pair keys: %d", len(adj), len(pairmap))
 
-	// ============================
-	// 3. индексация валют
-	// ============================
+	// 3) индексация валют
 	coins := make([]string, 0, len(adj))
 	for c := range adj {
 		coins = append(coins, c)
@@ -198,22 +182,20 @@ func main() {
 		neighbors[i] = make(map[int]struct{})
 	}
 
-	for c, ns := range adj {
+	for c, neighs := range adj {
 		i := idx[c]
-		for n := range ns {
-			j := idx[n]
+		for nb := range neighs {
+			j := idx[nb]
 			neighbors[i][j] = struct{}{}
 		}
 	}
 
-	// ============================
-	// 4. поиск треугольников
-	// ============================
+	// 4) поиск треугольников валют
 	type triangle struct {
 		A, B, C string
 	}
 
-	triangles := make([]triangle, 0)
+	var triangles []triangle
 
 	for i := 0; i < len(coins); i++ {
 		ni := neighbors[i]
@@ -239,12 +221,10 @@ func main() {
 		}
 	}
 
-	log.Printf("found currency triangles: %d", len(triangles))
+	log.Printf("currency triangles: %d", len(triangles))
 
-	// ============================
-	// 5. запись CSV
-	// ============================
-	outFile := "triangles_markets_okx.csv"
+	// 5) запись CSV
+	outFile := "triangles_markets_kucoin.csv"
 	f, err := os.Create(outFile)
 	if err != nil {
 		log.Fatalf("create %s: %v", outFile, err)
@@ -254,13 +234,11 @@ func main() {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	if err := w.Write([]string{
+	_ = w.Write([]string{
 		"base1", "quote1",
 		"base2", "quote2",
 		"base3", "quote3",
-	}); err != nil {
-		log.Fatalf("write header: %v", err)
-	}
+	})
 
 	pick := func(x, y string) (pairMarket, bool) {
 		key := pairKey{A: x, B: y}
@@ -290,7 +268,7 @@ func main() {
 		}
 
 		if err := w.Write(rec); err != nil {
-			log.Fatalf("write row: %v", err)
+			log.Fatalf("write record: %v", err)
 		}
 		count++
 	}
@@ -298,6 +276,7 @@ func main() {
 	log.Printf("written triangles to %s: %d", outFile, count)
 	fmt.Println("Готово:", outFile)
 }
+
 
 
 
