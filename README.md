@@ -63,32 +63,203 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.004.pb.gz
-File: arb
-Build ID: 8d556bf00aa7f5ef0291dc0f823e64c039de5d63
-Type: cpu
-Time: 2025-12-27 01:06:44 MSK
-Duration: 30.06s, Total samples = 3.34s (11.11%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 1670ms, 50.00% of 3340ms total
-Dropped 120 nodes (cum <= 16.70ms)
-Showing top 10 nodes out of 190
-      flat  flat%   sum%        cum   cum%
-    1060ms 31.74% 31.74%     1060ms 31.74%  internal/runtime/syscall.Syscall6
-     200ms  5.99% 37.72%      200ms  5.99%  runtime.futex
-      90ms  2.69% 40.42%       90ms  2.69%  strconv.readFloat
-      50ms  1.50% 41.92%      380ms 11.38%  google.golang.org/protobuf/internal/impl.(*MessageInfo).unmarshalPointerEager
-      50ms  1.50% 43.41%       50ms  1.50%  runtime.memclrNoHeapPointers
-      50ms  1.50% 44.91%       50ms  1.50%  runtime.scanblock
-      50ms  1.50% 46.41%       80ms  2.40%  runtime.stealWork
-      40ms  1.20% 47.60%      400ms 11.98%  crypt_proto/internal/collector.(*MEXCCollector).handleWrapper
-      40ms  1.20% 48.80%       40ms  1.20%  runtime.findObject
-      40ms  1.20% 50.00%       40ms  1.20%  runtime.getMCache (inline)
-(pprof) 
+package collector
 
+import (
+	"context"
+	"log"
+	"strings"
+	"time"
+
+	"crypt_proto/configs"
+	"crypt_proto/pkg/models"
+	pb "crypt_proto/pb"
+
+	"github.com/gorilla/websocket"
+	"google.golang.org/protobuf/proto"
+)
+
+type MEXCCollector struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	conn     *websocket.Conn
+	symbols  []string
+	lastData map[string]*models.MarketData
+}
+
+func NewMEXCCollector(symbols []string) *MEXCCollector {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &MEXCCollector{
+		ctx:      ctx,
+		cancel:   cancel,
+		symbols:  symbols,
+		lastData: make(map[string]*models.MarketData, len(symbols)),
+	}
+}
+
+// Имя биржи
+func (c *MEXCCollector) Name() string {
+	return "MEXC"
+}
+
+// Старт
+func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
+	conn, _, err := websocket.DefaultDialer.Dial(configs.MEXC_WS, nil)
+	if err != nil {
+		return err
+	}
+	c.conn = conn
+	log.Println("[MEXC] connected")
+
+	if err := c.subscribeAll(); err != nil {
+		return err
+	}
+
+	go c.pingLoop()
+	go c.readLoop(out)
+	return nil
+}
+
+// Стоп
+func (c *MEXCCollector) Stop() error {
+	c.cancel()
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+	return nil
+}
+
+// ----------------- Внутренние методы -----------------
+
+// Подписка на все пары чанками по N
+func (c *MEXCCollector) subscribeAll() error {
+	chunkSize := 25
+	chunks := chunkSymbols(c.symbols, chunkSize)
+
+	for _, chunk := range chunks {
+		params := make([]string, 0, len(chunk))
+		for _, s := range chunk {
+			params = append(params, "spot@public.aggre.bookTicker.v3.api.pb@100ms@"+s)
+		}
+		sub := map[string]interface{}{
+			"method": "SUBSCRIPTION",
+			"params": params,
+		}
+		if err := c.conn.WriteJSON(sub); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Пинг
+func (c *MEXCCollector) pingLoop() {
+	t := time.NewTicker(configs.MEXC_PING_INTERVAL)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			_ = c.conn.WriteMessage(websocket.PingMessage, []byte("hb"))
+		}
+	}
+}
+
+// Основной цикл чтения
+func (c *MEXCCollector) readLoop(out chan<- models.MarketData) {
+	_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+
+		mt, raw, err := c.conn.ReadMessage()
+		if err != nil {
+			log.Printf("[MEXC] read error: %v", err)
+			return
+		}
+		_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
+
+		if mt != websocket.BinaryMessage {
+			continue
+		}
+
+		var wrap pb.PushDataV3ApiWrapper
+		if err := proto.Unmarshal(raw, &wrap); err != nil {
+			continue
+		}
+
+		if md := c.handleWrapper(&wrap); md != nil {
+			out <- *md
+		}
+	}
+}
+
+// Преобразуем protobuf → MarketData
+func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.MarketData {
+	body := wrap.GetBody()
+	pa, ok := body.(*pb.PushDataV3ApiWrapper_PublicAggreBookTicker)
+	if !ok {
+		return nil
+	}
+
+	bt := pa.PublicAggreBookTicker
+
+	symbol := wrap.GetSymbol()
+	if symbol == "" {
+		ch := wrap.GetChannel()
+		if ch != "" {
+			parts := strings.Split(ch, "@")
+			symbol = parts[len(parts)-1]
+		}
+	}
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if symbol == "" {
+		return nil
+	}
+
+	// Проверка изменений
+	last, exists := c.lastData[symbol]
+	if exists && last.Bid == bt.GetBidPrice() && last.Ask == bt.GetAskPrice() &&
+		last.BidSize == bt.GetBidQuantity() && last.AskSize == bt.GetAskQuantity() {
+		return nil
+	}
+
+	md := &models.MarketData{
+		Exchange:  "MEXC",
+		Symbol:    symbol,
+		BidStr:    bt.GetBidPrice(),
+		AskStr:    bt.GetAskPrice(),
+		BidSizeStr: bt.GetBidQuantity(),
+		AskSizeStr: bt.GetAskQuantity(),
+		Timestamp: time.Now().UnixMilli(),
+	}
+
+	c.lastData[symbol] = md
+	return md
+}
+
+// ----------------- Вспомогательные функции -----------------
+
+// Разбить слайс символов на чанки
+func chunkSymbols(src []string, size int) [][]string {
+	if len(src) == 0 || size <= 0 {
+		return nil
+	}
+
+	var out [][]string
+	for len(src) > size {
+		out = append(out, src[:size])
+		src = src[size:]
+	}
+	out = append(out, src)
+	return out
+}
 
 
 
