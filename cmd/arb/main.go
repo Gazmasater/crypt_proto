@@ -5,74 +5,79 @@ import (
 	"crypt_proto/pkg/models"
 	"encoding/csv"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
-
-	"net/http"
-	_ "net/http/pprof"
 
 	"github.com/joho/godotenv"
 )
 
 func main() {
 	_ = godotenv.Load(".env")
+
 	go func() {
 		log.Println("pprof on http://localhost:6060/debug/pprof/")
 		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
 			log.Printf("pprof server error: %v", err)
 		}
 	}()
+
 	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
 	if exchange == "" {
 		log.Fatal("Set EXCHANGE env variable: mexc | okx | kucoin")
 	}
 	log.Println("EXCHANGE:", exchange)
 
+	// канал маркет-данных
 	marketDataCh := make(chan models.MarketData, 1000)
 
-	var c collector.Collector
+	// === читаем whitelist из CSV ===
+	csvPath := "mexc_triangles_usdt_routes.csv"
 
-	csvPath := "mexc_triangles_usdt_routes.csv" // твой CSV с белым списком
 	symbols, err := readSymbolsFromCSV(csvPath)
 	if err != nil {
-		log.Fatal("read CSV symbols:", err)
+		log.Fatalf("read CSV symbols: %v", err)
 	}
-	log.Printf("Subscribing to %d symbols", len(symbols))
 
-	csvPath = "mexc_triangles_usdt_routes.csv" // твой CSV с белым списком
-	symbols, err = readSymbolsFromCSV(csvPath)
-	if err != nil {
-		log.Fatal("read CSV symbols:", err)
-	}
-	log.Printf("Subscribing to %d symbols", len(symbols))
+	log.Printf("Loaded %d unique symbols from %s", len(symbols), csvPath)
+
+	var c collector.Collector
 
 	switch exchange {
 	case "mexc":
 		c = collector.NewMEXCCollector(symbols)
+
 	case "okx":
-		c = collector.NewOKXCollector([]string{"BTC-USDT", "ETH-USDT", "ETH-BTC"})
+		c = collector.NewOKXCollector(symbols)
+
 	case "kucoin":
-		c = collector.NewKuCoinCollector([]string{"BTCUSDT", "ETHUSDT", "ETHBTC"})
+		c = collector.NewKuCoinCollector(symbols)
+
 	default:
 		log.Fatal("Unknown exchange:", exchange)
 	}
 
-	// стартуем
+	// старт
 	if err := c.Start(marketDataCh); err != nil {
-		log.Fatal(err)
+		log.Fatal("start collector:", err)
 	}
 
-	// выводим данные
+	// consumer
 	go func() {
-		for data := range marketDataCh {
-			log.Printf("[%s] %s bid=%.8f ask=%.8f\n",
-				data.Exchange, data.Symbol, data.Bid, data.Ask)
+		for md := range marketDataCh {
+			log.Printf("[%s] %s bid=%.8f ask=%.8f",
+				md.Exchange,
+				md.Symbol,
+				md.Bid,
+				md.Ask,
+			)
 		}
 	}()
 
-	// корректное завершение по Ctrl+C
+	// graceful shutdown
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
@@ -83,6 +88,10 @@ func main() {
 	}
 }
 
+// ------------------------------------------------------------
+// CSV → symbols
+// ------------------------------------------------------------
+
 func readSymbolsFromCSV(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -91,45 +100,57 @@ func readSymbolsFromCSV(path string) ([]string, error) {
 	defer f.Close()
 
 	r := csv.NewReader(f)
+
 	header, err := r.Read()
 	if err != nil {
 		return nil, err
 	}
 
-	// находим индексы колонок leg1/2/3
-	idx := map[string]int{}
+	colIndex := make(map[string]int)
 	for i, h := range header {
-		idx[strings.ToLower(strings.TrimSpace(h))] = i
+		colIndex[strings.ToLower(strings.TrimSpace(h))] = i
 	}
 
-	legs := []string{"leg1_symbol", "leg2_symbol", "leg3_symbol"}
-	var indices []int
-	for _, l := range legs {
-		if i, ok := idx[l]; ok {
-			indices = append(indices, i)
-		} else {
-			return nil, &csv.ParseError{StartLine: 0, Err: csv.ErrFieldCount}
+	required := []string{
+		"leg1_symbol",
+		"leg2_symbol",
+		"leg3_symbol",
+	}
+
+	var idx []int
+	for _, name := range required {
+		i, ok := colIndex[name]
+		if !ok {
+			return nil, csv.ErrFieldCount
 		}
+		idx = append(idx, i)
 	}
 
-	set := map[string]struct{}{}
+	uniq := make(map[string]struct{})
+
 	for {
 		row, err := r.Read()
 		if err != nil {
 			break
 		}
-		for _, i := range indices {
+
+		for _, i := range idx {
+			if i >= len(row) {
+				continue
+			}
 			s := strings.TrimSpace(row[i])
 			if s != "" {
-				set[s] = struct{}{}
+				uniq[s] = struct{}{}
 			}
 		}
 	}
 
-	var symbols []string
-	for s := range set {
-		symbols = append(symbols, s)
+	out := make([]string, 0, len(uniq))
+	for s := range uniq {
+		out = append(out, s)
 	}
 
-	return symbols, nil
+	return out, nil
 }
+
+// ------------------------------------------------------------
