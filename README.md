@@ -65,6 +65,7 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 package main
 
 import (
+	"bufio"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -72,209 +73,390 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
+	"time"
 )
 
-type MEXCExchangeInfo struct {
-	Data []struct {
-		Symbol            string `json:"symbol"`
-		BaseAsset         string `json:"baseAsset"`
-		QuoteAsset        string `json:"quoteAsset"`
-		State             string `json:"state"`
-		PricePrecision    int    `json:"pricePrecision"`
-		QuantityPrecision int    `json:"quantityPrecision"`
-		MinOrderQty       string `json:"minOrderQty"`
-		MaxOrderQty       string `json:"maxOrderQty"`
-	} `json:"data"`
+const (
+	InputCSV      = "triangles_usdt_routes.csv"
+	OutputCSV     = "triangles_usdt_routes_market.csv"
+	BlacklistFile = "blacklist_symbols.txt"
+	BaseURL       = "https://api.mexc.com"
+)
+
+type exchangeInfo struct {
+	Symbols []symbolInfo `json:"symbols"`
 }
 
-type Market struct {
-	Symbol   string
-	Base     string
-	Quote    string
-	LotSize  string
-	MinQty   string
-	MaxQty   string
-	TickSize string
-}
+type symbolInfo struct {
+	Symbol string `json:"symbol"`
+	Status string `json:"status"`
 
-func pow10neg(n int) string {
-	if n <= 0 {
-		return "1"
-	}
-	return "0." + strings.Repeat("0", n-1) + "1"
-}
+	OrderTypes  []string `json:"orderTypes"`
+	Permissions []string `json:"permissions"`
+	St          bool     `json:"st"`
 
-// BUY если from=quote → to=base
-// SELL если from=base → to=quote
-func direction(from, to, base, quote string) string {
-	switch {
-	case strings.EqualFold(from, base) && strings.EqualFold(to, quote):
-		return "SELL"
-	case strings.EqualFold(from, quote) && strings.EqualFold(to, base):
-		return "BUY"
-	default:
-		return "UNKNOWN"
-	}
+	BaseSizePrec string `json:"baseSizePrecision"`
+
+	QuoteAmountPrecisionMarket string `json:"quoteAmountPrecisionMarket"`
+	QuoteAmountPrecision       string `json:"quoteAmountPrecision"`
 }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	inputCSV := "triangles_markets.csv"
-	outputCSV := "triangles_routes_full.csv"
-
-	// === HTTP REQUEST WITH HEADERS (IMPORTANT) ===
-	req, err := http.NewRequest("GET", "https://www.mexc.com/api/v2/market/symbols", nil)
+	// 1) Load existing blacklist (or empty if missing)
+	bl, err := loadBlacklist(BlacklistFile)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("ERR: load blacklist: %v", err)
 	}
+	log.Printf("OK: loaded blacklist: %d symbols (%s)", len(bl), BlacklistFile)
 
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// 2) Load exchangeInfo
+	rules, err := loadRules()
 	if err != nil {
-		log.Fatalf("request failed: %v", err)
+		log.Fatalf("ERR: load exchangeInfo: %v", err)
 	}
-	defer resp.Body.Close()
+	log.Printf("OK: exchangeInfo symbols: %d", len(rules))
 
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		log.Fatalf("HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	var info MEXCExchangeInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		log.Fatalf("decode exchangeInfo: %v", err)
-	}
-
-	// === BUILD MARKET MAP ===
-	markets := make(map[string]Market)
-
-	for _, s := range info.Data {
-		if s.State != "ENABLED" {
+	// 3) Build "startup" blacklist from reliable fields ONLY
+	added := 0
+	for sym, s := range rules {
+		if marketOk(s) {
 			continue
 		}
-
-		markets[s.Symbol] = Market{
-			Symbol:   s.Symbol,
-			Base:     s.BaseAsset,
-			Quote:    s.QuoteAsset,
-			LotSize:  pow10neg(s.QuantityPrecision),
-			TickSize: pow10neg(s.PricePrecision),
-			MinQty:   s.MinOrderQty,
-			MaxQty:   s.MaxOrderQty,
+		reason := notOkReason(s)
+		if reason == "" {
+			reason = "not eligible"
+		}
+		if _, exists := bl[sym]; !exists {
+			bl[sym] = reason
+			added++
 		}
 	}
+	log.Printf("OK: startup blacklist added=%d total=%d", added, len(bl))
 
-	log.Printf("Loaded active markets: %d", len(markets))
+	// 4) Save merged blacklist
+	if err := saveBlacklist(BlacklistFile, bl); err != nil {
+		log.Fatalf("ERR: save blacklist: %v", err)
+	}
+	log.Printf("OK: saved blacklist -> %s", BlacklistFile)
 
-	// === READ TRIANGLE ROUTES ===
-	inFile, err := os.Open(inputCSV)
+	// 5) Filter triangles and write output CSV
+	if err := buildOutputCSV(rules, bl); err != nil {
+		log.Fatalf("ERR: build output csv: %v", err)
+	}
+}
+
+func buildOutputCSV(rules map[string]symbolInfo, bl map[string]string) error {
+	in, err := os.Open(InputCSV)
 	if err != nil {
-		log.Fatalf("open input csv: %v", err)
+		return fmt.Errorf("open %s: %w", InputCSV, err)
 	}
-	defer inFile.Close()
+	defer in.Close()
 
-	reader := csv.NewReader(inFile)
-	header, err := reader.Read()
+	cr := csv.NewReader(in)
+	header, err := cr.Read()
 	if err != nil {
-		log.Fatalf("read header: %v", err)
+		return fmt.Errorf("read header: %w", err)
 	}
 
-	if len(header) < 6 {
-		log.Fatalf("CSV must contain 6 columns")
+	iL1 := colIndex(header, "leg1_symbol")
+	iL2 := colIndex(header, "leg2_symbol")
+	iL3 := colIndex(header, "leg3_symbol")
+	if iL1 < 0 || iL2 < 0 || iL3 < 0 {
+		return fmt.Errorf("нет колонок leg1_symbol/leg2_symbol/leg3_symbol в CSV")
 	}
 
-	// === OUTPUT FILE ===
-	outFile, err := os.Create(outputCSV)
+	// Add precision columns
+	header = append(header,
+		"leg1_qty_dp", "leg2_qty_dp", "leg3_qty_dp",
+		"leg1_quote_dp_market", "leg2_quote_dp_market", "leg3_quote_dp_market",
+	)
+
+	out, err := os.Create(OutputCSV)
 	if err != nil {
-		log.Fatalf("create output csv: %v", err)
+		return fmt.Errorf("create %s: %w", OutputCSV, err)
 	}
-	defer outFile.Close()
+	defer out.Close()
 
-	writer := csv.NewWriter(outFile)
-	defer writer.Flush()
+	cw := csv.NewWriter(out)
+	defer cw.Flush()
 
-	writer.Write([]string{
-		"leg1_symbol", "leg1_from", "leg1_to", "leg1_lot", "leg1_min", "leg1_max", "leg1_tick",
-		"leg2_symbol", "leg2_from", "leg2_to", "leg2_lot", "leg2_min", "leg2_max", "leg2_tick",
-		"leg3_symbol", "leg3_from", "leg3_to", "leg3_lot", "leg3_min", "leg3_max", "leg3_tick",
-		"start_amount",
-		"fail_reason",
-	})
+	if err := cw.Write(header); err != nil {
+		return fmt.Errorf("write header: %w", err)
+	}
+
+	read := 0
+	written := 0
+	skippedNoSymbol := 0
+	skippedBlacklisted := 0
+	skippedNotEligible := 0
 
 	for {
-		row, err := reader.Read()
+		row, err := cr.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			return fmt.Errorf("read csv: %w", err)
+		}
+		read++
+
+		s1 := strings.TrimSpace(row[iL1])
+		s2 := strings.TrimSpace(row[iL2])
+		s3 := strings.TrimSpace(row[iL3])
+		if s1 == "" || s2 == "" || s3 == "" {
+			skippedNoSymbol++
+			continue
 		}
 
-		base1, quote1 := row[0], row[1]
-		base2, quote2 := row[2], row[3]
-		base3, quote3 := row[4], row[5]
-
-		legs := []struct {
-			From  string
-			To    string
-			Base  string
-			Quote string
-		}{
-			{base1, quote1, base1, quote1},
-			{base2, quote2, base2, quote2},
-			{base3, quote3, base3, quote3},
+		// if any leg is in blacklist -> skip
+		if isBlacklisted(bl, s1) || isBlacklisted(bl, s2) || isBlacklisted(bl, s3) {
+			skippedBlacklisted++
+			continue
 		}
 
-		out := make([]string, 0, 30)
-		fail := ""
-
-		for _, leg := range legs {
-			found := false
-
-			for _, m := range markets {
-				if (m.Base == leg.Base && m.Quote == leg.Quote) ||
-					(m.Base == leg.Quote && m.Quote == leg.Base) {
-
-					dir := direction(leg.From, leg.To, m.Base, m.Quote)
-					if dir == "UNKNOWN" {
-						fail = "direction_error"
-					}
-
-					out = append(out,
-						m.Symbol,
-						leg.From,
-						leg.To,
-						m.LotSize,
-						m.MinQty,
-						m.MaxQty,
-						m.TickSize,
-					)
-					found = true
-					break
-				}
-			}
-
-			if !found {
-				out = append(out, "", leg.From, leg.To, "", "", "", "")
-				if fail == "" {
-					fail = "pair_not_found"
-				}
-			}
+		r1, ok1 := rules[s1]
+		r2, ok2 := rules[s2]
+		r3, ok3 := rules[s3]
+		if !ok1 || !ok2 || !ok3 {
+			skippedNoSymbol++
+			continue
 		}
 
-		out = append(out, "25.0", fail)
-
-		if err := writer.Write(out); err != nil {
-			log.Fatal(err)
+		// reliable eligibility (same as blacklist criteria)
+		if !marketOk(r1) || !marketOk(r2) || !marketOk(r3) {
+			skippedNotEligible++
+			continue
 		}
+
+		// qty precision (base)
+		dpQty1 := decimalsFromStep(r1.BaseSizePrec)
+		dpQty2 := decimalsFromStep(r2.BaseSizePrec)
+		dpQty3 := decimalsFromStep(r3.BaseSizePrec)
+
+		// quote precision for MARKET (quote)
+		dpQm1 := decimalsFromStep(quoteMarketStep(r1))
+		dpQm2 := decimalsFromStep(quoteMarketStep(r2))
+		dpQm3 := decimalsFromStep(quoteMarketStep(r3))
+
+		row = append(row,
+			fmt.Sprintf("%d", dpQty1), fmt.Sprintf("%d", dpQty2), fmt.Sprintf("%d", dpQty3),
+			fmt.Sprintf("%d", dpQm1), fmt.Sprintf("%d", dpQm2), fmt.Sprintf("%d", dpQm3),
+		)
+
+		if err := cw.Write(row); err != nil {
+			return fmt.Errorf("write row: %w", err)
+		}
+		written++
 	}
 
-	log.Printf("DONE → %s", outputCSV)
+	log.Printf(
+		"OK: read=%d written=%d skippedNoSymbol=%d skippedBlacklisted=%d skippedNotEligible=%d -> %s",
+		read, written, skippedNoSymbol, skippedBlacklisted, skippedNotEligible, OutputCSV,
+	)
+
+	if written == 0 {
+		log.Printf("WARN: output is empty. Most likely your blacklist is too broad or input csv symbols mismatch exchangeInfo.")
+		log.Printf("TIP: temporarily move %s away and rerun to see baseline written>0.", BlacklistFile)
+	}
+
+	return nil
+}
+
+func loadRules() (map[string]symbolInfo, error) {
+	client := &http.Client{Timeout: 25 * time.Second}
+	resp, err := client.Get(BaseURL + "/api/v3/exchangeInfo")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode/100 != 2 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("exchangeInfo %d: %s", resp.StatusCode, string(b))
+	}
+
+	var info exchangeInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, err
+	}
+
+	m := make(map[string]symbolInfo, len(info.Symbols))
+	for _, s := range info.Symbols {
+		sym := strings.TrimSpace(s.Symbol)
+		if sym == "" {
+			continue
+		}
+		m[sym] = s
+	}
+	return m, nil
+}
+
+// ======= Eligibility / reasons =======
+
+// Reliable filter you already validated with Postman:
+// status=="1", st==false, permissions contains "SPOT", orderTypes contains "MARKET"
+func marketOk(s symbolInfo) bool {
+	if strings.TrimSpace(s.Status) != "1" {
+		return false
+	}
+	if s.St {
+		return false
+	}
+	if !hasPerm(s.Permissions, "SPOT") {
+		return false
+	}
+	if !hasMarket(s.OrderTypes) {
+		return false
+	}
+	return true
+}
+
+func notOkReason(s symbolInfo) string {
+	var reasons []string
+	if strings.TrimSpace(s.Status) != "1" {
+		reasons = append(reasons, "status!=1")
+	}
+	if s.St {
+		reasons = append(reasons, "st=true")
+	}
+	if !hasPerm(s.Permissions, "SPOT") {
+		reasons = append(reasons, "no SPOT perm")
+	}
+	if !hasMarket(s.OrderTypes) {
+		reasons = append(reasons, "no MARKET type")
+	}
+	return strings.Join(reasons, ", ")
+}
+
+func hasMarket(orderTypes []string) bool {
+	for _, t := range orderTypes {
+		if strings.EqualFold(strings.TrimSpace(t), "MARKET") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPerm(perms []string, want string) bool {
+	for _, p := range perms {
+		if strings.EqualFold(strings.TrimSpace(p), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// ======= Precision helpers =======
+
+func quoteMarketStep(s symbolInfo) string {
+	if strings.TrimSpace(s.QuoteAmountPrecisionMarket) != "" {
+		return s.QuoteAmountPrecisionMarket
+	}
+	return s.QuoteAmountPrecision
+}
+
+// "0.000001" -> 6; "1" -> 0; "" -> -1
+func decimalsFromStep(step string) int {
+	step = strings.TrimSpace(step)
+	if step == "" {
+		return -1
+	}
+	if !strings.Contains(step, ".") {
+		return 0
+	}
+	parts := strings.SplitN(step, ".", 2)
+	frac := strings.TrimRight(parts[1], "0")
+	return len(frac)
+}
+
+// ======= CSV helpers =======
+
+func colIndex(header []string, name string) int {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for i, h := range header {
+		if strings.ToLower(strings.TrimSpace(h)) == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// ======= Blacklist I/O =======
+
+// File format: SYMBOL<TAB>reason
+// Lines starting with # are comments.
+func loadBlacklist(path string) (map[string]string, error) {
+	bl := make(map[string]string)
+
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// first run: empty blacklist
+			return bl, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		sym := strings.TrimSpace(parts[0])
+		if sym == "" {
+			continue
+		}
+		reason := ""
+		if len(parts) == 2 {
+			reason = strings.TrimSpace(parts[1])
+		}
+		bl[sym] = reason
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return bl, nil
+}
+
+func saveBlacklist(path string, bl map[string]string) error {
+	tmp := path + ".tmp"
+
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	bw := bufio.NewWriter(f)
+	fmt.Fprintf(bw, "# generated: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(bw, "# format: SYMBOL<TAB>reason\n")
+
+	keys := make([]string, 0, len(bl))
+	for k := range bl {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		fmt.Fprintf(bw, "%s\t%s\n", k, bl[k])
+	}
+
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func isBlacklisted(bl map[string]string, sym string) bool {
+	_, ok := bl[sym]
+	return ok
 }
 
 
