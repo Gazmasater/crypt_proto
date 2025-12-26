@@ -256,3 +256,51 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingLitField",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingLitField"
+		}
+	},
+	"severity": 8,
+	"message": "unknown field BidSize in struct literal of type models.MarketData",
+	"source": "compiler",
+	"startLineNumber": 188,
+	"startColumn": 4,
+	"endLineNumber": 188,
+	"endColumn": 11,
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingLitField",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingLitField"
+		}
+	},
+	"severity": 8,
+	"message": "unknown field AskSize in struct literal of type models.MarketData",
+	"source": "compiler",
+	"startLineNumber": 189,
+	"startColumn": 4,
+	"endLineNumber": 189,
+	"endColumn": 11,
+	"origin": "extHost1"
+}]
+
+
