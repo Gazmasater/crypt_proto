@@ -9,11 +9,20 @@ import (
 	"strings"
 	"syscall"
 
+	"net/http"
+	_ "net/http/pprof"
+
 	"github.com/joho/godotenv"
 )
 
 func main() {
 	_ = godotenv.Load(".env")
+	go func() {
+		log.Println("pprof on http://localhost:6060/debug/pprof/")
+		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+			log.Printf("pprof server error: %v", err)
+		}
+	}()
 	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
 	if exchange == "" {
 		log.Fatal("Set EXCHANGE env variable: mexc | okx | kucoin")

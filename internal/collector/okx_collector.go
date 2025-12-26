@@ -15,15 +15,23 @@ import (
 )
 
 type OKXCollector struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	symbols []string
-	conn    *websocket.Conn
+	ctx      context.Context
+	cancel   context.CancelFunc
+	symbols  []string
+	conn     *websocket.Conn
+	lastData map[string]struct {
+		Bid, Ask, BidSize, AskSize float64
+	}
 }
 
 func NewOKXCollector(symbols []string) *OKXCollector {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &OKXCollector{ctx: ctx, cancel: cancel, symbols: symbols}
+	return &OKXCollector{
+		ctx:      ctx,
+		cancel:   cancel,
+		symbols:  symbols,
+		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
+	}
 }
 
 func (c *OKXCollector) Name() string { return "OKX" }
@@ -93,30 +101,45 @@ func (c *OKXCollector) Start(out chan<- models.MarketData) error {
 				if err := json.Unmarshal(msg, &resp); err != nil {
 					continue
 				}
-
 				if len(resp.Data) == 0 {
 					continue
 				}
 
-				var bid, ask float64
+				bid, ask, bidSize, askSize := 0.0, 0.0, 0.0, 0.0
 				if len(resp.Data[0].Bids) > 0 {
 					bid, _ = strconv.ParseFloat(resp.Data[0].Bids[0][0], 64)
+					bidSize, _ = strconv.ParseFloat(resp.Data[0].Bids[0][1], 64)
 				}
 				if len(resp.Data[0].Asks) > 0 {
 					ask, _ = strconv.ParseFloat(resp.Data[0].Asks[0][0], 64)
+					askSize, _ = strconv.ParseFloat(resp.Data[0].Asks[0][1], 64)
 				}
 
-				// === НОРМАЛИЗАЦИЯ ===
 				symbol := market.NormalizeSymbol_Full(resp.Arg.InstID)
-				if symbol == "" {
+				if symbol == "" || bid == 0 || ask == 0 {
 					continue
 				}
 
+				// фильтр повторов по ценам и объемам
+				if last, exists := c.lastData[symbol]; exists {
+					if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+						continue
+					}
+				}
+
+				// обновляем последние данные
+				c.lastData[symbol] = struct{ Bid, Ask, BidSize, AskSize float64 }{
+					Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize,
+				}
+
 				out <- models.MarketData{
-					Exchange: "OKX",
-					Symbol:   symbol,
-					Bid:      bid,
-					Ask:      ask,
+					Exchange:  "OKX",
+					Symbol:    symbol,
+					Bid:       bid,
+					Ask:       ask,
+					BidSize:   bidSize,
+					AskSize:   askSize,
+					Timestamp: time.Now().UnixMilli(),
 				}
 			}
 		}
