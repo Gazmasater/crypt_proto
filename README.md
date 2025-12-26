@@ -75,33 +75,28 @@ import (
 	"strings"
 )
 
-type ExchangeInfo struct {
-	Symbols []struct {
-		Symbol   string `json:"symbol"`
-		Status   string `json:"status"`
-		BaseAsset  string `json:"baseAsset"`
-		QuoteAsset string `json:"quoteAsset"`
-		Filters []struct {
-			FilterType string `json:"filterType"`
-			StepSize   string `json:"stepSize"`   // lotSize
-			MinQty     string `json:"minQty"`    // минимальный объём
-			MaxQty     string `json:"maxQty"`    // максимальный объём
-			TickSize   string `json:"tickSize"`  // шаг цены
-			MaxNotional string `json:"maxNotional"` // максимальная сумма
-		} `json:"filters"`
-	} `json:"symbols"`
+type MEXCExchangeInfo struct {
+	Data []struct {
+		Symbol        string `json:"symbol"`
+		BaseAsset     string `json:"baseAsset"`
+		QuoteAsset    string `json:"quoteAsset"`
+		Status        string `json:"state"` // "ENABLED" / "DISABLED"
+		PricePrecision    int    `json:"pricePrecision"`
+		QuantityPrecision int    `json:"quantityPrecision"`
+		MinOrderQty       string `json:"minOrderQty"`
+		MaxOrderQty       string `json:"maxOrderQty"`
+	} `json:"data"`
 }
 
 type Market struct {
-	Symbol     string
-	Base       string
-	Quote      string
-	Status     string
-	LotSize    string
-	MinQty     string
-	MaxQty     string
-	TickSize   string
-	MaxNotional string
+	Symbol   string
+	Base     string
+	Quote    string
+	Status   string
+	LotSize  string
+	MinQty   string
+	MaxQty   string
+	TickSize string
 }
 
 // Определяем направление ноги
@@ -120,42 +115,34 @@ func main() {
 	inputCSV := "triangles_routes.csv"
 	outputCSV := "triangles_routes_full.csv"
 
-	// 1. Загружаем exchangeInfo с MEXC
-	resp, err := http.Get("https://www.mexc.com/api/v3/exchangeInfo")
+	// 1. Получаем данные с MEXC
+	resp, err := http.Get("https://www.mexc.com/api/v2/market/symbols")
 	if err != nil {
 		log.Fatalf("cannot get exchangeInfo: %v", err)
 	}
 	defer resp.Body.Close()
 
-	var info ExchangeInfo
+	var info MEXCExchangeInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		log.Fatalf("decode exchangeInfo: %v", err)
 	}
 
 	markets := make(map[string]Market)
-	for _, s := range info.Symbols {
-		if s.Status != "TRADING" && s.Status != "ENABLED" && s.Status != "1" {
+	for _, s := range info.Data {
+		if s.Status != "ENABLED" {
 			continue
 		}
+		lotStep := fmt.Sprintf("%.*f", s.QuantityPrecision, 1.0/float64Pow(10, s.QuantityPrecision))
+		priceStep := fmt.Sprintf("%.*f", s.PricePrecision, 1.0/float64Pow(10, s.PricePrecision))
 		m := Market{
-			Symbol: s.Symbol,
-			Base:   s.BaseAsset,
-			Quote:  s.QuoteAsset,
-			Status: s.Status,
-		}
-		// ищем фильтры
-		for _, f := range s.Filters {
-			switch strings.ToUpper(f.FilterType) {
-			case "LOT_SIZE":
-				m.LotSize = f.StepSize
-				m.MinQty = f.MinQty
-				m.MaxQty = f.MaxQty
-			case "PRICE_FILTER":
-				m.TickSize = f.TickSize
-				if f.MaxNotional != "" {
-					m.MaxNotional = f.MaxNotional
-				}
-			}
+			Symbol:   s.Symbol,
+			Base:     s.BaseAsset,
+			Quote:    s.QuoteAsset,
+			Status:   s.Status,
+			LotSize:  lotStep,
+			MinQty:   s.MinOrderQty,
+			MaxQty:   s.MaxOrderQty,
+			TickSize: priceStep,
 		}
 		markets[s.Symbol] = m
 	}
@@ -189,9 +176,9 @@ func main() {
 
 	// Заголовок
 	writer.Write([]string{
-		"leg1_symbol", "leg1_from", "leg1_to", "leg1_lotSize", "leg1_minQty", "leg1_maxQty", "leg1_tickSize", "leg1_maxNotional",
-		"leg2_symbol", "leg2_from", "leg2_to", "leg2_lotSize", "leg2_minQty", "leg2_maxQty", "leg2_tickSize", "leg2_maxNotional",
-		"leg3_symbol", "leg3_from", "leg3_to", "leg3_lotSize", "leg3_minQty", "leg3_maxQty", "leg3_tickSize", "leg3_maxNotional",
+		"leg1_symbol", "leg1_from", "leg1_to", "leg1_lotSize", "leg1_minQty", "leg1_maxQty", "leg1_tickSize",
+		"leg2_symbol", "leg2_from", "leg2_to", "leg2_lotSize", "leg2_minQty", "leg2_maxQty", "leg2_tickSize",
+		"leg3_symbol", "leg3_from", "leg3_to", "leg3_lotSize", "leg3_minQty", "leg3_maxQty", "leg3_tickSize",
 		"start_amt", "end_amt", "fail_reason",
 	})
 
@@ -208,7 +195,7 @@ func main() {
 		base2, quote2 := row[2], row[3]
 		base3, quote3 := row[4], row[5]
 
-		legs := []struct{From, To string; Base, Quote string}{
+		legs := []struct{ From, To, Base, Quote string }{
 			{From: base1, To: quote1, Base: base1, Quote: quote1},
 			{From: base2, To: quote2, Base: base2, Quote: quote2},
 			{From: base3, To: quote3, Base: base3, Quote: quote3},
@@ -226,13 +213,13 @@ func main() {
 					if dir == "UNKNOWN" {
 						fail = "cannot determine direction"
 					}
-					outRow = append(outRow, m.Symbol, leg.From, leg.To, m.LotSize, m.MinQty, m.MaxQty, m.TickSize, m.MaxNotional)
+					outRow = append(outRow, m.Symbol, leg.From, leg.To, m.LotSize, m.MinQty, m.MaxQty, m.TickSize)
 					found = true
 					break
 				}
 			}
 			if !found {
-				outRow = append(outRow, "", leg.From, leg.To, "", "", "", "", "")
+				outRow = append(outRow, "", leg.From, leg.To, "", "", "", "")
 				if fail == "" {
 					fail = "pair not found"
 				}
@@ -250,9 +237,14 @@ func main() {
 	log.Printf("Done! Output saved to %s", outputCSV)
 }
 
-go run .
-2025/12/26 14:15:23.823606 decode exchangeInfo: invalid character '<' looking for beginning of value
-exit status 1
+// Вспомогательная функция степени для float64
+func float64Pow(x, y int) float64 {
+	res := 1.0
+	for i := 0; i < y; i++ {
+		res /= 10
+	}
+	return res
+}
 
 
 
