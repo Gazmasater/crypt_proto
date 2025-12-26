@@ -3,6 +3,7 @@ package main
 import (
 	"crypt_proto/internal/collector"
 	"crypt_proto/pkg/models"
+	"encoding/csv"
 	"log"
 	"os"
 	"os/signal"
@@ -33,9 +34,23 @@ func main() {
 
 	var c collector.Collector
 
+	csvPath := "mexc_triangles_usdt_routes.csv" // твой CSV с белым списком
+	symbols, err := readSymbolsFromCSV(csvPath)
+	if err != nil {
+		log.Fatal("read CSV symbols:", err)
+	}
+	log.Printf("Subscribing to %d symbols", len(symbols))
+
+	csvPath = "mexc_triangles_usdt_routes.csv" // твой CSV с белым списком
+	symbols, err = readSymbolsFromCSV(csvPath)
+	if err != nil {
+		log.Fatal("read CSV symbols:", err)
+	}
+	log.Printf("Subscribing to %d symbols", len(symbols))
+
 	switch exchange {
 	case "mexc":
-		c = collector.NewMEXCCollector([]string{"BTCUSDT", "ETHUSDT", "ETHBTC"})
+		c = collector.NewMEXCCollector(symbols)
 	case "okx":
 		c = collector.NewOKXCollector([]string{"BTC-USDT", "ETH-USDT", "ETH-BTC"})
 	case "kucoin":
@@ -66,4 +81,55 @@ func main() {
 	if err := c.Stop(); err != nil {
 		log.Println("Stop error:", err)
 	}
+}
+
+func readSymbolsFromCSV(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	header, err := r.Read()
+	if err != nil {
+		return nil, err
+	}
+
+	// находим индексы колонок leg1/2/3
+	idx := map[string]int{}
+	for i, h := range header {
+		idx[strings.ToLower(strings.TrimSpace(h))] = i
+	}
+
+	legs := []string{"leg1_symbol", "leg2_symbol", "leg3_symbol"}
+	var indices []int
+	for _, l := range legs {
+		if i, ok := idx[l]; ok {
+			indices = append(indices, i)
+		} else {
+			return nil, &csv.ParseError{StartLine: 0, Err: csv.ErrFieldCount}
+		}
+	}
+
+	set := map[string]struct{}{}
+	for {
+		row, err := r.Read()
+		if err != nil {
+			break
+		}
+		for _, i := range indices {
+			s := strings.TrimSpace(row[i])
+			if s != "" {
+				set[s] = struct{}{}
+			}
+		}
+	}
+
+	var symbols []string
+	for s := range set {
+		symbols = append(symbols, s)
+	}
+
+	return symbols, nil
 }
