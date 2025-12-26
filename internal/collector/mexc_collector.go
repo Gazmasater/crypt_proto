@@ -177,14 +177,13 @@ func (c *MEXCCollector) readLoop(conn *websocket.Conn, out chan<- models.MarketD
 
 func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.MarketData {
 	switch body := wrap.GetBody().(type) {
-
 	case *pb.PushDataV3ApiWrapper_PublicAggreBookTicker:
 		bt := body.PublicAggreBookTicker
 
 		bid, _ := strconv.ParseFloat(bt.GetBidPrice(), 64)
 		ask, _ := strconv.ParseFloat(bt.GetAskPrice(), 64)
 		bidSize, _ := strconv.ParseFloat(bt.GetBidQuantity(), 64)
-		askSize, _ := strconv.ParseFloat(bt.GetAskQuantity(), 64)
+		askSize, _ := strconv.ParseFloat(bt.AskQuantity, 64)
 
 		symbol := wrap.GetSymbol()
 		if symbol == "" {
@@ -200,22 +199,17 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 			return nil
 		}
 
-		// дедупликация
-		c.mu.Lock()
-		last, ok := c.lastData[symbol]
-		if ok &&
-			last.Bid == bid &&
-			last.Ask == ask &&
-			last.BidSize == bidSize &&
-			last.AskSize == askSize {
-			c.mu.Unlock()
-			return nil
+		// фильтрация повторов
+		if last, exists := c.lastData[symbol]; exists {
+			if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+				return nil
+			}
 		}
 
+		// обновляем последние данные
 		c.lastData[symbol] = struct {
 			Bid, Ask, BidSize, AskSize float64
-		}{bid, ask, bidSize, askSize}
-		c.mu.Unlock()
+		}{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
 
 		ts := time.Now().UnixMilli()
 		if t := wrap.GetSendTime(); t > 0 {
@@ -231,9 +225,9 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 			AskSize:   askSize,
 			Timestamp: ts,
 		}
+	default:
+		return nil
 	}
-
-	return nil
 }
 
 // ------------------------------------------------------------
