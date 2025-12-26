@@ -247,4 +247,9 @@ func float64Pow(x, y int) float64 {
 }
 
 
+az358-BOD-WXX9:~/myprog/crypt_proto/cmd/mexctriangl$ go run .
+2025/12/26 14:24:53.863772 decode exchangeInfo: invalid character '<' looking for beginning of value
+exit status 1
+
+
 
