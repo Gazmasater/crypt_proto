@@ -77,10 +77,10 @@ import (
 
 type MEXCExchangeInfo struct {
 	Data []struct {
-		Symbol        string `json:"symbol"`
-		BaseAsset     string `json:"baseAsset"`
-		QuoteAsset    string `json:"quoteAsset"`
-		Status        string `json:"state"` // "ENABLED" / "DISABLED"
+		Symbol            string `json:"symbol"`
+		BaseAsset         string `json:"baseAsset"`
+		QuoteAsset        string `json:"quoteAsset"`
+		Status            string `json:"state"` // "ENABLED" / "DISABLED"
 		PricePrecision    int    `json:"pricePrecision"`
 		QuantityPrecision int    `json:"quantityPrecision"`
 		MinOrderQty       string `json:"minOrderQty"`
@@ -112,7 +112,7 @@ func determineDirection(from, to, base, quote string) string {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	inputCSV := "triangles_routes.csv"
+	inputCSV := "triangles_markets.csv"
 	outputCSV := "triangles_routes_full.csv"
 
 	// 1. Получаем данные с MEXC
@@ -246,6 +246,11 @@ func float64Pow(x, y int) float64 {
 	return res
 }
 
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/mexctriangl$ go run .
+2025/12/26 19:25:07.198175 decode exchangeInfo: invalid character '<' looking for beginning of value
+exit status 1
 
 
 
