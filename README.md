@@ -66,14 +66,14 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
-// ------------------- Структуры -------------------
 type Symbol struct {
 	Symbol               string   `json:"symbol"`
 	BaseAsset            string   `json:"baseAsset"`
@@ -92,7 +92,6 @@ type Triangle struct {
 	Pairs   [3]string
 }
 
-// ------------------- Фильтр -------------------
 func isTradable(s Symbol) bool {
 	if !s.IsSpotTradingAllowed {
 		return false
@@ -115,9 +114,7 @@ func isTradable(s Symbol) bool {
 	return false
 }
 
-// ------------------- Генерация треугольников с инверсными парами -------------------
 func findTriangles(symbols []Symbol) []Triangle {
-	// map[валюта][валюта] = symbol
 	pairMap := make(map[string]map[string]Symbol)
 	for _, s := range symbols {
 		if !isTradable(s) {
@@ -127,7 +124,8 @@ func findTriangles(symbols []Symbol) []Triangle {
 			pairMap[s.BaseAsset] = make(map[string]Symbol)
 		}
 		pairMap[s.BaseAsset][s.QuoteAsset] = s
-		// добавляем инверсную пару для поиска
+
+		// добавляем инверсную пару
 		if _, ok := pairMap[s.QuoteAsset]; !ok {
 			pairMap[s.QuoteAsset] = make(map[string]Symbol)
 		}
@@ -142,7 +140,6 @@ func findTriangles(symbols []Symbol) []Triangle {
 	}
 
 	var triangles []Triangle
-
 	for _, s1 := range symbols {
 		if !isTradable(s1) {
 			continue
@@ -156,12 +153,12 @@ func findTriangles(symbols []Symbol) []Triangle {
 			}
 			if s3map, ok := pairMap[C]; ok {
 				if s3, ok2 := s3map[A]; ok2 && isTradable(s3) {
-					// A -> B -> C -> A
+					// A->B->C->A
 					triangles = append(triangles, Triangle{
 						A: A, B: B, C: C,
 						Pairs: [3]string{s1.Symbol, s2.Symbol, s3.Symbol},
 					})
-					// A -> C -> B -> A
+					// A->C->B->A
 					triangles = append(triangles, Triangle{
 						A: A, B: C, C: B,
 						Pairs: [3]string{s2.Symbol, s1.Symbol, s3.Symbol},
@@ -170,11 +167,9 @@ func findTriangles(symbols []Symbol) []Triangle {
 			}
 		}
 	}
-
 	return triangles
 }
 
-// ------------------- Получение данных с API -------------------
 func fetchExchangeInfo() ([]Symbol, error) {
 	url := "https://www.mexc.com/open/api/v2/market/symbols"
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -191,7 +186,6 @@ func fetchExchangeInfo() ([]Symbol, error) {
 	return info.Symbols, nil
 }
 
-// ------------------- Основная функция -------------------
 func main() {
 	symbols, err := fetchExchangeInfo()
 	if err != nil {
@@ -199,11 +193,27 @@ func main() {
 	}
 
 	triangles := findTriangles(symbols)
-	fmt.Printf("Найдено %d треугольников с обеими направленностями и инверсными парами:\n", len(triangles))
-	for _, t := range triangles {
-		fmt.Println(t.A, "->", t.B, "->", t.C, "Pairs:", t.Pairs)
-	}
-}
+	log.Printf("Найдено %d треугольников", len(triangles))
 
+	// Создаём CSV файл
+	file, err := os.Create("triangles.csv")
+	if err != nil {
+		log.Fatal("Ошибка создания файла:", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	// Записываем заголовок
+	writer.Write([]string{"A", "B", "C", "PAIR1", "PAIR2", "PAIR3"})
+
+	// Записываем все треугольники
+	for _, t := range triangles {
+		writer.Write([]string{t.A, t.B, t.C, t.Pairs[0], t.Pairs[1], t.Pairs[2]})
+	}
+
+	log.Println("Все треугольники записаны в triangles.csv")
+}
 
 
