@@ -68,50 +68,60 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 )
 
 type Symbol struct {
-	BaseAsset  string `json:"baseAsset"`
-	QuoteAsset string `json:"quoteAsset"`
-	Status     string `json:"status"`
+	Symbol               string   `json:"symbol"`
+	BaseAsset            string   `json:"baseAsset"`
+	QuoteAsset           string   `json:"quoteAsset"`
+	Status               string   `json:"status"`
+	IsSpotTradingAllowed bool     `json:"isSpotTradingAllowed"`
+	OrderTypes           []string `json:"orderTypes"`
 }
 
 type ExchangeInfo struct {
 	Symbols []Symbol `json:"symbols"`
 }
 
-type Graph map[string][]string
+// canTrade[from][to] = true
+type TradeGraph map[string]map[string]bool
 
 func main() {
-	// --- Шаг 1: Получаем реальные пары с MEXC ---
-	pairs := fetchMEXCPairs()
+	canTrade := loadMEXCDirectedGraph()
 
-	// --- Шаг 2: Загружаем CSV и строим граф ---
-	graph := loadGraph("triangles.csv")
+	graph := loadGraphFromCSV("triangles.csv")
 
-	// --- Шаг 3: Находим все треугольники ---
-	triangles := findTriangles(graph)
+	results := [][]string{}
 
-	// --- Шаг 4: Фильтруем реальные ---
-	realTriangles := [][]string{}
-	for _, t := range triangles {
-		if isRealTriangle(t, pairs) {
-			realTriangles = append(realTriangles, []string{t[0], t[1], t[2], t[0]})
+	for a := range graph {
+		for _, x := range graph[a] {
+			for _, y := range graph[a] {
+
+				if x == y || x == a || y == a {
+					continue
+				}
+
+				// a → x → y → a
+				if canTrade[a][x] && canTrade[x][y] && canTrade[y][a] {
+					results = append(results, []string{a, x, y, a})
+				}
+			}
 		}
 	}
 
-	// --- Шаг 5: Записываем в CSV ---
-	writeTriangles("real_triangles.csv", realTriangles)
-	fmt.Printf("Найдено %d реальных треугольников\n", len(realTriangles))
+	writeCSV("real_triangles.csv", results)
+	log.Printf("✅ найдено %d реальных направленных треугольников\n", len(results))
 }
 
-// --- Функции ---
+//////////////////////////////////////////////////////
+// ЗАГРУЗКА MEXC → НАПРАВЛЕННЫЙ ГРАФ
+//////////////////////////////////////////////////////
 
-func fetchMEXCPairs() map[string]map[string]bool {
+func loadMEXCDirectedGraph() TradeGraph {
 	resp, err := http.Get("https://api.mexc.com/api/v3/exchangeInfo")
 	if err != nil {
 		log.Fatal(err)
@@ -123,20 +133,53 @@ func fetchMEXCPairs() map[string]map[string]bool {
 		log.Fatal(err)
 	}
 
-	pairs := make(map[string]map[string]bool)
+	canTrade := make(TradeGraph)
+
 	for _, s := range info.Symbols {
+
 		if s.Status != "ENABLED" {
 			continue
 		}
-		if pairs[s.BaseAsset] == nil {
-			pairs[s.BaseAsset] = make(map[string]bool)
+		if !s.IsSpotTradingAllowed {
+			continue
 		}
-		pairs[s.BaseAsset][s.QuoteAsset] = true
+		if !hasMarketOrder(s.OrderTypes) {
+			continue
+		}
+
+		base := strings.ToUpper(s.BaseAsset)
+		quote := strings.ToUpper(s.QuoteAsset)
+
+		// sell: base → quote
+		if canTrade[base] == nil {
+			canTrade[base] = map[string]bool{}
+		}
+		canTrade[base][quote] = true
+
+		// buy: quote → base
+		if canTrade[quote] == nil {
+			canTrade[quote] = map[string]bool{}
+		}
+		canTrade[quote][base] = true
 	}
-	return pairs
+
+	return canTrade
 }
 
-func loadGraph(filename string) Graph {
+func hasMarketOrder(types []string) bool {
+	for _, t := range types {
+		if t == "MARKET" {
+			return true
+		}
+	}
+	return false
+}
+
+//////////////////////////////////////////////////////
+// CSV → граф валют (без направлений)
+//////////////////////////////////////////////////////
+
+func loadGraphFromCSV(filename string) map[string][]string {
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatal(err)
@@ -144,92 +187,60 @@ func loadGraph(filename string) Graph {
 	defer file.Close()
 
 	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
+	rows, err := reader.ReadAll()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	graph := make(Graph)
-	for i, row := range records {
+	graph := map[string][]string{}
+
+	for i, row := range rows {
 		if i == 0 || len(row) < 6 {
 			continue
 		}
-		base1, quote1 := row[0], row[1]
-		base2, quote2 := row[2], row[3]
-		base3, quote3 := row[4], row[5]
 
-		graph[base1] = appendUnique(graph[base1], quote1)
-		graph[quote1] = appendUnique(graph[quote1], base1)
-		graph[base2] = appendUnique(graph[base2], quote2)
-		graph[quote2] = appendUnique(graph[quote2], base2)
-		graph[base3] = appendUnique(graph[base3], quote3)
-		graph[quote3] = appendUnique(graph[quote3], base3)
+		pairs := [][2]string{
+			{row[0], row[1]},
+			{row[2], row[3]},
+			{row[4], row[5]},
+		}
+
+		for _, p := range pairs {
+			a := strings.ToUpper(p[0])
+			b := strings.ToUpper(p[1])
+
+			graph[a] = appendUnique(graph[a], b)
+			graph[b] = appendUnique(graph[b], a)
+		}
 	}
+
 	return graph
 }
 
-func appendUnique(slice []string, val string) []string {
-	for _, s := range slice {
-		if s == val {
-			return slice
+//////////////////////////////////////////////////////
+
+func appendUnique(arr []string, v string) []string {
+	for _, x := range arr {
+		if x == v {
+			return arr
 		}
 	}
-	return append(slice, val)
+	return append(arr, v)
 }
 
-func findTriangles(graph Graph) [][3]string {
-	var triangles [][3]string
-	for a := range graph {
-		for _, b := range graph[a] {
-			if b == a {
-				continue
-			}
-			for _, c := range graph[b] {
-				if c == a || c == b {
-					continue
-				}
-				if contains(graph[c], a) {
-					triangles = append(triangles, [3]string{a, b, c})
-					triangles = append(triangles, [3]string{a, c, b})
-				}
-			}
-		}
-	}
-	return triangles
-}
+//////////////////////////////////////////////////////
 
-func contains(slice []string, val string) bool {
-	for _, s := range slice {
-		if s == val {
-			return true
-		}
-	}
-	return false
-}
-
-func isRealTriangle(tri [3]string, pairs map[string]map[string]bool) bool {
-	a, b, c := tri[0], tri[1], tri[2]
-	return (pairs[a][b] || pairs[b][a]) &&
-		(pairs[b][c] || pairs[c][b]) &&
-		(pairs[c][a] || pairs[a][c])
-}
-
-func writeTriangles(filename string, triangles [][]string) {
-	file, err := os.Create(filename)
+func writeCSV(name string, rows [][]string) {
+	f, err := os.Create(name)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer file.Close()
+	defer f.Close()
 
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
+	w := csv.NewWriter(f)
+	defer w.Flush()
 
-	for _, t := range triangles {
-		if err := writer.Write(t); err != nil {
-			log.Fatal(err)
-		}
+	for _, r := range rows {
+		_ = w.Write(r)
 	}
 }
-
-
-
