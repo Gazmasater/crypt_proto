@@ -67,7 +67,6 @@ package main
 
 import (
 	"encoding/csv"
-	"fmt"
 	"log"
 	"os"
 )
@@ -113,11 +112,25 @@ func main() {
 
 	triangles := findTriangles(graph)
 
+	// Создаём файл для записи результата
+	outFile, err := os.Create("triangles_output.csv")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer outFile.Close()
+
+	writer := csv.NewWriter(outFile)
+	defer writer.Flush()
+
+	// Заголовок
+	writer.Write([]string{"start", "mid1", "mid2", "end"})
+
 	for _, t := range triangles {
-		fmt.Printf("%s -> %s -> %s -> %s\n", t[0], t[1], t[2], t[0])
+		writer.Write([]string{t[0], t[1], t[2], t[0]})
 	}
 }
 
+// appendUnique добавляет элемент в срез, если его там нет
 func appendUnique(slice []string, val string) []string {
 	for _, s := range slice {
 		if s == val {
@@ -150,6 +163,7 @@ func findTriangles(graph Graph) [][3]string {
 	return triangles
 }
 
+// contains проверяет, есть ли элемент в срезе
 func contains(slice []string, val string) bool {
 	for _, s := range slice {
 		if s == val {
@@ -158,6 +172,7 @@ func contains(slice []string, val string) bool {
 	}
 	return false
 }
+
 
 
 
