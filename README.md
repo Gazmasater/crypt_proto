@@ -175,6 +175,7 @@ func (c *MEXCCollector) Name() string {
 	return "MEXC"
 }
 
+// канал принимает указатели
 func (c *MEXCCollector) Start(out chan<- *models.MarketData) error {
 	conn, _, err := websocket.DefaultDialer.Dial(configs.MEXC_WS, nil)
 	if err != nil {
@@ -354,17 +355,17 @@ func chunkSymbols(src []string, size int) [][]string {
 
 
 
+
 package main
 
 import (
+	"encoding/csv"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
-	"encoding/csv"
 
 	"crypt_proto/internal/collector"
 	"crypt_proto/pkg/models"
@@ -374,11 +375,12 @@ import (
 )
 
 func main() {
+	// загружаем .env
 	_ = godotenv.Load(".env")
 
 	// запускаем pprof
 	go func() {
-		log.Println("pprof on http://localhost:6060/debug/pprof/")
+		log.Println("pprof running on http://localhost:6060/debug/pprof/")
 		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
 			log.Printf("pprof server error: %v", err)
 		}
@@ -425,7 +427,7 @@ func main() {
 		log.Fatal("Unknown exchange:", exchange)
 	}
 
-	// старт
+	// старт Collector
 	if err := c.Start(marketDataCh); err != nil {
 		log.Fatal("start collector:", err)
 	}
@@ -433,13 +435,15 @@ func main() {
 	// consumer
 	go func() {
 		for md := range marketDataCh {
-			log.Printf("[%s] %s bid=%.8f ask=%.8f",
+			log.Printf("[%s] %s bid=%.8f ask=%.8f bidSize=%.8f askSize=%.8f",
 				md.Exchange,
 				md.Symbol,
 				md.Bid,
 				md.Ask,
+				md.BidSize,
+				md.AskSize,
 			)
-			// возвращаем структуру в пул
+			// возвращаем объект в пул
 			marketPool.Put(md)
 		}
 	}()
@@ -458,7 +462,6 @@ func main() {
 // ------------------------------------------------------------
 // CSV → symbols
 // ------------------------------------------------------------
-
 func readSymbolsFromCSV(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -519,6 +522,5 @@ func readSymbolsFromCSV(path string) ([]string, error) {
 
 	return out, nil
 }
-
 
 
