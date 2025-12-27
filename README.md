@@ -281,25 +281,17 @@ func NormalizeSymbol_NoAlloc(s string, buf *[]byte) string {
 }
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "IncompatibleAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "IncompatibleAssign"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use &c.pool (value of type **\"sync\".Pool) as *[]byte value in argument to market.NormalizeSymbol_NoAlloc",
-	"source": "compiler",
-	"startLineNumber": 170,
-	"startColumn": 50,
-	"endLineNumber": 170,
-	"endColumn": 57,
-	"origin": "extHost1"
-}]
+type MEXCCollector struct {
+    ctx      context.Context
+    cancel   context.CancelFunc
+    conn     *websocket.Conn
+    symbols  []string
+    allowed  map[string]struct{}
+    lastData map[string]struct {
+        Bid, Ask, BidSize, AskSize float64
+    }
+    mu    sync.Mutex
+    pool  *sync.Pool          // пул объектов MarketData
+    buf   []byte              // отдельный буфер для NormalizeSymbol
+}
+
