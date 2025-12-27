@@ -38,3 +38,53 @@ func NormalizeSymbol_Full(s string) string {
 	// неизвестный формат — возвращаем "" (т.к. без quote)
 	return ""
 }
+
+func NormalizeSymbol_NoAlloc(s string, buf *[]byte) string {
+	b := (*buf)[:0]
+
+	// конвертируем в верхний регистр и убираем пробелы
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ' ' {
+			continue
+		}
+		if c >= 'a' && c <= 'z' {
+			c -= 'a' - 'A'
+		}
+		b = append(b, c)
+	}
+
+	if len(b) < 2 {
+		return ""
+	}
+
+	// ищем разделитель '-' или '/'
+	for i := 0; i < len(b)-1; i++ {
+		if b[i] == '-' || b[i] == '/' {
+			base := b[:i]
+			quote := b[i+1:]
+			if len(base) == 0 || len(quote) == 0 {
+				return ""
+			}
+			*buf = append(base, '/')
+			*buf = append(*buf, quote...)
+			return string(*buf)
+		}
+	}
+
+	// ищем слитные символы с известными quote
+	for _, q := range knownQuotes {
+		lq := len(q)
+		if len(b) > lq && string(b[len(b)-lq:]) == string(q) {
+			base := b[:len(b)-lq]
+			if len(base) == 0 {
+				return ""
+			}
+			*buf = append(base, '/')
+			*buf = append(*buf, q...)
+			return string(*buf)
+		}
+	}
+
+	return ""
+}
