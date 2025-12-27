@@ -195,3 +195,9 @@ type MEXCCollector struct {
 }
 
 
+        // RWMutex для безопасного чтения/записи
+	pool     *sync.Pool
+}
+
+
+
