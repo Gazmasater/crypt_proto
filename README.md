@@ -142,86 +142,141 @@ Showing top 10 nodes out of 13
 
 
 
-func fastParseFloat(s string) float64 {
-    // очень простой парсер для формата "123.456"
-    i := 0
-    var intPart int64
-    for ; i < len(s) && s[i] != '.'; i++ {
-        intPart = intPart*10 + int64(s[i]-'0')
-    }
-
-    var fracPart int64
-    fracDiv := 1.0
-    if i < len(s) && s[i] == '.' {
-        i++
-        for ; i < len(s); i++ {
-            fracPart = fracPart*10 + int64(s[i]-'0')
-            fracDiv *= 10
-        }
-    }
-
-    return float64(intPart) + float64(fracPart)/fracDiv
+type MEXCCollector struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	conn     *websocket.Conn
+	symbols  []string
+	allowed  map[string]struct{}
+	lastData map[string]struct {
+		Bid, Ask, BidSize, AskSize float64
+	}
+	pool []byte // буфер для NormalizeSymbol
+	mu   sync.Mutex
+	poolMD *sync.Pool
 }
 
+
+
 func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.MarketData {
-    body, ok := wrap.GetBody().(*pb.PushDataV3ApiWrapper_PublicAggreBookTicker)
-    if !ok {
-        return nil
-    }
-    bt := body.PublicAggreBookTicker
+	switch body := wrap.GetBody().(type) {
+	case *pb.PushDataV3ApiWrapper_PublicAggreBookTicker:
+		bt := body.PublicAggreBookTicker
 
-    bid := fastParseFloat(bt.GetBidPrice())
-    ask := fastParseFloat(bt.GetAskPrice())
-    bidSize := fastParseFloat(bt.GetBidQuantity())
-    askSize := fastParseFloat(bt.GetAskQuantity())
+		// Быстрый парсинг float
+		bid := fastParseFloat(bt.GetBidPrice())
+		ask := fastParseFloat(bt.GetAskPrice())
+		bidSize := fastParseFloat(bt.GetBidQuantity())
+		askSize := fastParseFloat(bt.GetAskQuantity())
 
-    symbol := wrap.GetSymbol()
-    if symbol == "" {
-        ch := wrap.GetChannel()
-        if ch != "" {
-            parts := strings.Split(ch, "@")
-            symbol = parts[len(parts)-1]
-        }
-    }
-    symbol = market.NormalizeSymbol_Full(symbol)
-    if symbol == "" {
-        return nil
-    }
+		// Получаем символ
+		symbol := wrap.GetSymbol()
+		if symbol == "" {
+			ch := wrap.GetChannel()
+			if ch != "" {
+				parts := strings.Split(ch, "@")
+				symbol = parts[len(parts)-1]
+			}
+		}
 
-    // фильтрация по whitelist
-    if len(c.allowed) > 0 {
-        if _, ok := c.allowed[symbol]; !ok {
-            return nil
-        }
-    }
+		// нормализация с минимальными аллокациями
+		symbol = NormalizeSymbol_NoAlloc(symbol, &c.pool)
+		if symbol == "" {
+			return nil
+		}
 
-    // дедупликация struct
-    c.mu.Lock()
-    last, ok := c.lastData[symbol]
-    if ok && last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
-        c.mu.Unlock()
-        return nil
-    }
-    c.lastData[symbol] = struct {
-        Bid, Ask, BidSize, AskSize float64
-    }{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
-    c.mu.Unlock()
+		// фильтрация по whitelist
+		if len(c.allowed) > 0 {
+			if _, ok := c.allowed[symbol]; !ok {
+				return nil
+			}
+		}
 
-    ts := time.Now().UnixMilli()
-    if t := wrap.GetSendTime(); t > 0 {
-        ts = t
-    }
+		// дедупликация
+		c.mu.Lock()
+		last, ok := c.lastData[symbol]
+		if ok && last.Bid == bid && last.Ask == ask &&
+			last.BidSize == bidSize && last.AskSize == askSize {
+			c.mu.Unlock()
+			return nil
+		}
+		c.lastData[symbol] = struct {
+			Bid, Ask, BidSize, AskSize float64
+		}{bid, ask, bidSize, askSize}
+		c.mu.Unlock()
 
-    // объект из пула
-    md := c.pool.Get().(*models.MarketData)
-    md.Exchange = "MEXC"
-    md.Symbol = symbol
-    md.Bid = bid
-    md.Ask = ask
-    md.BidSize = bidSize
-    md.AskSize = askSize
-    md.Timestamp = ts
+		ts := time.Now().UnixMilli()
+		if t := wrap.GetSendTime(); t > 0 {
+			ts = t
+		}
 
-    return md
+		// берём объект из пула
+		md := c.poolMD.Get().(*models.MarketData)
+		md.Exchange = "MEXC"
+		md.Symbol = symbol
+		md.Bid = bid
+		md.Ask = ask
+		md.BidSize = bidSize
+		md.AskSize = askSize
+		md.Timestamp = ts
+
+		return md
+
+	default:
+		return nil
+	}
+}
+
+
+
+
+func NormalizeSymbol_NoAlloc(s string, buf *[]byte) string {
+	b := (*buf)[:0]
+
+	// конвертируем в верхний регистр и убираем пробелы
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ' ' {
+			continue
+		}
+		if c >= 'a' && c <= 'z' {
+			c -= 'a' - 'A'
+		}
+		b = append(b, c)
+	}
+
+	if len(b) < 2 {
+		return ""
+	}
+
+	// ищем разделитель '-' или '/'
+	for i := 0; i < len(b)-1; i++ {
+		if b[i] == '-' || b[i] == '/' {
+			base := b[:i]
+			quote := b[i+1:]
+			if len(base) == 0 || len(quote) == 0 {
+				return ""
+			}
+			*buf = append(base, '/')
+			*buf = append(*buf, quote...)
+			return string(*buf)
+		}
+	}
+
+	// ищем слитные символы с известными quote
+	for _, q := range knownQuotes {
+		lq := len(q)
+		if len(b) > lq && string(b[len(b)-lq:]) == string(q) {
+			base := b[:len(b)-lq]
+			if len(base) == 0 {
+				return ""
+			}
+			*buf = append(base, '/')
+			*buf = append(*buf, q...)
+			return string(*buf)
+		}
+	}
+
+	return ""
 }
 
