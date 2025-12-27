@@ -74,6 +74,7 @@ import (
 type Graph map[string][]string
 
 func main() {
+	// Читаем CSV с парами
 	file, err := os.Open("triangles.csv")
 	if err != nil {
 		log.Fatal(err)
@@ -87,6 +88,7 @@ func main() {
 	}
 
 	graph := make(Graph)
+	availablePairs := make(map[string]map[string]bool)
 
 	// Пропускаем заголовок
 	for i, row := range records {
@@ -108,12 +110,26 @@ func main() {
 
 		graph[base3] = appendUnique(graph[base3], quote3)
 		graph[quote3] = appendUnique(graph[quote3], base3)
+
+		// Создаем доступные пары для проверки реальности треугольника
+		addPair(availablePairs, base1, quote1)
+		addPair(availablePairs, base2, quote2)
+		addPair(availablePairs, base3, quote3)
 	}
 
+	// Ищем все возможные треугольники
 	triangles := findTriangles(graph)
 
-	// Создаём файл для записи результата
-	outFile, err := os.Create("triangles_output.csv")
+	// Фильтруем только реальные треугольники
+	realTriangles := [][]string{}
+	for _, tri := range triangles {
+		if isRealTriangle(tri, availablePairs) {
+			realTriangles = append(realTriangles, []string{tri[0], tri[1], tri[2]})
+		}
+	}
+
+	// Сохраняем в CSV
+	outFile, err := os.Create("real_triangles.csv")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -122,15 +138,14 @@ func main() {
 	writer := csv.NewWriter(outFile)
 	defer writer.Flush()
 
-	// Заголовок
-	writer.Write([]string{"start", "mid1", "mid2", "end"})
-
-	for _, t := range triangles {
-		writer.Write([]string{t[0], t[1], t[2], t[0]})
+	for _, tri := range realTriangles {
+		if err := writer.Write([]string{tri[0], tri[1], tri[2], tri[0]}); err != nil {
+			log.Fatal(err)
+		}
 	}
 }
 
-// appendUnique добавляет элемент в срез, если его там нет
+// appendUnique добавляет значение в слайс, если его там ещё нет
 func appendUnique(slice []string, val string) []string {
 	for _, s := range slice {
 		if s == val {
@@ -138,6 +153,14 @@ func appendUnique(slice []string, val string) []string {
 		}
 	}
 	return append(slice, val)
+}
+
+// addPair добавляет пару в карту доступных пар
+func addPair(m map[string]map[string]bool, a, b string) {
+	if m[a] == nil {
+		m[a] = make(map[string]bool)
+	}
+	m[a][b] = true
 }
 
 // findTriangles ищет все треугольники с обеими последовательностями обхода
@@ -153,7 +176,6 @@ func findTriangles(graph Graph) [][3]string {
 					continue
 				}
 				if contains(graph[c], a) {
-					// Добавляем оба обхода: a-b-c-a и a-c-b-a
 					triangles = append(triangles, [3]string{a, b, c})
 					triangles = append(triangles, [3]string{a, c, b})
 				}
@@ -163,7 +185,14 @@ func findTriangles(graph Graph) [][3]string {
 	return triangles
 }
 
-// contains проверяет, есть ли элемент в срезе
+// isRealTriangle проверяет, что все три пары существуют
+func isRealTriangle(tri [3]string, pairs map[string]map[string]bool) bool {
+	a, b, c := tri[0], tri[1], tri[2]
+	return (pairs[a][b] || pairs[b][a]) &&
+		(pairs[b][c] || pairs[c][b]) &&
+		(pairs[c][a] || pairs[a][c])
+}
+
 func contains(slice []string, val string) bool {
 	for _, s := range slice {
 		if s == val {
@@ -172,7 +201,5 @@ func contains(slice []string, val string) bool {
 	}
 	return false
 }
-
-
 
 
