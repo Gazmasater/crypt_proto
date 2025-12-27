@@ -117,90 +117,86 @@ Showing top 10 nodes out of 13
 
 
 
+func fastParseFloat(s string) float64 {
+    // очень простой парсер для формата "123.456"
+    i := 0
+    var intPart int64
+    for ; i < len(s) && s[i] != '.'; i++ {
+        intPart = intPart*10 + int64(s[i]-'0')
+    }
+
+    var fracPart int64
+    fracDiv := 1.0
+    if i < len(s) && s[i] == '.' {
+        i++
+        for ; i < len(s); i++ {
+            fracPart = fracPart*10 + int64(s[i]-'0')
+            fracDiv *= 10
+        }
+    }
+
+    return float64(intPart) + float64(fracPart)/fracDiv
+}
+
 func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.MarketData {
-	switch body := wrap.GetBody().(type) {
-	case *pb.PushDataV3ApiWrapper_PublicAggreBookTicker:
-		bt := body.PublicAggreBookTicker
+    body, ok := wrap.GetBody().(*pb.PushDataV3ApiWrapper_PublicAggreBookTicker)
+    if !ok {
+        return nil
+    }
+    bt := body.PublicAggreBookTicker
 
-		bid, _ := strconv.ParseFloat(bt.GetBidPrice(), 64)
-		ask, _ := strconv.ParseFloat(bt.GetAskPrice(), 64)
-		bidSize, _ := strconv.ParseFloat(bt.GetBidQuantity(), 64)
-		askSize, _ := strconv.ParseFloat(bt.GetAskQuantity(), 64)
+    bid := fastParseFloat(bt.GetBidPrice())
+    ask := fastParseFloat(bt.GetAskPrice())
+    bidSize := fastParseFloat(bt.GetBidQuantity())
+    askSize := fastParseFloat(bt.GetAskQuantity())
 
-		symbol := wrap.GetSymbol()
-		if symbol == "" {
-			ch := wrap.GetChannel()
-			if ch != "" {
-				parts := strings.Split(ch, "@")
-				symbol = parts[len(parts)-1]
-			}
-		}
+    symbol := wrap.GetSymbol()
+    if symbol == "" {
+        ch := wrap.GetChannel()
+        if ch != "" {
+            parts := strings.Split(ch, "@")
+            symbol = parts[len(parts)-1]
+        }
+    }
+    symbol = market.NormalizeSymbol_Full(symbol)
+    if symbol == "" {
+        return nil
+    }
 
-		symbol = market.NormalizeSymbol_Full(symbol)
-		if symbol == "" {
-			return nil
-		}
+    // фильтрация по whitelist
+    if len(c.allowed) > 0 {
+        if _, ok := c.allowed[symbol]; !ok {
+            return nil
+        }
+    }
 
-		// фильтрация по whitelist
-		if len(c.allowed) > 0 {
-			if _, ok := c.allowed[symbol]; !ok {
-				return nil
-			}
-		}
+    // дедупликация struct
+    c.mu.Lock()
+    last, ok := c.lastData[symbol]
+    if ok && last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+        c.mu.Unlock()
+        return nil
+    }
+    c.lastData[symbol] = struct {
+        Bid, Ask, BidSize, AskSize float64
+    }{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
+    c.mu.Unlock()
 
-		// создаём хэш тикера для дедупликации
-		hash := fmt.Sprintf("%.8f:%.8f:%.8f:%.8f", bid, ask, bidSize, askSize)
+    ts := time.Now().UnixMilli()
+    if t := wrap.GetSendTime(); t > 0 {
+        ts = t
+    }
 
-		// дедупликация через map + RWMutex
-		c.mu.RLock()
-		lastHash, ok := c.lastData[symbol]
-		c.mu.RUnlock()
-		if ok && lastHash == hash {
-			return nil
-		}
+    // объект из пула
+    md := c.pool.Get().(*models.MarketData)
+    md.Exchange = "MEXC"
+    md.Symbol = symbol
+    md.Bid = bid
+    md.Ask = ask
+    md.BidSize = bidSize
+    md.AskSize = askSize
+    md.Timestamp = ts
 
-		c.mu.Lock()
-		c.lastData[symbol] = hash
-		c.mu.Unlock()
-
-		ts := time.Now().UnixMilli()
-		if t := wrap.GetSendTime(); t > 0 {
-			ts = t
-		}
-
-		// берём объект из пула
-		md := c.pool.Get().(*models.MarketData)
-		md.Exchange = "MEXC"
-		md.Symbol = symbol
-		md.Bid = bid
-		md.Ask = ask
-		md.BidSize = bidSize
-		md.AskSize = askSize
-		md.Timestamp = ts
-
-		return md
-
-	default:
-		return nil
-	}
+    return md
 }
-
-
-
-type MEXCCollector struct {
-    ...
-    lastData map[string]string   // вместо map[string]struct{Bid,Ask,BidSize,AskSize float64}
-    mu       sync.RWMutex        // вместо sync.Mutex
-    ...
-}
-
-
-        // RWMutex для безопасного чтения/записи
-	pool     *sync.Pool
-}
-
-
-		lastData: make(map[string]string), // здесь карта для хэшей
-
-
 
