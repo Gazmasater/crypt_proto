@@ -138,21 +138,16 @@ import (
 )
 
 type MEXCCollector struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	conn        *websocket.Conn
-	symbols     []string
-	allowed     map[string]struct{} // whitelist
-	lastData    sync.Map             // symbol -> *LastTick
-	marketPool  *sync.Pool
-	batchSize   int
-	batchPeriod time.Duration
+	ctx      context.Context
+	cancel   context.CancelFunc
+	conn     *websocket.Conn
+	symbols  []string
+	allowed  map[string]struct{} // whitelist
+	lastData sync.Map            // map[string]struct{Bid, Ask, BidSize, AskSize float64}
+	pool     *sync.Pool
 }
 
-type LastTick struct {
-	Bid, Ask, BidSize, AskSize float64
-}
-
+// Конструктор с пулом
 func NewMEXCCollector(symbols []string, whitelist []string, pool *sync.Pool) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
 	allowed := make(map[string]struct{}, len(whitelist))
@@ -160,14 +155,11 @@ func NewMEXCCollector(symbols []string, whitelist []string, pool *sync.Pool) *ME
 		allowed[market.NormalizeSymbol_Full(s)] = struct{}{}
 	}
 	return &MEXCCollector{
-		ctx:         ctx,
-		cancel:      cancel,
-		symbols:     symbols,
-		allowed:     allowed,
-		lastData:    sync.Map{},
-		marketPool:  pool,
-		batchSize:   50,
-		batchPeriod: 50 * time.Millisecond,
+		ctx:     ctx,
+		cancel:  cancel,
+		symbols: symbols,
+		allowed: allowed,
+		pool:    pool,
 	}
 }
 
@@ -175,7 +167,6 @@ func (c *MEXCCollector) Name() string {
 	return "MEXC"
 }
 
-// канал принимает указатели
 func (c *MEXCCollector) Start(out chan<- *models.MarketData) error {
 	conn, _, err := websocket.DefaultDialer.Dial(configs.MEXC_WS, nil)
 	if err != nil {
@@ -184,7 +175,6 @@ func (c *MEXCCollector) Start(out chan<- *models.MarketData) error {
 	c.conn = conn
 	log.Println("[MEXC] connected")
 
-	// подписка чанками
 	if err := c.subscribeChunks(25); err != nil {
 		return err
 	}
@@ -226,6 +216,7 @@ func (c *MEXCCollector) subscribeChunks(chunkSize int) error {
 func (c *MEXCCollector) pingLoop() {
 	t := time.NewTicker(configs.MEXC_PING_INTERVAL)
 	defer t.Stop()
+
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -237,17 +228,7 @@ func (c *MEXCCollector) pingLoop() {
 }
 
 func (c *MEXCCollector) readLoop(out chan<- *models.MarketData) {
-	batch := make([]*models.MarketData, 0, c.batchSize)
-	timer := time.NewTimer(c.batchPeriod)
-	defer timer.Stop()
-
-	flush := func() {
-		for _, md := range batch {
-			out <- md
-		}
-		batch = batch[:0]
-		timer.Reset(c.batchPeriod)
-	}
+	_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
 
 	for {
 		select {
@@ -256,10 +237,16 @@ func (c *MEXCCollector) readLoop(out chan<- *models.MarketData) {
 		default:
 		}
 
-		_, raw, err := c.conn.ReadMessage()
+		mt, raw, err := c.conn.ReadMessage()
 		if err != nil {
 			log.Printf("[MEXC] read error: %v\n", err)
 			return
+		}
+
+		_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
+
+		if mt != websocket.BinaryMessage {
+			continue
 		}
 
 		var wrap pb.PushDataV3ApiWrapper
@@ -267,16 +254,8 @@ func (c *MEXCCollector) readLoop(out chan<- *models.MarketData) {
 			continue
 		}
 
-		md := c.handleWrapper(&wrap)
-		if md != nil {
-			batch = append(batch, md)
-		}
-
-		if len(batch) >= c.batchSize {
-			flush()
-		} else if !timer.Stop() {
-			<-timer.C
-			flush()
+		if md := c.handleWrapper(&wrap); md != nil {
+			out <- md
 		}
 	}
 }
@@ -315,212 +294,42 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 	}
 
 	// дедупликация через sync.Map
-	lastRaw, _ := c.lastData.Load(symbol)
-	if lastRaw != nil {
-		last := lastRaw.(*LastTick)
+	lastVal, _ := c.lastData.Load(symbol)
+	if lastVal != nil {
+		last := lastVal.(struct{ Bid, Ask, BidSize, AskSize float64 })
 		if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
 			return nil
 		}
 	}
 
-	c.lastData.Store(symbol, &LastTick{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize})
+	c.lastData.Store(symbol, struct{ Bid, Ask, BidSize, AskSize float64 }{bid, ask, bidSize, askSize})
 
-	// берём MarketData из пула
-	md := c.marketPool.Get().(*models.MarketData)
+	ts := time.Now().UnixMilli()
+	if t := wrap.GetSendTime(); t > 0 {
+		ts = t
+	}
+
+	md := c.pool.Get().(*models.MarketData)
 	md.Exchange = "MEXC"
 	md.Symbol = symbol
 	md.Bid = bid
 	md.Ask = ask
 	md.BidSize = bidSize
 	md.AskSize = askSize
-	md.Timestamp = wrap.GetSendTime()
-	if md.Timestamp == 0 {
-		md.Timestamp = time.Now().UnixMilli()
-	}
+	md.Timestamp = ts
 
 	return md
 }
 
+// разбивает слайс на чанки
 func chunkSymbols(src []string, size int) [][]string {
 	var out [][]string
 	for size < len(src) {
 		out = append(out, src[:size:size])
 		src = src[size:]
 	}
-	if len(src) > 0 {
-		out = append(out, src)
-	}
+	out = append(out, src)
 	return out
-}
-
-
-
-
-package main
-
-import (
-	"encoding/csv"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"strings"
-	"syscall"
-
-	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
-
-	_ "net/http/pprof"
-	"github.com/joho/godotenv"
-)
-
-func main() {
-	// загружаем .env
-	_ = godotenv.Load(".env")
-
-	// запускаем pprof
-	go func() {
-		log.Println("pprof running on http://localhost:6060/debug/pprof/")
-		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
-			log.Printf("pprof server error: %v", err)
-		}
-	}()
-
-	exchange := strings.ToLower(os.Getenv("EXCHANGE"))
-	if exchange == "" {
-		log.Fatal("Set EXCHANGE env variable: mexc | okx | kucoin")
-	}
-	log.Println("EXCHANGE:", exchange)
-
-	// создаём пул MarketData
-	marketPool := &sync.Pool{
-		New: func() any {
-			return &models.MarketData{}
-		},
-	}
-
-	// канал маркет-данных (указатели)
-	marketDataCh := make(chan *models.MarketData, 1000)
-
-	// читаем whitelist из CSV
-	csvPath := "mexc_triangles_usdt_routes.csv"
-	symbols, err := readSymbolsFromCSV(csvPath)
-	if err != nil {
-		log.Fatalf("read CSV symbols: %v", err)
-	}
-	log.Printf("Loaded %d unique symbols from %s", len(symbols), csvPath)
-
-	// создаём whitelist
-	whitelist := make([]string, len(symbols))
-	copy(whitelist, symbols)
-
-	var c collector.Collector
-
-	switch exchange {
-	case "mexc":
-		c = collector.NewMEXCCollector(symbols, whitelist, marketPool)
-	case "okx":
-		log.Fatal("OKX collector not implemented yet")
-	case "kucoin":
-		log.Fatal("KuCoin collector not implemented yet")
-	default:
-		log.Fatal("Unknown exchange:", exchange)
-	}
-
-	// старт Collector
-	if err := c.Start(marketDataCh); err != nil {
-		log.Fatal("start collector:", err)
-	}
-
-	// consumer
-	go func() {
-		for md := range marketDataCh {
-			log.Printf("[%s] %s bid=%.8f ask=%.8f bidSize=%.8f askSize=%.8f",
-				md.Exchange,
-				md.Symbol,
-				md.Bid,
-				md.Ask,
-				md.BidSize,
-				md.AskSize,
-			)
-			// возвращаем объект в пул
-			marketPool.Put(md)
-		}
-	}()
-
-	// graceful shutdown
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-
-	log.Println("Stopping collector...")
-	if err := c.Stop(); err != nil {
-		log.Println("Stop error:", err)
-	}
-}
-
-// ------------------------------------------------------------
-// CSV → symbols
-// ------------------------------------------------------------
-func readSymbolsFromCSV(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-
-	header, err := r.Read()
-	if err != nil {
-		return nil, err
-	}
-
-	colIndex := make(map[string]int)
-	for i, h := range header {
-		colIndex[strings.ToLower(strings.TrimSpace(h))] = i
-	}
-
-	required := []string{
-		"leg1_symbol",
-		"leg2_symbol",
-		"leg3_symbol",
-	}
-
-	var idx []int
-	for _, name := range required {
-		i, ok := colIndex[name]
-		if !ok {
-			return nil, csv.ErrFieldCount
-		}
-		idx = append(idx, i)
-	}
-
-	uniq := make(map[string]struct{})
-
-	for {
-		row, err := r.Read()
-		if err != nil {
-			break
-		}
-
-		for _, i := range idx {
-			if i >= len(row) {
-				continue
-			}
-			s := strings.TrimSpace(row[i])
-			if s != "" {
-				uniq[s] = struct{}{}
-			}
-		}
-	}
-
-	out := make([]string, 0, len(uniq))
-	for s := range uniq {
-		out = append(out, s)
-	}
-
-	return out, nil
 }
 
 
