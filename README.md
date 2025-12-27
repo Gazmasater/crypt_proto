@@ -73,6 +73,7 @@ import (
 	"time"
 )
 
+// ------------------- Структуры -------------------
 type Symbol struct {
 	Symbol               string   `json:"symbol"`
 	BaseAsset            string   `json:"baseAsset"`
@@ -91,6 +92,7 @@ type Triangle struct {
 	Pairs   [3]string
 }
 
+// ------------------- Фильтр -------------------
 func isTradable(s Symbol) bool {
 	if !s.IsSpotTradingAllowed {
 		return false
@@ -113,7 +115,9 @@ func isTradable(s Symbol) bool {
 	return false
 }
 
+// ------------------- Генерация треугольников с инверсными парами -------------------
 func findTriangles(symbols []Symbol) []Triangle {
+	// map[валюта][валюта] = symbol
 	pairMap := make(map[string]map[string]Symbol)
 	for _, s := range symbols {
 		if !isTradable(s) {
@@ -123,6 +127,18 @@ func findTriangles(symbols []Symbol) []Triangle {
 			pairMap[s.BaseAsset] = make(map[string]Symbol)
 		}
 		pairMap[s.BaseAsset][s.QuoteAsset] = s
+		// добавляем инверсную пару для поиска
+		if _, ok := pairMap[s.QuoteAsset]; !ok {
+			pairMap[s.QuoteAsset] = make(map[string]Symbol)
+		}
+		pairMap[s.QuoteAsset][s.BaseAsset] = Symbol{
+			Symbol:               s.Symbol + "_INV",
+			BaseAsset:            s.QuoteAsset,
+			QuoteAsset:           s.BaseAsset,
+			IsSpotTradingAllowed: true,
+			OrderTypes:           s.OrderTypes,
+			Permissions:          s.Permissions,
+		}
 	}
 
 	var triangles []Triangle
@@ -138,27 +154,18 @@ func findTriangles(symbols []Symbol) []Triangle {
 			if !isTradable(s2) {
 				continue
 			}
-			// ищем третью ногу C -> A
 			if s3map, ok := pairMap[C]; ok {
 				if s3, ok2 := s3map[A]; ok2 && isTradable(s3) {
-					// Первый вариант: A -> B -> C -> A
+					// A -> B -> C -> A
 					triangles = append(triangles, Triangle{
 						A: A, B: B, C: C,
 						Pairs: [3]string{s1.Symbol, s2.Symbol, s3.Symbol},
 					})
-					// Второй вариант: A -> C -> B -> A
-					if s4map, ok := pairMap[C]; ok {
-						if s4, ok2 := s4map[B]; ok2 && isTradable(s4) {
-							if s5map, ok := pairMap[B]; ok {
-								if s5, ok2 := s5map[A]; ok2 && isTradable(s5) {
-									triangles = append(triangles, Triangle{
-										A: A, B: C, C: B,
-										Pairs: [3]string{s4.Symbol, s5.Symbol, s1.Symbol},
-									})
-								}
-							}
-						}
-					}
+					// A -> C -> B -> A
+					triangles = append(triangles, Triangle{
+						A: A, B: C, C: B,
+						Pairs: [3]string{s2.Symbol, s1.Symbol, s3.Symbol},
+					})
 				}
 			}
 		}
@@ -167,6 +174,7 @@ func findTriangles(symbols []Symbol) []Triangle {
 	return triangles
 }
 
+// ------------------- Получение данных с API -------------------
 func fetchExchangeInfo() ([]Symbol, error) {
 	url := "https://www.mexc.com/open/api/v2/market/symbols"
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -183,6 +191,7 @@ func fetchExchangeInfo() ([]Symbol, error) {
 	return info.Symbols, nil
 }
 
+// ------------------- Основная функция -------------------
 func main() {
 	symbols, err := fetchExchangeInfo()
 	if err != nil {
@@ -190,13 +199,11 @@ func main() {
 	}
 
 	triangles := findTriangles(symbols)
-	fmt.Printf("Найдено %d треугольников с обеими направленностями:\n", len(triangles))
+	fmt.Printf("Найдено %d треугольников с обеими направленностями и инверсными парами:\n", len(triangles))
 	for _, t := range triangles {
 		fmt.Println(t.A, "->", t.B, "->", t.C, "Pairs:", t.Pairs)
 	}
 }
 
-
-KER] [SPOT]} {GBCKUSDT GBCK USDT false [LIMIT MARKET LIMIT_MAKER] [SPOT]} {SGBUSDT SGB USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {SANDUSDT SAND USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {SQTUSDT SQT USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {GIZAUSDT GIZA USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {XPRUSDT XPR USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {PSGUSDT PSG USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {BEAMXUSDT BEAMX USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {KINICUSDT KINIC USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {STATUSDT STAT USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {XMRUSDC XMR USDC true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {NFLXONUSDT NFLXON USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {SUSHIUSDT SUSHI USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {AVNTUSDC AVNT USDC false [LIMIT MARKET LIMIT_MAKER] [SPOT]} {LUNAIUSDT LUNAI USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {VGXUSDT VGX USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {TREEUSDT TREE USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]} {DOTUSDT DOT USDT true [LIMIT MARKET LIMIT_MAKER] [SPOT]}
 
 
