@@ -115,6 +115,33 @@ Showing top 10 nodes out of 89
 
 
 
+
+	  Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.021.pb.gz
+File: arb
+Build ID: d38711012bfd502cb36df92dd040fd9d2838a729
+Type: cpu
+Time: 2025-12-27 05:40:40 MSK
+Duration: 30s, Total samples = 440ms ( 1.47%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 280ms, 63.64% of 440ms total
+Showing top 10 nodes out of 132
+      flat  flat%   sum%        cum   cum%
+     160ms 36.36% 36.36%      160ms 36.36%  internal/runtime/syscall.Syscall6
+      30ms  6.82% 43.18%       30ms  6.82%  runtime.futex
+      20ms  4.55% 47.73%       20ms  4.55%  runtime.(*timers).check
+      10ms  2.27% 50.00%       10ms  2.27%  crypt_proto/internal/collector.fastParseFloat
+      10ms  2.27% 52.27%       10ms  2.27%  crypt_proto/internal/market.NormalizeSymbol_NoAlloc
+      10ms  2.27% 54.55%       10ms  2.27%  crypto/internal/fips140/aes.encryptBlock
+      10ms  2.27% 56.82%       20ms  4.55%  crypto/internal/fips140/aes/gcm.(*GCM).Open
+      10ms  2.27% 59.09%       40ms  9.09%  crypto/tls.(*halfConn).decrypt
+      10ms  2.27% 61.36%       10ms  2.27%  crypto/tls.(*xorNonceAEAD).explicitNonceLen
+      10ms  2.27% 63.64%      180ms 40.91%  github.com/gorilla/websocket.(*Conn).read
+(pprof) 
+
+
+
 gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
 Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
 Saved profile in /home/gaz358/pprof/pprof.arb.alloc_objects.alloc_space.inuse_objects.inuse_space.002.pb.gz
@@ -141,28 +168,6 @@ Showing top 10 nodes out of 13
 
 
 
+2025/12/27 05:42:35 [MEXC] BABYDOGE/USDC bid=0.00000000 ask=0.00000000
 
-func NewMEXCCollector(symbols []string, whitelist []string, pool *sync.Pool) *MEXCCollector {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	allowed := make(map[string]struct{}, len(whitelist))
-	for _, s := range whitelist {
-		allowed[market.NormalizeSymbol_Full(s)] = struct{}{}
-	}
-
-	return &MEXCCollector{
-		ctx:      ctx,
-		cancel:   cancel,
-		symbols:  symbols,
-		allowed:  allowed,
-		lastData: make(map[string]struct {
-			Bid, Ask, BidSize, AskSize float64
-		}),
-		pool: pool,
-		buf:  make([]byte, 0, 32),
-	}
-}
-
-
-buf []byte
 
