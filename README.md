@@ -295,3 +295,26 @@ type MEXCCollector struct {
     buf   []byte              // отдельный буфер для NormalizeSymbol
 }
 
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use &c.pool (value of type **\"sync\".Pool) as *[]byte value in argument to market.NormalizeSymbol_NoAlloc",
+	"source": "compiler",
+	"startLineNumber": 172,
+	"startColumn": 50,
+	"endLineNumber": 172,
+	"endColumn": 57,
+	"origin": "extHost1"
+}]
