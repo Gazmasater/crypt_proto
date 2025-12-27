@@ -2,277 +2,213 @@ package main
 
 import (
 	"encoding/csv"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
+	"sort"
 )
 
-type Tri struct {
-	Base1, Quote1, Base2, Quote2, Base3, Quote3 string
-	Sym1, Sym2, Sym3                            string
+// Структура под /api/v3/exchangeInfo (нужны только нужные поля)
+type exchangeInfo struct {
+	Symbols []struct {
+		Symbol     string `json:"symbol"`
+		BaseAsset  string `json:"baseAsset"`
+		QuoteAsset string `json:"quoteAsset"`
+		Status     string `json:"status"`
+	} `json:"symbols"`
 }
 
-type Market struct {
-	Symbol      string
-	Base, Quote string
+// Маркет (одна торговая пара)
+type pairMarket struct {
+	Symbol string
+	Base   string
+	Quote  string
 }
 
-type Leg struct {
-	From, To  string
-	Symbol    string
-	Action    string // BUY or SELL
-	PriceSide string // ASK for BUY, BID for SELL (под твой стакан)
+// Ключ валютной пары без направления (min, max)
+type pairKey struct {
+	A, B string
 }
 
-// BUY: quote -> base по ASK
-// SELL: base -> quote по BID
-func makeLeg(from, to string, m Market) (Leg, bool) {
-	if from == m.Quote && to == m.Base {
-		return Leg{From: from, To: to, Symbol: m.Symbol, Action: "BUY", PriceSide: "ASK"}, true
-	}
-	if from == m.Base && to == m.Quote {
-		return Leg{From: from, To: to, Symbol: m.Symbol, Action: "SELL", PriceSide: "BID"}, true
-	}
-	return Leg{}, false
-}
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-// DFS по 3 ребрам (рынкам) без повторов ребер: USDT -> ? -> ? -> USDT
-func findUSDTRoutes(markets []Market) [][]Leg {
-	const start = "USDT"
-
-	var routes [][]Leg
-
-	used := make([]bool, len(markets))
-	var path []Leg
-
-	var dfs func(curr string, depth int)
-	dfs = func(curr string, depth int) {
-		if depth == 3 {
-			if curr == start {
-				cp := make([]Leg, len(path))
-				copy(cp, path)
-				routes = append(routes, cp)
-			}
-			return
-		}
-
-		for i, mk := range markets {
-			if used[i] {
-				continue
-			}
-			// этот рынок должен соединять curr с каким-то next
-			// next может быть base или quote
-			nexts := [2]string{mk.Base, mk.Quote}
-			for _, next := range nexts {
-				if next == curr {
-					continue
-				}
-				// рынок должен содержать curr
-				if mk.Base != curr && mk.Quote != curr {
-					continue
-				}
-				leg, ok := makeLeg(curr, next, mk)
-				if !ok {
-					continue
-				}
-				used[i] = true
-				path = append(path, leg)
-				dfs(next, depth+1)
-				path = path[:len(path)-1]
-				used[i] = false
-			}
-		}
-	}
-
-	dfs(start, 0)
-	return routes
-}
-
-func headerIndex(h []string) map[string]int {
-	m := map[string]int{}
-	for i, s := range h {
-		m[strings.ToLower(strings.TrimSpace(s))] = i
-	}
-	return m
-}
-
-func needCol(idx map[string]int, name string) (int, error) {
-	i, ok := idx[name]
-	if !ok {
-		return 0, fmt.Errorf("нет колонки %q в CSV", name)
-	}
-	return i, nil
-}
-
-func readTriangles(path string) ([]Tri, error) {
-	f, err := os.Open(path)
+	// 1) Тянем exchangeInfo
+	resp, err := http.Get("https://api.mexc.com/api/v3/exchangeInfo")
 	if err != nil {
-		return nil, err
+		log.Fatalf("get exchangeInfo: %v", err)
 	}
-	defer f.Close()
+	defer resp.Body.Close()
 
-	r := csv.NewReader(f)
-	r.ReuseRecord = true
-
-	h, err := r.Read()
-	if err != nil {
-		return nil, err
-	}
-	idx := headerIndex(h)
-
-	get := func(row []string, col string) (string, error) {
-		i, err := needCol(idx, col)
-		if err != nil {
-			return "", err
-		}
-		if i >= len(row) {
-			return "", fmt.Errorf("строка короче заголовка: col=%s", col)
-		}
-		return strings.TrimSpace(row[i]), nil
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		log.Fatalf("exchangeInfo status %d: %s", resp.StatusCode, string(b))
 	}
 
-	var out []Tri
-	for {
-		row, err := r.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, err
+	var info exchangeInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		log.Fatalf("decode exchangeInfo: %v", err)
+	}
+
+	log.Printf("total symbols from API: %d", len(info.Symbols))
+
+	// 2) Фильтруем маркеты
+	markets := make([]pairMarket, 0, len(info.Symbols))
+	for _, s := range info.Symbols {
+		base := s.BaseAsset
+		quote := s.QuoteAsset
+		if base == "" || quote == "" {
+			continue
 		}
 
-		b1, err := get(row, "base1")
-		if err != nil {
-			return nil, err
-		}
-		q1, err := get(row, "quote1")
-		if err != nil {
-			return nil, err
-		}
-		b2, err := get(row, "base2")
-		if err != nil {
-			return nil, err
-		}
-		q2, err := get(row, "quote2")
-		if err != nil {
-			return nil, err
-		}
-		b3, err := get(row, "base3")
-		if err != nil {
-			return nil, err
-		}
-		q3, err := get(row, "quote3")
-		if err != nil {
-			return nil, err
+		// Мягкий фильтр по статусу: берём всё "торгуемое"
+		// (на MEXC это может быть "ENABLED", "TRADING", "1" и т.п.)
+		if s.Status != "" &&
+			s.Status != "ENABLED" &&
+			s.Status != "TRADING" &&
+			s.Status != "1" {
+			continue
 		}
 
-		s1, err := get(row, "symbol1")
-		if err != nil {
-			return nil, err
-		}
-		s2, err := get(row, "symbol2")
-		if err != nil {
-			return nil, err
-		}
-		s3, err := get(row, "symbol3")
-		if err != nil {
-			return nil, err
-		}
-
-		out = append(out, Tri{
-			Base1: b1, Quote1: q1, Base2: b2, Quote2: q2, Base3: b3, Quote3: q3,
-			Sym1: s1, Sym2: s2, Sym3: s3,
+		markets = append(markets, pairMarket{
+			Symbol: s.Symbol,
+			Base:   base,
+			Quote:  quote,
 		})
 	}
-	return out, nil
-}
+	log.Printf("filtered markets: %d", len(markets))
 
-func ensureDirForFile(path string) error {
-	dir := filepath.Dir(path)
-	if dir == "." || dir == "/" || dir == "" {
-		return nil
-	}
-	return os.MkdirAll(dir, 0o755)
-}
+	// 3) Строим pairmap и граф валют
+	pairmap := make(map[pairKey][]pairMarket)
+	adj := make(map[string]map[string]struct{})
 
-func writeRoutes(outPath string, rows [][]string) error {
-	if err := ensureDirForFile(outPath); err != nil {
-		return err
+	addEdge := func(a, b string) {
+		if adj[a] == nil {
+			adj[a] = make(map[string]struct{})
+		}
+		adj[a][b] = struct{}{}
 	}
-	f, err := os.Create(outPath)
+
+	for _, m := range markets {
+		a, b := m.Base, m.Quote
+		key := pairKey{A: a, B: b}
+		if a > b {
+			key = pairKey{A: b, B: a}
+		}
+		pairmap[key] = append(pairmap[key], m)
+
+		addEdge(a, b)
+		addEdge(b, a)
+	}
+
+	log.Printf("currencies (vertices): %d, pair keys: %d", len(adj), len(pairmap))
+
+	// 4) Индексация валют
+	coins := make([]string, 0, len(adj))
+	for c := range adj {
+		coins = append(coins, c)
+	}
+	sort.Strings(coins)
+
+	idx := make(map[string]int, len(coins))
+	for i, c := range coins {
+		idx[c] = i
+	}
+
+	neighbors := make([]map[int]struct{}, len(coins))
+	for i := range neighbors {
+		neighbors[i] = make(map[int]struct{})
+	}
+	for c, neighs := range adj {
+		i := idx[c]
+		for nb := range neighs {
+			j := idx[nb]
+			neighbors[i][j] = struct{}{}
+		}
+	}
+
+	// 5) Поиск валютных треугольников (A,B,C с A<B<C)
+	type triangle struct {
+		A, B, C string
+	}
+
+	triangles := make([]triangle, 0)
+
+	for i := 0; i < len(coins); i++ {
+		ni := neighbors[i]
+
+		for j := range ni {
+			if j <= i {
+				continue
+			}
+			nj := neighbors[j]
+
+			for k := range ni {
+				if k <= j {
+					continue
+				}
+				if _, ok := nj[k]; ok {
+					triangles = append(triangles, triangle{
+						A: coins[i],
+						B: coins[j],
+						C: coins[k],
+					})
+				}
+			}
+		}
+	}
+	log.Printf("found currency triangles: %d", len(triangles))
+
+	// 6) Пишем в CSV реальные маркеты для пар (A,B), (B,C), (A,C)
+	outFile := "triangles_markets.csv"
+	f, err := os.Create(outFile)
 	if err != nil {
-		return err
+		log.Fatalf("create %s: %v", outFile, err)
 	}
 	defer f.Close()
 
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	for _, row := range rows {
-		if err := w.Write(row); err != nil {
-			return err
-		}
-	}
-	w.Flush()
-	return w.Error()
-}
-
-func main() {
-	in := "triangles_markets.csv"
-	out := "triangles_usdt_routes.csv"
-
-	tris, err := readTriangles(in)
-	if err != nil {
-		fmt.Println("ERR:", err)
-		os.Exit(1)
+	if err := w.Write([]string{"base1", "quote1", "base2", "quote2", "base3", "quote3"}); err != nil {
+		log.Fatalf("write header: %v", err)
 	}
 
-	// Заголовок итогового CSV
-	rows := [][]string{{
-		"start", "mid1", "mid2", "end",
-		"leg1_symbol", "leg1_action", "leg1_price", "leg1_from", "leg1_to",
-		"leg2_symbol", "leg2_action", "leg2_price", "leg2_from", "leg2_to",
-		"leg3_symbol", "leg3_action", "leg3_price", "leg3_from", "leg3_to",
-	}}
-
-	countRoutes := 0
-
-	for _, t := range tris {
-		markets := []Market{
-			{Symbol: t.Sym1, Base: t.Base1, Quote: t.Quote1},
-			{Symbol: t.Sym2, Base: t.Base2, Quote: t.Quote2},
-			{Symbol: t.Sym3, Base: t.Base3, Quote: t.Quote3},
+	pick := func(x, y string) (pairMarket, bool) {
+		key := pairKey{A: x, B: y}
+		if x > y {
+			key = pairKey{A: y, B: x}
 		}
-
-		routes := findUSDTRoutes(markets)
-		if len(routes) == 0 {
-			continue // треугольник не даёт цикл USDT->...->USDT (или странные активы)
+		list := pairmap[key]
+		if len(list) == 0 {
+			return pairMarket{}, false
 		}
-
-		for _, rt := range routes {
-			// rt длина 3, начинается USDT и заканчивает USDT
-			if len(rt) != 3 {
-				continue
-			}
-			row := []string{
-				"USDT", rt[0].To, rt[1].To, "USDT",
-
-				rt[0].Symbol, rt[0].Action, rt[0].PriceSide, rt[0].From, rt[0].To,
-				rt[1].Symbol, rt[1].Action, rt[1].PriceSide, rt[1].From, rt[1].To,
-				rt[2].Symbol, rt[2].Action, rt[2].PriceSide, rt[2].From, rt[2].To,
-			}
-			rows = append(rows, row)
-			countRoutes++
-		}
+		return list[0], true
 	}
 
-	if err := writeRoutes(out, rows); err != nil {
-		fmt.Println("ERR: write csv:", err)
-		os.Exit(1)
+	count := 0
+	for _, t := range triangles {
+		m1, ok1 := pick(t.A, t.B)
+		m2, ok2 := pick(t.B, t.C)
+		m3, ok3 := pick(t.A, t.C)
+		if !ok1 || !ok2 || !ok3 {
+			continue
+		}
+
+		rec := []string{
+			m1.Base, m1.Quote,
+			m2.Base, m2.Quote,
+			m3.Base, m3.Quote,
+		}
+		if err := w.Write(rec); err != nil {
+			log.Fatalf("write record: %v", err)
+		}
+		count++
 	}
 
-	fmt.Printf("OK: routes=%d -> %s\n", countRoutes, out)
+	log.Printf("written triangles to %s: %d", outFile, count)
+	fmt.Println("Готово, файл:", outFile)
 }
