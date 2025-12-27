@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
 	"encoding/csv"
 	"log"
 	"net/http"
@@ -10,7 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
+
+	"crypt_proto/internal/collector"
+	"crypt_proto/pkg/models"
 
 	"github.com/joho/godotenv"
 )
@@ -32,12 +34,18 @@ func main() {
 	log.Println("EXCHANGE:", exchange)
 
 	// канал маркет-данных
-	marketDataCh := make(chan models.MarketData, 1000)
+	marketDataCh := make(chan *models.MarketData, 1000)
+
+	// пул MarketData
+	marketDataPool := &sync.Pool{
+		New: func() interface{} {
+			return new(models.MarketData)
+		},
+	}
 
 	// === читаем whitelist из CSV ===
 	csvPath := "mexc_triangles_usdt_routes.csv"
 
-	// symbols для подписки
 	symbols, err := readSymbolsFromCSV(csvPath)
 	if err != nil {
 		log.Fatalf("read CSV symbols: %v", err)
@@ -52,15 +60,14 @@ func main() {
 
 	switch exchange {
 	case "mexc":
-		// передаём whitelist
-		c = collector.NewMEXCCollector(symbols, whitelist)
+		c = collector.NewMEXCCollector(symbols, whitelist, marketDataPool)
 
-	case "okx":
-		c = collector.NewOKXCollector(symbols)
-
-	case "kucoin":
-		c = collector.NewKuCoinCollector(symbols)
-
+	//case "okx":
+	//	c = collector.NewOKXCollector(symbols)
+	//
+	//case "kucoin":
+	//	c = collector.NewKuCoinCollector(symbols)
+	//
 	default:
 		log.Fatal("Unknown exchange:", exchange)
 	}
@@ -74,11 +81,10 @@ func main() {
 	go func() {
 		for md := range marketDataCh {
 			log.Printf("[%s] %s bid=%.8f ask=%.8f",
-				md.Exchange,
-				md.Symbol,
-				md.Bid,
-				md.Ask,
+				md.Exchange, md.Symbol, md.Bid, md.Ask,
 			)
+			// возвращаем объект обратно в пул
+			marketDataPool.Put(md)
 		}
 	}()
 
@@ -116,12 +122,7 @@ func readSymbolsFromCSV(path string) ([]string, error) {
 		colIndex[strings.ToLower(strings.TrimSpace(h))] = i
 	}
 
-	required := []string{
-		"leg1_symbol",
-		"leg2_symbol",
-		"leg3_symbol",
-	}
-
+	required := []string{"leg1_symbol", "leg2_symbol", "leg3_symbol"}
 	var idx []int
 	for _, name := range required {
 		i, ok := colIndex[name]
@@ -132,13 +133,11 @@ func readSymbolsFromCSV(path string) ([]string, error) {
 	}
 
 	uniq := make(map[string]struct{})
-
 	for {
 		row, err := r.Read()
 		if err != nil {
 			break
 		}
-
 		for _, i := range idx {
 			if i >= len(row) {
 				continue
@@ -154,6 +153,5 @@ func readSymbolsFromCSV(path string) ([]string, error) {
 	for s := range uniq {
 		out = append(out, s)
 	}
-
 	return out, nil
 }

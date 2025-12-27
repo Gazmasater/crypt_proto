@@ -26,10 +26,12 @@ type MEXCCollector struct {
 	lastData map[string]struct {
 		Bid, Ask, BidSize, AskSize float64
 	}
-	mu sync.Mutex
+	mu   sync.Mutex
+	pool *sync.Pool
 }
 
-func NewMEXCCollector(symbols []string, whitelist []string) *MEXCCollector {
+// Конструктор с пулом
+func NewMEXCCollector(symbols []string, whitelist []string, pool *sync.Pool) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
 	allowed := make(map[string]struct{}, len(whitelist))
 	for _, s := range whitelist {
@@ -41,6 +43,7 @@ func NewMEXCCollector(symbols []string, whitelist []string) *MEXCCollector {
 		symbols:  symbols,
 		allowed:  allowed,
 		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
+		pool:     pool,
 	}
 }
 
@@ -48,7 +51,7 @@ func (c *MEXCCollector) Name() string {
 	return "MEXC"
 }
 
-func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
+func (c *MEXCCollector) Start(out chan<- *models.MarketData) error {
 	conn, _, err := websocket.DefaultDialer.Dial(configs.MEXC_WS, nil)
 	if err != nil {
 		return err
@@ -56,7 +59,6 @@ func (c *MEXCCollector) Start(out chan<- models.MarketData) error {
 	c.conn = conn
 	log.Println("[MEXC] connected")
 
-	// подписка чанками
 	if err := c.subscribeChunks(25); err != nil {
 		return err
 	}
@@ -109,7 +111,7 @@ func (c *MEXCCollector) pingLoop() {
 	}
 }
 
-func (c *MEXCCollector) readLoop(out chan<- models.MarketData) {
+func (c *MEXCCollector) readLoop(out chan<- *models.MarketData) {
 	_ = c.conn.SetReadDeadline(time.Now().Add(configs.MEXC_READ_TIMEOUT))
 
 	for {
@@ -130,7 +132,6 @@ func (c *MEXCCollector) readLoop(out chan<- models.MarketData) {
 		if mt == websocket.TextMessage {
 			continue // игнорируем текст
 		}
-
 		if mt != websocket.BinaryMessage {
 			continue
 		}
@@ -141,7 +142,7 @@ func (c *MEXCCollector) readLoop(out chan<- models.MarketData) {
 		}
 
 		if md := c.handleWrapper(&wrap); md != nil {
-			out <- *md
+			out <- md
 		}
 	}
 }
@@ -195,15 +196,17 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 			ts = t
 		}
 
-		return &models.MarketData{
-			Exchange:  "MEXC",
-			Symbol:    symbol,
-			Bid:       bid,
-			Ask:       ask,
-			BidSize:   bidSize,
-			AskSize:   askSize,
-			Timestamp: ts,
-		}
+		// берём объект из пула
+		md := c.pool.Get().(*models.MarketData)
+		md.Exchange = "MEXC"
+		md.Symbol = symbol
+		md.Bid = bid
+		md.Ask = ask
+		md.BidSize = bidSize
+		md.AskSize = askSize
+		md.Timestamp = ts
+
+		return md
 
 	default:
 		return nil
