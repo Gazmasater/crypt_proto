@@ -67,15 +67,77 @@ package main
 
 import (
 	"encoding/csv"
+	"encoding/json"
+	"fmt"
 	"log"
+	"net/http"
 	"os"
 )
+
+type Symbol struct {
+	BaseAsset  string `json:"baseAsset"`
+	QuoteAsset string `json:"quoteAsset"`
+	Status     string `json:"status"`
+}
+
+type ExchangeInfo struct {
+	Symbols []Symbol `json:"symbols"`
+}
 
 type Graph map[string][]string
 
 func main() {
-	// Читаем CSV с парами
-	file, err := os.Open("triangles.csv")
+	// --- Шаг 1: Получаем реальные пары с MEXC ---
+	pairs := fetchMEXCPairs()
+
+	// --- Шаг 2: Загружаем CSV и строим граф ---
+	graph := loadGraph("triangles.csv")
+
+	// --- Шаг 3: Находим все треугольники ---
+	triangles := findTriangles(graph)
+
+	// --- Шаг 4: Фильтруем реальные ---
+	realTriangles := [][]string{}
+	for _, t := range triangles {
+		if isRealTriangle(t, pairs) {
+			realTriangles = append(realTriangles, []string{t[0], t[1], t[2], t[0]})
+		}
+	}
+
+	// --- Шаг 5: Записываем в CSV ---
+	writeTriangles("real_triangles.csv", realTriangles)
+	fmt.Printf("Найдено %d реальных треугольников\n", len(realTriangles))
+}
+
+// --- Функции ---
+
+func fetchMEXCPairs() map[string]map[string]bool {
+	resp, err := http.Get("https://api.mexc.com/api/v3/exchangeInfo")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var info ExchangeInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		log.Fatal(err)
+	}
+
+	pairs := make(map[string]map[string]bool)
+	for _, s := range info.Symbols {
+		if s.Status != "ENABLED" {
+			continue
+		}
+		if pairs[s.BaseAsset] == nil {
+			pairs[s.BaseAsset] = make(map[string]bool)
+		}
+		pairs[s.BaseAsset][s.QuoteAsset] = true
+	}
+	return pairs
+}
+
+func loadGraph(filename string) Graph {
+	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -88,14 +150,8 @@ func main() {
 	}
 
 	graph := make(Graph)
-	availablePairs := make(map[string]map[string]bool)
-
-	// Пропускаем заголовок
 	for i, row := range records {
-		if i == 0 {
-			continue
-		}
-		if len(row) < 6 {
+		if i == 0 || len(row) < 6 {
 			continue
 		}
 		base1, quote1 := row[0], row[1]
@@ -104,48 +160,14 @@ func main() {
 
 		graph[base1] = appendUnique(graph[base1], quote1)
 		graph[quote1] = appendUnique(graph[quote1], base1)
-
 		graph[base2] = appendUnique(graph[base2], quote2)
 		graph[quote2] = appendUnique(graph[quote2], base2)
-
 		graph[base3] = appendUnique(graph[base3], quote3)
 		graph[quote3] = appendUnique(graph[quote3], base3)
-
-		// Создаем доступные пары для проверки реальности треугольника
-		addPair(availablePairs, base1, quote1)
-		addPair(availablePairs, base2, quote2)
-		addPair(availablePairs, base3, quote3)
 	}
-
-	// Ищем все возможные треугольники
-	triangles := findTriangles(graph)
-
-	// Фильтруем только реальные треугольники
-	realTriangles := [][]string{}
-	for _, tri := range triangles {
-		if isRealTriangle(tri, availablePairs) {
-			realTriangles = append(realTriangles, []string{tri[0], tri[1], tri[2]})
-		}
-	}
-
-	// Сохраняем в CSV
-	outFile, err := os.Create("real_triangles.csv")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer outFile.Close()
-
-	writer := csv.NewWriter(outFile)
-	defer writer.Flush()
-
-	for _, tri := range realTriangles {
-		if err := writer.Write([]string{tri[0], tri[1], tri[2], tri[0]}); err != nil {
-			log.Fatal(err)
-		}
-	}
+	return graph
 }
 
-// appendUnique добавляет значение в слайс, если его там ещё нет
 func appendUnique(slice []string, val string) []string {
 	for _, s := range slice {
 		if s == val {
@@ -155,15 +177,6 @@ func appendUnique(slice []string, val string) []string {
 	return append(slice, val)
 }
 
-// addPair добавляет пару в карту доступных пар
-func addPair(m map[string]map[string]bool, a, b string) {
-	if m[a] == nil {
-		m[a] = make(map[string]bool)
-	}
-	m[a][b] = true
-}
-
-// findTriangles ищет все треугольники с обеими последовательностями обхода
 func findTriangles(graph Graph) [][3]string {
 	var triangles [][3]string
 	for a := range graph {
@@ -185,14 +198,6 @@ func findTriangles(graph Graph) [][3]string {
 	return triangles
 }
 
-// isRealTriangle проверяет, что все три пары существуют
-func isRealTriangle(tri [3]string, pairs map[string]map[string]bool) bool {
-	a, b, c := tri[0], tri[1], tri[2]
-	return (pairs[a][b] || pairs[b][a]) &&
-		(pairs[b][c] || pairs[c][b]) &&
-		(pairs[c][a] || pairs[a][c])
-}
-
 func contains(slice []string, val string) bool {
 	for _, s := range slice {
 		if s == val {
@@ -201,5 +206,30 @@ func contains(slice []string, val string) bool {
 	}
 	return false
 }
+
+func isRealTriangle(tri [3]string, pairs map[string]map[string]bool) bool {
+	a, b, c := tri[0], tri[1], tri[2]
+	return (pairs[a][b] || pairs[b][a]) &&
+		(pairs[b][c] || pairs[c][b]) &&
+		(pairs[c][a] || pairs[a][c])
+}
+
+func writeTriangles(filename string, triangles [][]string) {
+	file, err := os.Create(filename)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	for _, t := range triangles {
+		if err := writer.Write(t); err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
 
 
