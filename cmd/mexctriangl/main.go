@@ -2,213 +2,108 @@ package main
 
 import (
 	"encoding/csv"
-	"encoding/json"
-	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
-	"sort"
 )
 
-// Структура под /api/v3/exchangeInfo (нужны только нужные поля)
-type exchangeInfo struct {
-	Symbols []struct {
-		Symbol     string `json:"symbol"`
-		BaseAsset  string `json:"baseAsset"`
-		QuoteAsset string `json:"quoteAsset"`
-		Status     string `json:"status"`
-	} `json:"symbols"`
-}
-
-// Маркет (одна торговая пара)
-type pairMarket struct {
-	Symbol string
-	Base   string
-	Quote  string
-}
-
-// Ключ валютной пары без направления (min, max)
-type pairKey struct {
-	A, B string
-}
+type Graph map[string][]string
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
-	// 1) Тянем exchangeInfo
-	resp, err := http.Get("https://api.mexc.com/api/v3/exchangeInfo")
+	file, err := os.Open("triangles_markets.csv")
 	if err != nil {
-		log.Fatalf("get exchangeInfo: %v", err)
+		log.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer file.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		log.Fatalf("exchangeInfo status %d: %s", resp.StatusCode, string(b))
-	}
-
-	var info exchangeInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		log.Fatalf("decode exchangeInfo: %v", err)
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	log.Printf("total symbols from API: %d", len(info.Symbols))
+	graph := make(Graph)
 
-	// 2) Фильтруем маркеты
-	markets := make([]pairMarket, 0, len(info.Symbols))
-	for _, s := range info.Symbols {
-		base := s.BaseAsset
-		quote := s.QuoteAsset
-		if base == "" || quote == "" {
+	// Пропускаем заголовок
+	for i, row := range records {
+		if i == 0 {
 			continue
 		}
-
-		// Мягкий фильтр по статусу: берём всё "торгуемое"
-		// (на MEXC это может быть "ENABLED", "TRADING", "1" и т.п.)
-		if s.Status != "" &&
-			s.Status != "ENABLED" &&
-			s.Status != "TRADING" &&
-			s.Status != "1" {
+		if len(row) < 6 {
 			continue
 		}
+		base1, quote1 := row[0], row[1]
+		base2, quote2 := row[2], row[3]
+		base3, quote3 := row[4], row[5]
 
-		markets = append(markets, pairMarket{
-			Symbol: s.Symbol,
-			Base:   base,
-			Quote:  quote,
-		})
-	}
-	log.Printf("filtered markets: %d", len(markets))
+		graph[base1] = appendUnique(graph[base1], quote1)
+		graph[quote1] = appendUnique(graph[quote1], base1)
 
-	// 3) Строим pairmap и граф валют
-	pairmap := make(map[pairKey][]pairMarket)
-	adj := make(map[string]map[string]struct{})
+		graph[base2] = appendUnique(graph[base2], quote2)
+		graph[quote2] = appendUnique(graph[quote2], base2)
 
-	addEdge := func(a, b string) {
-		if adj[a] == nil {
-			adj[a] = make(map[string]struct{})
-		}
-		adj[a][b] = struct{}{}
+		graph[base3] = appendUnique(graph[base3], quote3)
+		graph[quote3] = appendUnique(graph[quote3], base3)
 	}
 
-	for _, m := range markets {
-		a, b := m.Base, m.Quote
-		key := pairKey{A: a, B: b}
-		if a > b {
-			key = pairKey{A: b, B: a}
-		}
-		pairmap[key] = append(pairmap[key], m)
+	triangles := findTriangles(graph)
 
-		addEdge(a, b)
-		addEdge(b, a)
+	// Создаём файл для записи результата
+	outFile, err := os.Create("triangles_output.csv")
+	if err != nil {
+		log.Fatal(err)
 	}
+	defer outFile.Close()
 
-	log.Printf("currencies (vertices): %d, pair keys: %d", len(adj), len(pairmap))
+	writer := csv.NewWriter(outFile)
+	defer writer.Flush()
 
-	// 4) Индексация валют
-	coins := make([]string, 0, len(adj))
-	for c := range adj {
-		coins = append(coins, c)
+	// Заголовок
+	writer.Write([]string{"start", "mid1", "mid2", "end"})
+
+	for _, t := range triangles {
+		writer.Write([]string{t[0], t[1], t[2], t[0]})
 	}
-	sort.Strings(coins)
+}
 
-	idx := make(map[string]int, len(coins))
-	for i, c := range coins {
-		idx[c] = i
-	}
-
-	neighbors := make([]map[int]struct{}, len(coins))
-	for i := range neighbors {
-		neighbors[i] = make(map[int]struct{})
-	}
-	for c, neighs := range adj {
-		i := idx[c]
-		for nb := range neighs {
-			j := idx[nb]
-			neighbors[i][j] = struct{}{}
+// appendUnique добавляет элемент в срез, если его там нет
+func appendUnique(slice []string, val string) []string {
+	for _, s := range slice {
+		if s == val {
+			return slice
 		}
 	}
+	return append(slice, val)
+}
 
-	// 5) Поиск валютных треугольников (A,B,C с A<B<C)
-	type triangle struct {
-		A, B, C string
-	}
-
-	triangles := make([]triangle, 0)
-
-	for i := 0; i < len(coins); i++ {
-		ni := neighbors[i]
-
-		for j := range ni {
-			if j <= i {
+// findTriangles ищет все треугольники с обеими последовательностями обхода
+func findTriangles(graph Graph) [][3]string {
+	var triangles [][3]string
+	for a := range graph {
+		for _, b := range graph[a] {
+			if b == a {
 				continue
 			}
-			nj := neighbors[j]
-
-			for k := range ni {
-				if k <= j {
+			for _, c := range graph[b] {
+				if c == a || c == b {
 					continue
 				}
-				if _, ok := nj[k]; ok {
-					triangles = append(triangles, triangle{
-						A: coins[i],
-						B: coins[j],
-						C: coins[k],
-					})
+				if contains(graph[c], a) {
+					// Добавляем оба обхода: a-b-c-a и a-c-b-a
+					triangles = append(triangles, [3]string{a, b, c})
+					triangles = append(triangles, [3]string{a, c, b})
 				}
 			}
 		}
 	}
-	log.Printf("found currency triangles: %d", len(triangles))
+	return triangles
+}
 
-	// 6) Пишем в CSV реальные маркеты для пар (A,B), (B,C), (A,C)
-	outFile := "triangles_markets.csv"
-	f, err := os.Create(outFile)
-	if err != nil {
-		log.Fatalf("create %s: %v", outFile, err)
+// contains проверяет, есть ли элемент в срезе
+func contains(slice []string, val string) bool {
+	for _, s := range slice {
+		if s == val {
+			return true
+		}
 	}
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	if err := w.Write([]string{"base1", "quote1", "base2", "quote2", "base3", "quote3"}); err != nil {
-		log.Fatalf("write header: %v", err)
-	}
-
-	pick := func(x, y string) (pairMarket, bool) {
-		key := pairKey{A: x, B: y}
-		if x > y {
-			key = pairKey{A: y, B: x}
-		}
-		list := pairmap[key]
-		if len(list) == 0 {
-			return pairMarket{}, false
-		}
-		return list[0], true
-	}
-
-	count := 0
-	for _, t := range triangles {
-		m1, ok1 := pick(t.A, t.B)
-		m2, ok2 := pick(t.B, t.C)
-		m3, ok3 := pick(t.A, t.C)
-		if !ok1 || !ok2 || !ok3 {
-			continue
-		}
-
-		rec := []string{
-			m1.Base, m1.Quote,
-			m2.Base, m2.Quote,
-			m3.Base, m3.Quote,
-		}
-		if err := w.Write(rec); err != nil {
-			log.Fatalf("write record: %v", err)
-		}
-		count++
-	}
-
-	log.Printf("written triangles to %s: %d", outFile, count)
-	fmt.Println("Готово, файл:", outFile)
+	return false
 }
