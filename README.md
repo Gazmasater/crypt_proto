@@ -142,40 +142,27 @@ Showing top 10 nodes out of 13
 
 
 
-type MEXCCollector struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	conn     *websocket.Conn
-	symbols  []string
-	allowed  map[string]struct{} // whitelist
-	lastData map[string]struct {
-		Bid, Ask, BidSize, AskSize float64
-	}
-	mu  sync.Mutex
-	buf []byte // отдельный буфер для NormalizeSymbol
-
-	pool *sync.Pool
-}
-
 func NewMEXCCollector(symbols []string, whitelist []string, pool *sync.Pool) *MEXCCollector {
 	ctx, cancel := context.WithCancel(context.Background())
+
 	allowed := make(map[string]struct{}, len(whitelist))
 	for _, s := range whitelist {
 		allowed[market.NormalizeSymbol_Full(s)] = struct{}{}
 	}
+
 	return &MEXCCollector{
 		ctx:      ctx,
 		cancel:   cancel,
 		symbols:  symbols,
 		allowed:  allowed,
-		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
-		pool:     pool,
-		buf:      []buf,
+		lastData: make(map[string]struct {
+			Bid, Ask, BidSize, AskSize float64
+		}),
+		pool: pool,
+		buf:  make([]byte, 0, 32),
 	}
 }
 
 
-symbol = market.NormalizeSymbol_NoAlloc(symbol, &c.buf)
-	if symbol == "" {
-		return nil
-	}
+buf []byte
+
