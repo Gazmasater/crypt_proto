@@ -68,16 +68,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
+	"log"
 	"net/http"
-	"os"
+	"time"
 )
-
-const mexcExchangeInfoURL = "https://api.mexc.com/api/v3/exchangeInfo"
-
-type ExchangeInfo struct {
-	Symbols []Symbol `json:"symbols"`
-}
 
 type Symbol struct {
 	Symbol               string   `json:"symbol"`
@@ -85,188 +79,121 @@ type Symbol struct {
 	QuoteAsset           string   `json:"quoteAsset"`
 	IsSpotTradingAllowed bool     `json:"isSpotTradingAllowed"`
 	OrderTypes           []string `json:"orderTypes"`
+	Permissions          []string `json:"permissions"`
 }
 
-type Edge struct {
-	From   string
-	To     string
-	Symbol string
-	Side   string // BUY or SELL
+type ExchangeInfo struct {
+	Symbols []Symbol `json:"symbols"`
 }
 
-type Graph map[string][]Edge
-
-// -------------------- MAIN --------------------
-
-func main() {
-	info := loadExchangeInfo()
-
-	graph := buildDirectedGraph(info)
-
-	triangles := findTriangles(graph)
-
-	saveCSV("triangles.csv", triangles)
-
-	fmt.Println("✔ triangles saved:", len(triangles))
+type Triangle struct {
+	A, B, C string
+	Pairs   [3]string
 }
 
-// -------------------- LOAD EXCHANGE INFO --------------------
-
-func loadExchangeInfo() ExchangeInfo {
-	resp, err := http.Get(mexcExchangeInfoURL)
-	if err != nil {
-		panic(err)
+func isTradable(s Symbol) bool {
+	if !s.IsSpotTradingAllowed {
+		return false
 	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	var info ExchangeInfo
-	if err := json.Unmarshal(body, &info); err != nil {
-		panic(err)
-	}
-
-	return info
-}
-
-// -------------------- GRAPH --------------------
-
-func buildDirectedGraph(info ExchangeInfo) Graph {
-	graph := make(Graph)
-
-	for _, s := range info.Symbols {
-
-		if !s.IsSpotTradingAllowed {
-			continue
-		}
-
-		if !hasMarket(s.OrderTypes) {
-			continue
-		}
-
-		base := s.BaseAsset
-		quote := s.QuoteAsset
-
-		// SELL: base -> quote
-		graph[base] = append(graph[base], Edge{
-			From:   base,
-			To:     quote,
-			Symbol: s.Symbol,
-			Side:   "SELL",
-		})
-
-		// BUY: quote -> base
-		graph[quote] = append(graph[quote], Edge{
-			From:   quote,
-			To:     base,
-			Symbol: s.Symbol,
-			Side:   "BUY",
-		})
-	}
-
-	return graph
-}
-
-func hasMarket(types []string) bool {
-	for _, t := range types {
+	hasMarket := false
+	for _, t := range s.OrderTypes {
 		if t == "MARKET" {
+			hasMarket = true
+			break
+		}
+	}
+	if !hasMarket {
+		return false
+	}
+	for _, p := range s.Permissions {
+		if p == "SPOT" {
 			return true
 		}
 	}
 	return false
 }
 
-// -------------------- TRIANGLES --------------------
+func findTriangles(symbols []Symbol) []Triangle {
+	pairMap := make(map[string]map[string]Symbol)
+	for _, s := range symbols {
+		if !isTradable(s) {
+			continue
+		}
+		if _, ok := pairMap[s.BaseAsset]; !ok {
+			pairMap[s.BaseAsset] = make(map[string]Symbol)
+		}
+		pairMap[s.BaseAsset][s.QuoteAsset] = s
+	}
 
-type Triangle struct {
-	A, B, C string
-	Path    string
-}
+	var triangles []Triangle
 
-func findTriangles(graph Graph) []Triangle {
-	var result []Triangle
-	seen := map[string]bool{}
+	for _, s1 := range symbols {
+		if !isTradable(s1) {
+			continue
+		}
+		A := s1.BaseAsset
+		B := s1.QuoteAsset
 
-	for a, edgesAB := range graph {
-		for _, ab := range edgesAB {
-			b := ab.To
-
-			for _, bc := range graph[b] {
-				c := bc.To
-				if c == a {
-					continue
-				}
-
-				for _, ca := range graph[c] {
-					if ca.To != a {
-						continue
-					}
-
-					// фильтр мусора: USDT <-> USDC
-					if isStableLoop(a, b, c) {
-						continue
-					}
-
-					key := canonicalKey(a, b, c)
-					if seen[key] {
-						continue
-					}
-					seen[key] = true
-
-					result = append(result, Triangle{
-						A:    a,
-						B:    b,
-						C:    c,
-						Path: fmt.Sprintf("%s -> %s -> %s -> %s", a, b, c, a),
+		for C, s2 := range pairMap[B] {
+			if !isTradable(s2) {
+				continue
+			}
+			// ищем третью ногу C -> A
+			if s3map, ok := pairMap[C]; ok {
+				if s3, ok2 := s3map[A]; ok2 && isTradable(s3) {
+					// Первый вариант: A -> B -> C -> A
+					triangles = append(triangles, Triangle{
+						A: A, B: B, C: C,
+						Pairs: [3]string{s1.Symbol, s2.Symbol, s3.Symbol},
 					})
+					// Второй вариант: A -> C -> B -> A
+					if s4map, ok := pairMap[C]; ok {
+						if s4, ok2 := s4map[B]; ok2 && isTradable(s4) {
+							if s5map, ok := pairMap[B]; ok {
+								if s5, ok2 := s5map[A]; ok2 && isTradable(s5) {
+									triangles = append(triangles, Triangle{
+										A: A, B: C, C: B,
+										Pairs: [3]string{s4.Symbol, s5.Symbol, s1.Symbol},
+									})
+								}
+							}
+						}
+					}
 				}
 			}
 		}
 	}
 
-	return result
+	return triangles
 }
 
-// -------------------- FILTERS --------------------
-
-func isStableLoop(a, b, c string) bool {
-	stable := func(x string) bool {
-		return x == "USDT" || x == "USDC"
-	}
-
-	// убираем циклы типа USDT -> USDC -> X -> USDT
-	return stable(a) && stable(b) ||
-		stable(b) && stable(c) ||
-		stable(a) && stable(c)
-}
-
-func canonicalKey(a, b, c string) string {
-	if a < b && a < c {
-		return a + "|" + b + "|" + c
-	}
-	if b < a && b < c {
-		return b + "|" + c + "|" + a
-	}
-	return c + "|" + a + "|" + b
-}
-
-// -------------------- CSV --------------------
-
-func saveCSV(path string, items []Triangle) {
-	f, err := os.Create(path)
+func fetchExchangeInfo() ([]Symbol, error) {
+	url := "https://www.mexc.com/open/api/v2/market/symbols"
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	defer f.Close()
+	defer resp.Body.Close()
 
-	fmt.Fprintln(f, "A,B,C,PATH")
+	var info ExchangeInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, err
+	}
+	return info.Symbols, nil
+}
 
-	for _, t := range items {
-		fmt.Fprintf(
-			f,
-			"%s,%s,%s,%s\n",
-			t.A, t.B, t.C, t.Path,
-		)
+func main() {
+	symbols, err := fetchExchangeInfo()
+	if err != nil {
+		log.Fatal("Ошибка получения данных с MEXC:", err)
+	}
+
+	triangles := findTriangles(symbols)
+	fmt.Printf("Найдено %d треугольников с обеими направленностями:\n", len(triangles))
+	for _, t := range triangles {
+		fmt.Println(t.A, "->", t.B, "->", t.C, "Pairs:", t.Pairs)
 	}
 }
+
 
