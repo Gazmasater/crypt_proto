@@ -89,6 +89,31 @@ Showing top 10 nodes out of 117
 (pprof) 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.013.pb.gz
+File: arb
+Build ID: cb388e72beffdffa723ddf9def6383fa67349251
+Type: cpu
+Time: 2025-12-27 04:41:58 MSK
+Duration: 30.08s, Total samples = 440ms ( 1.46%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 290ms, 65.91% of 440ms total
+Showing top 10 nodes out of 89
+      flat  flat%   sum%        cum   cum%
+     160ms 36.36% 36.36%      160ms 36.36%  internal/runtime/syscall.Syscall6
+      30ms  6.82% 43.18%       30ms  6.82%  runtime.futex
+      20ms  4.55% 47.73%       30ms  6.82%  crypto/internal/fips140/aes/gcm.(*GCMForTLS13).Open
+      20ms  4.55% 52.27%      200ms 45.45%  crypto/tls.(*Conn).readRecordOrCCS
+      10ms  2.27% 54.55%       10ms  2.27%  bytes.(*Reader).Len (inline)
+      10ms  2.27% 56.82%       20ms  4.55%  crypt_proto/internal/market.NormalizeSymbol_Full
+      10ms  2.27% 59.09%       10ms  2.27%  crypto/internal/fips140.RecordApproved
+      10ms  2.27% 61.36%      220ms 50.00%  github.com/gorilla/websocket.(*Conn).read
+      10ms  2.27% 63.64%       30ms  6.82%  google.golang.org/protobuf/internal/impl.(*MessageInfo).unmarshal
+      10ms  2.27% 65.91%       20ms  4.55%  google.golang.org/protobuf/internal/impl.(*MessageInfo).unmarshalPointerEager
+
+
 
 gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
 Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
