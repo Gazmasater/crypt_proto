@@ -186,3 +186,97 @@ func (c *MEXCCollector) handleWrapper(wrap *pb.PushDataV3ApiWrapper) *models.Mar
 }
 
 
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "c.mu.RLock undefined (type \"sync\".Mutex has no field or method RLock)",
+	"source": "compiler",
+	"startLineNumber": 186,
+	"startColumn": 8,
+	"endLineNumber": 186,
+	"endColumn": 13,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "c.mu.RUnlock undefined (type \"sync\".Mutex has no field or method RUnlock)",
+	"source": "compiler",
+	"startLineNumber": 188,
+	"startColumn": 8,
+	"endLineNumber": 188,
+	"endColumn": 15,
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use hash (variable of type string) as struct{Bid float64; Ask float64; BidSize float64; AskSize float64} value in assignment",
+	"source": "compiler",
+	"startLineNumber": 194,
+	"startColumn": 24,
+	"endLineNumber": 194,
+	"endColumn": 28,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/mexc_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use hash (variable of type string) as struct{Bid float64; Ask float64; BidSize float64; AskSize float64} value in assignment",
+	"source": "compiler",
+	"startLineNumber": 194,
+	"startColumn": 24,
+	"endLineNumber": 194,
+	"endColumn": 28,
+	"origin": "extHost1"
+}]
+
