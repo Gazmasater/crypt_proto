@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -11,104 +10,106 @@ import (
 )
 
 type Symbol struct {
-	Symbol               string   `json:"symbol"`
-	BaseAsset            string   `json:"baseAsset"`
-	QuoteAsset           string   `json:"quoteAsset"`
-	IsSpotTradingAllowed bool     `json:"isSpotTradingAllowed"`
-	OrderTypes           []string `json:"orderTypes"`
-	Permissions          []string `json:"permissions"`
+	Symbol      string   `json:"symbol"`
+	BaseAsset   string   `json:"baseAsset"`
+	QuoteAsset  string   `json:"quoteAsset"`
+	OrderTypes  []string `json:"orderTypes"`
+	Permissions []string `json:"permissions"`
 }
 
 type ExchangeInfo struct {
 	Symbols []Symbol `json:"symbols"`
 }
 
-type Triangle struct {
-	A, B, C string
-	Pairs   [3]string
+type Leg struct {
+	Symbol string
 }
 
-func isTradable(s Symbol) bool {
-	if !s.IsSpotTradingAllowed {
-		return false
-	}
-	hasMarket := false
-	for _, t := range s.OrderTypes {
-		if t == "MARKET" {
-			hasMarket = true
-			break
-		}
-	}
-	if !hasMarket {
-		return false
-	}
-	for _, p := range s.Permissions {
-		if p == "SPOT" {
+type Triangle struct {
+	A, B, C string
+	Leg1    string // A -> B
+	Leg2    string // B -> C
+	Leg3    string // C -> A
+}
+
+// ---------- helpers ----------
+
+func has(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
 			return true
 		}
 	}
 	return false
 }
 
+func isTradable(s Symbol) bool {
+	return has(s.Permissions, "SPOT") && has(s.OrderTypes, "MARKET")
+}
+
+// ---------- main logic ----------
+
 func findTriangles(symbols []Symbol) []Triangle {
-	pairMap := make(map[string]map[string]Symbol)
+
+	// map[from][to] = symbolName (or *_INV)
+	graph := make(map[string]map[string]string)
+
 	for _, s := range symbols {
 		if !isTradable(s) {
 			continue
 		}
-		if _, ok := pairMap[s.BaseAsset]; !ok {
-			pairMap[s.BaseAsset] = make(map[string]Symbol)
-		}
-		pairMap[s.BaseAsset][s.QuoteAsset] = s
 
-		// добавляем инверсную пару
-		if _, ok := pairMap[s.QuoteAsset]; !ok {
-			pairMap[s.QuoteAsset] = make(map[string]Symbol)
+		// прямое направление
+		if _, ok := graph[s.BaseAsset]; !ok {
+			graph[s.BaseAsset] = make(map[string]string)
 		}
-		pairMap[s.QuoteAsset][s.BaseAsset] = Symbol{
-			Symbol:               s.Symbol + "_INV",
-			BaseAsset:            s.QuoteAsset,
-			QuoteAsset:           s.BaseAsset,
-			IsSpotTradingAllowed: true,
-			OrderTypes:           s.OrderTypes,
-			Permissions:          s.Permissions,
+		graph[s.BaseAsset][s.QuoteAsset] = s.Symbol
+
+		// инвертированное направление
+		if _, ok := graph[s.QuoteAsset]; !ok {
+			graph[s.QuoteAsset] = make(map[string]string)
 		}
+		graph[s.QuoteAsset][s.BaseAsset] = s.Symbol + "_INV"
 	}
 
-	var triangles []Triangle
-	for _, s1 := range symbols {
-		if !isTradable(s1) {
-			continue
-		}
-		A := s1.BaseAsset
-		B := s1.QuoteAsset
+	var result []Triangle
 
-		for C, s2 := range pairMap[B] {
-			if !isTradable(s2) {
+	// A → B → C → A
+	for A, toB := range graph {
+		for B, leg1 := range toB {
+			if graph[B] == nil {
 				continue
 			}
-			if s3map, ok := pairMap[C]; ok {
-				if s3, ok2 := s3map[A]; ok2 && isTradable(s3) {
-					// A->B->C->A
-					triangles = append(triangles, Triangle{
-						A: A, B: B, C: C,
-						Pairs: [3]string{s1.Symbol, s2.Symbol, s3.Symbol},
-					})
-					// A->C->B->A
-					triangles = append(triangles, Triangle{
-						A: A, B: C, C: B,
-						Pairs: [3]string{s2.Symbol, s1.Symbol, s3.Symbol},
-					})
+			for C, leg2 := range graph[B] {
+				if graph[C] == nil {
+					continue
 				}
+				leg3, ok := graph[C][A]
+				if !ok {
+					continue
+				}
+
+				result = append(result, Triangle{
+					A:    A,
+					B:    B,
+					C:    C,
+					Leg1: leg1, // A → B
+					Leg2: leg2, // B → C
+					Leg3: leg3, // C → A
+				})
 			}
 		}
 	}
-	return triangles
+
+	return result
 }
+
+// ---------- HTTP ----------
 
 func fetchExchangeInfo() ([]Symbol, error) {
 	url := "https://api.mexc.com/api/v3/exchangeInfo"
 	client := &http.Client{Timeout: 10 * time.Second}
+
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err
@@ -119,37 +120,43 @@ func fetchExchangeInfo() ([]Symbol, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return nil, err
 	}
+
 	return info.Symbols, nil
 }
+
+// ---------- main ----------
 
 func main() {
 	symbols, err := fetchExchangeInfo()
 	if err != nil {
-		log.Fatal("Ошибка получения данных с MEXC:", err)
+		log.Fatal(err)
 	}
 
-	fmt.Println("!!!!!", symbols)
-
 	triangles := findTriangles(symbols)
-	log.Printf("Найдено %d треугольников", len(triangles))
+	log.Printf("Найдено треугольников: %d\n", len(triangles))
 
-	// Создаём CSV файл
 	file, err := os.Create("triangles.csv")
 	if err != nil {
-		log.Fatal("Ошибка создания файла:", err)
+		log.Fatal(err)
 	}
 	defer file.Close()
 
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
+	w := csv.NewWriter(file)
+	defer w.Flush()
 
-	// Записываем заголовок
-	writer.Write([]string{"A", "B", "C", "PAIR1", "PAIR2", "PAIR3"})
+	// строго фиксированный формат
+	w.Write([]string{"A", "B", "C", "leg1", "leg2", "leg3"})
 
-	// Записываем все треугольники
 	for _, t := range triangles {
-		writer.Write([]string{t.A, t.B, t.C, t.Pairs[0], t.Pairs[1], t.Pairs[2]})
+		w.Write([]string{
+			t.A,
+			t.B,
+			t.C,
+			t.Leg1,
+			t.Leg2,
+			t.Leg3,
+		})
 	}
 
-	log.Println("Все треугольники записаны в triangles.csv")
+	log.Println("triangles.csv успешно создан")
 }
