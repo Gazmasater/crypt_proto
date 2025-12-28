@@ -68,152 +68,187 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
-	"log"
+	"fmt"
 	"net/http"
 	"os"
-	"time"
+	"strings"
 )
 
-type Symbol struct {
-	Symbol               string   `json:"symbol"`
-	BaseAsset            string   `json:"baseAsset"`
-	QuoteAsset           string   `json:"quoteAsset"`
-	IsSpotTradingAllowed bool     `json:"isSpotTradingAllowed"`
-	OrderTypes           []string `json:"orderTypes"`
-	Permissions          []string `json:"permissions"`
-}
+const url = "https://api.mexc.com/api/v3/exchangeInfo"
 
 type ExchangeInfo struct {
 	Symbols []Symbol `json:"symbols"`
 }
 
-type Triangle struct {
-	A, B, C string
-	Pairs   [3]string
+type Symbol struct {
+	Symbol                    string   `json:"symbol"`
+	BaseAsset                 string   `json:"baseAsset"`
+	QuoteAsset                string   `json:"quoteAsset"`
+	IsSpotTradingAllowed      bool     `json:"isSpotTradingAllowed"`
+	OrderTypes                []string `json:"orderTypes"`
+	BaseSizePrecision         string   `json:"baseSizePrecision"`
+	QuoteAmountPrecisionMarket string  `json:"quoteAmountPrecisionMarket"`
+	TakerCommission           string   `json:"takerCommission"`
 }
 
-func isTradable(s Symbol) bool {
-	if !s.IsSpotTradingAllowed {
-		return false
-	}
-	hasMarket := false
-	for _, t := range s.OrderTypes {
+type Pair struct {
+	Symbol     string
+	Base       string
+	Quote      string
+	BaseStep   string
+	QuoteStep  string
+	TakerFee   string
+}
+
+// ---------- helpers ----------
+
+func hasMarket(orderTypes []string) bool {
+	for _, t := range orderTypes {
 		if t == "MARKET" {
-			hasMarket = true
-			break
-		}
-	}
-	if !hasMarket {
-		return false
-	}
-	for _, p := range s.Permissions {
-		if p == "SPOT" {
 			return true
 		}
 	}
 	return false
 }
 
-func findTriangles(symbols []Symbol) []Triangle {
-	pairMap := make(map[string]map[string]Symbol)
-	for _, s := range symbols {
-		if !isTradable(s) {
-			continue
-		}
-		if _, ok := pairMap[s.BaseAsset]; !ok {
-			pairMap[s.BaseAsset] = make(map[string]Symbol)
-		}
-		pairMap[s.BaseAsset][s.QuoteAsset] = s
-
-		// добавляем инверсную пару
-		if _, ok := pairMap[s.QuoteAsset]; !ok {
-			pairMap[s.QuoteAsset] = make(map[string]Symbol)
-		}
-		pairMap[s.QuoteAsset][s.BaseAsset] = Symbol{
-			Symbol:               s.Symbol + "_INV",
-			BaseAsset:            s.QuoteAsset,
-			QuoteAsset:           s.BaseAsset,
-			IsSpotTradingAllowed: true,
-			OrderTypes:           s.OrderTypes,
-			Permissions:          s.Permissions,
-		}
-	}
-
-	var triangles []Triangle
-	for _, s1 := range symbols {
-		if !isTradable(s1) {
-			continue
-		}
-		A := s1.BaseAsset
-		B := s1.QuoteAsset
-
-		for C, s2 := range pairMap[B] {
-			if !isTradable(s2) {
-				continue
-			}
-			if s3map, ok := pairMap[C]; ok {
-				if s3, ok2 := s3map[A]; ok2 && isTradable(s3) {
-					// A->B->C->A
-					triangles = append(triangles, Triangle{
-						A: A, B: B, C: C,
-						Pairs: [3]string{s1.Symbol, s2.Symbol, s3.Symbol},
-					})
-					// A->C->B->A
-					triangles = append(triangles, Triangle{
-						A: A, B: C, C: B,
-						Pairs: [3]string{s2.Symbol, s1.Symbol, s3.Symbol},
-					})
-				}
-			}
-		}
-	}
-	return triangles
-}
-
-func fetchExchangeInfo() ([]Symbol, error) {
-	url := "https://www.mexc.com/open/api/v2/market/symbols"
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
+func fetchPairs() ([]Pair, error) {
+	resp, err := http.Get(url)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	var info ExchangeInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	var ex ExchangeInfo
+	if err := json.NewDecoder(resp.Body).Decode(&ex); err != nil {
 		return nil, err
 	}
-	return info.Symbols, nil
+
+	var pairs []Pair
+	for _, s := range ex.Symbols {
+		if !s.IsSpotTradingAllowed || !hasMarket(s.OrderTypes) {
+			continue
+		}
+
+		pairs = append(pairs, Pair{
+			Symbol:    s.Symbol,
+			Base:      s.BaseAsset,
+			Quote:     s.QuoteAsset,
+			BaseStep:  s.BaseSizePrecision,
+			QuoteStep: s.QuoteAmountPrecisionMarket,
+			TakerFee:  s.TakerCommission,
+		})
+	}
+
+	return pairs, nil
 }
 
 func main() {
-	symbols, err := fetchExchangeInfo()
+	pairs, err := fetchPairs()
 	if err != nil {
-		log.Fatal("Ошибка получения данных с MEXC:", err)
+		panic(err)
 	}
 
-	triangles := findTriangles(symbols)
-	log.Printf("Найдено %d треугольников", len(triangles))
+	// быстрый поиск пар
+	pairMap := make(map[string]Pair)
+	for _, p := range pairs {
+		pairMap[p.Base+"_"+p.Quote] = p
+	}
 
-	// Создаём CSV файл
 	file, err := os.Create("triangles.csv")
 	if err != nil {
-		log.Fatal("Ошибка создания файла:", err)
+		panic(err)
 	}
 	defer file.Close()
 
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
+	w := csv.NewWriter(file)
+	defer w.Flush()
 
-	// Записываем заголовок
-	writer.Write([]string{"A", "B", "C", "PAIR1", "PAIR2", "PAIR3"})
+	// header
+	w.Write([]string{
+		"A", "B", "C",
+		"pair",
+		"side",
+		"base",
+		"quote",
+		"baseStep",
+		"quoteStep",
+		"takerFee",
+		"invert",
+	})
 
-	// Записываем все треугольники
-	for _, t := range triangles {
-		writer.Write([]string{t.A, t.B, t.C, t.Pairs[0], t.Pairs[1], t.Pairs[2]})
+	// A → B → C → A
+	for _, p1 := range pairs {
+		A := p1.Base
+		B := p1.Quote
+
+		for _, p2 := range pairs {
+			if p2.Base != B {
+				continue
+			}
+			C := p2.Quote
+
+			if C == A {
+				continue
+			}
+
+			// ищем третью ногу
+			var p3 Pair
+			invert := false
+			found := false
+
+			// C -> A
+			if v, ok := pairMap[C+"_"+A]; ok {
+				p3 = v
+				invert = false
+				found = true
+			} else if v, ok := pairMap[A+"_"+C]; ok {
+				p3 = v
+				invert = true
+				found = true
+			}
+
+			if !found {
+				continue
+			}
+
+			// ---- LEG 1 ----
+			writeLeg(w, A, B, C, p1, false)
+
+			// ---- LEG 2 ----
+			writeLeg(w, A, B, C, p2, false)
+
+			// ---- LEG 3 ----
+			writeLeg(w, A, B, C, p3, invert)
+		}
 	}
 
-	log.Println("Все треугольники записаны в triangles.csv")
+	fmt.Println("triangles.csv generated")
+}
+
+func writeLeg(w *csv.Writer, A, B, C string, p Pair, invert bool) {
+	side := "SELL"
+	base := p.Base
+	quote := p.Quote
+
+	if invert {
+		side = "BUY"
+		base = p.Quote
+		quote = p.Base
+	}
+
+	w.Write([]string{
+		A,
+		B,
+		C,
+		p.Symbol,
+		side,
+		base,
+		quote,
+		p.BaseStep,
+		p.QuoteStep,
+		p.TakerFee,
+		fmt.Sprintf("%v", invert),
+	})
 }
 
 
