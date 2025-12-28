@@ -68,6 +68,7 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -75,106 +76,62 @@ import (
 )
 
 type Symbol struct {
-	Symbol      string   `json:"symbol"`
-	BaseAsset   string   `json:"baseAsset"`
-	QuoteAsset  string   `json:"quoteAsset"`
-	OrderTypes  []string `json:"orderTypes"`
-	Permissions []string `json:"permissions"`
+	Symbol               string   `json:"symbol"`
+	BaseAsset            string   `json:"baseAsset"`
+	QuoteAsset           string   `json:"quoteAsset"`
+	IsSpotTradingAllowed bool     `json:"isSpotTradingAllowed"`
+	OrderTypes           []string `json:"orderTypes"`
+	Permissions          []string `json:"permissions"`
+	BaseSizePrecision    string   `json:"baseSizePrecision"`
+	QuoteAmountPrecision string   `json:"quoteAmountPrecisionMarket"`
+	TakerCommission      string   `json:"takerCommission"`
 }
 
 type ExchangeInfo struct {
 	Symbols []Symbol `json:"symbols"`
 }
 
-type Leg struct {
-	Symbol string
-}
-
 type Triangle struct {
 	A, B, C string
-	Leg1    string // A -> B
-	Leg2    string // B -> C
-	Leg3    string // C -> A
+	Legs    [3]string
 }
 
-// ---------- helpers ----------
+type Leg struct {
+	Pair      string
+	Side      string
+	BaseStep  string
+	QuoteStep string
+	TakerFee  string
+	Invert    bool
+}
 
-func has(list []string, v string) bool {
-	for _, x := range list {
-		if x == v {
+// Проверка торгуемости пары
+func isTradable(s Symbol) bool {
+	if !s.IsSpotTradingAllowed {
+		return false
+	}
+	hasMarket := false
+	for _, t := range s.OrderTypes {
+		if t == "MARKET" {
+			hasMarket = true
+			break
+		}
+	}
+	if !hasMarket {
+		return false
+	}
+	for _, p := range s.Permissions {
+		if p == "SPOT" {
 			return true
 		}
 	}
 	return false
 }
 
-func isTradable(s Symbol) bool {
-	return has(s.Permissions, "SPOT") && has(s.OrderTypes, "MARKET")
-}
-
-// ---------- main logic ----------
-
-func findTriangles(symbols []Symbol) []Triangle {
-
-	// map[from][to] = symbolName (or *_INV)
-	graph := make(map[string]map[string]string)
-
-	for _, s := range symbols {
-		if !isTradable(s) {
-			continue
-		}
-
-		// прямое направление
-		if _, ok := graph[s.BaseAsset]; !ok {
-			graph[s.BaseAsset] = make(map[string]string)
-		}
-		graph[s.BaseAsset][s.QuoteAsset] = s.Symbol
-
-		// инвертированное направление
-		if _, ok := graph[s.QuoteAsset]; !ok {
-			graph[s.QuoteAsset] = make(map[string]string)
-		}
-		graph[s.QuoteAsset][s.BaseAsset] = s.Symbol + "_INV"
-	}
-
-	var result []Triangle
-
-	// A → B → C → A
-	for A, toB := range graph {
-		for B, leg1 := range toB {
-			if graph[B] == nil {
-				continue
-			}
-			for C, leg2 := range graph[B] {
-				if graph[C] == nil {
-					continue
-				}
-				leg3, ok := graph[C][A]
-				if !ok {
-					continue
-				}
-
-				result = append(result, Triangle{
-					A:    A,
-					B:    B,
-					C:    C,
-					Leg1: leg1, // A → B
-					Leg2: leg2, // B → C
-					Leg3: leg3, // C → A
-				})
-			}
-		}
-	}
-
-	return result
-}
-
-// ---------- HTTP ----------
-
+// Получение exchangeInfo
 func fetchExchangeInfo() ([]Symbol, error) {
 	url := "https://api.mexc.com/api/v3/exchangeInfo"
 	client := &http.Client{Timeout: 10 * time.Second}
-
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err
@@ -185,11 +142,150 @@ func fetchExchangeInfo() ([]Symbol, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return nil, err
 	}
-
 	return info.Symbols, nil
 }
 
-// ---------- main ----------
+// Генерация всех треугольников
+func findTriangles(symbols []Symbol) []Triangle {
+	pairMap := make(map[string]map[string]Symbol)
+	for _, s := range symbols {
+		if !isTradable(s) {
+			continue
+		}
+		if _, ok := pairMap[s.BaseAsset]; !ok {
+			pairMap[s.BaseAsset] = make(map[string]Symbol)
+		}
+		pairMap[s.BaseAsset][s.QuoteAsset] = s
+
+		// Добавляем инверсную пару
+		if _, ok := pairMap[s.QuoteAsset]; !ok {
+			pairMap[s.QuoteAsset] = make(map[string]Symbol)
+		}
+		pairMap[s.QuoteAsset][s.BaseAsset] = Symbol{
+			Symbol:               s.Symbol + "_INV",
+			BaseAsset:            s.QuoteAsset,
+			QuoteAsset:           s.BaseAsset,
+			IsSpotTradingAllowed: true,
+			OrderTypes:           s.OrderTypes,
+			Permissions:          s.Permissions,
+			BaseSizePrecision:    s.BaseSizePrecision,
+			QuoteAmountPrecision: s.QuoteAmountPrecision,
+			TakerCommission:      s.TakerCommission,
+		}
+	}
+
+	var triangles []Triangle
+	for _, s1 := range symbols {
+		if !isTradable(s1) {
+			continue
+		}
+		A := s1.BaseAsset
+		B := s1.QuoteAsset
+
+		for C, s2 := range pairMap[B] {
+			if !isTradable(s2) {
+				continue
+			}
+			if s3map, ok := pairMap[C]; ok {
+				if s3, ok2 := s3map[A]; ok2 && isTradable(s3) {
+					triangles = append(triangles, Triangle{
+						A: A, B: B, C: C,
+						Legs: [3]string{s1.Symbol, s2.Symbol, s3.Symbol},
+					})
+				}
+			}
+		}
+	}
+	return triangles
+}
+
+// Создаём leg с BUY/SELL и invert
+func makeLeg(s Symbol, name string) Leg {
+	invert := false
+	side := "SELL"
+	if len(name) >= 4 && name[len(name)-4:] == "_INV" {
+		invert = true
+		side = "BUY"
+	}
+	return Leg{
+		Pair:      name,
+		Side:      side,
+		BaseStep:  s.BaseSizePrecision,
+		QuoteStep: s.QuoteAmountPrecision,
+		TakerFee:  s.TakerCommission,
+		Invert:    invert,
+	}
+}
+
+// Строим legs треугольника с возвратом в стартовую валюту
+func buildTriangleExec(tr Triangle, start string, pairMap map[string]map[string]Symbol) []Leg {
+	var legs []Leg
+
+	// если стартовая валюта есть в треугольнике
+	if tr.A == start || tr.B == start || tr.C == start {
+		// стандартный цикл 3 leg
+		order := []string{tr.Legs[0], tr.Legs[1], tr.Legs[2]}
+		for _, n := range order {
+			for _, m := range pairMap {
+				if sym, ok := m[n]; ok {
+					legs = append(legs, makeLeg(sym, n))
+					break
+				}
+			}
+		}
+		return legs
+	}
+
+	// иначе добавляем вход start->трёхугольник
+	found := false
+	var entry Symbol
+	var entryName string
+	for _, vertex := range []string{tr.A, tr.B, tr.C} {
+		if sym, ok := pairMap[start][vertex]; ok {
+			entry = sym
+			entryName = sym.Symbol
+			found = true
+			break
+		}
+		if sym, ok := pairMap[vertex][start]; ok {
+			entry = sym
+			entryName = sym.Symbol + "_INV"
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	legs = append(legs, makeLeg(entry, entryName))
+
+	// добавляем стандартные 3 leg треугольника
+	for _, n := range tr.Legs {
+		for _, m := range pairMap {
+			if sym, ok := m[n]; ok {
+				legs = append(legs, makeLeg(sym, n))
+				break
+			}
+		}
+	}
+
+	// добавляем выход в стартовую валюту
+	last := legs[len(legs)-1]
+	// если последняя валюта != стартовая, ищем пару для выхода
+	lastBase := last.Pair
+	for _, vertex := range []string{tr.A, tr.B, tr.C} {
+		if sym, ok := pairMap[vertex][start]; ok {
+			legs = append(legs, makeLeg(sym, sym.Symbol))
+			break
+		}
+		if sym, ok := pairMap[start][vertex]; ok {
+			legs = append(legs, makeLeg(sym, sym.Symbol))
+			break
+		}
+	}
+
+	return legs
+}
 
 func main() {
 	symbols, err := fetchExchangeInfo()
@@ -198,31 +294,48 @@ func main() {
 	}
 
 	triangles := findTriangles(symbols)
-	log.Printf("Найдено треугольников: %d\n", len(triangles))
+	log.Printf("Найдено %d треугольников", len(triangles))
 
-	file, err := os.Create("triangles.csv")
+	// создаём map для быстрого поиска
+	pairMap := make(map[string]map[string]Symbol)
+	for _, s := range symbols {
+		if _, ok := pairMap[s.BaseAsset]; !ok {
+			pairMap[s.BaseAsset] = make(map[string]Symbol)
+		}
+		pairMap[s.BaseAsset][s.QuoteAsset] = s
+	}
+
+	startAsset := "USDT"
+
+	// CSV
+	file, err := os.Create("triangles_exec.csv")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer file.Close()
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
 
-	w := csv.NewWriter(file)
-	defer w.Flush()
+	writer.Write([]string{"StartAsset", "LegPair", "Side", "BaseStep", "QuoteStep", "TakerFee", "Invert"})
 
-	// строго фиксированный формат
-	w.Write([]string{"A", "B", "C", "leg1", "leg2", "leg3"})
-
-	for _, t := range triangles {
-		w.Write([]string{
-			t.A,
-			t.B,
-			t.C,
-			t.Leg1,
-			t.Leg2,
-			t.Leg3,
-		})
+	for _, tr := range triangles {
+		legs := buildTriangleExec(tr, startAsset, pairMap)
+		if len(legs) == 0 {
+			continue
+		}
+		for _, l := range legs {
+			writer.Write([]string{
+				startAsset,
+				l.Pair,
+				l.Side,
+				l.BaseStep,
+				l.QuoteStep,
+				l.TakerFee,
+				fmt.Sprintf("%v", l.Invert),
+			})
+		}
 	}
 
-	log.Println("triangles.csv успешно создан")
+	log.Println("Треугольники с возвратом в стартовую валюту записаны в triangles_exec.csv")
 }
 
