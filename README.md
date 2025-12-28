@@ -339,3 +339,29 @@ func main() {
 	log.Println("Треугольники с возвратом в стартовую валюту записаны в triangles_exec.csv")
 }
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/mexctriangl/main.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: lastBase",
+	"source": "compiler",
+	"startLineNumber": 210,
+	"startColumn": 2,
+	"endLineNumber": 210,
+	"endColumn": 10,
+	"tags": [
+		1
+	],
+	"origin": "extHost1"
+}]
+
