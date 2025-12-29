@@ -75,21 +75,47 @@ import (
 	"time"
 )
 
-// ---------- OKX response structs ----------
-
-type OkxInstrument struct {
-	InstId   string `json:"instId"`
-	BaseCcy  string `json:"baseCcy"`
-	QuoteCcy string `json:"quoteCcy"`
+type KucoinSymbol struct {
+	Symbol       string `json:"symbol"`
+	BaseCurrency string `json:"baseCurrency"`
+	QuoteCurrency string `json:"quoteCurrency"`
+	EnableTrading bool   `json:"enableTrading"`
 }
 
-type OkxResponse struct {
-	Code string          `json:"code"`
-	Msg  string          `json:"msg"`
-	Data []OkxInstrument `json:"data"`
+func fetchKucoinSymbols() ([]KucoinSymbol, error) {
+	url := "https://api.kucoin.com/api/v2/symbols"
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		Code string          `json:"code"`
+		Data []KucoinSymbol `json:"data"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&data)
+	if err != nil {
+		return nil, err
+	}
+	return data.Data, nil
 }
 
-// ---------- Triangle struct ----------
+var forbiddenUSD = map[string]bool{
+	"USDC": true,
+	"USD1": true,
+	// добавь сюда любые другие, начинающиеся на USD, которые нужно исключить
+}
+
+func isBadUsd(x string) bool {
+	// USDT — это нормально
+	if x == "USDT" {
+		return false
+	}
+	// запрет для любых, начинающихся с USD
+	return strings.HasPrefix(x, "USD")
+}
 
 type Triangle struct {
 	A, B, C string
@@ -98,107 +124,53 @@ type Triangle struct {
 	Leg3    string
 }
 
-// ---------- Helpers ----------
-
-// Нужно, чтобы B и C не начинались на "USD", кроме точного "USDT"
-func isBadUsd(x string) bool {
-	// если это USDT — нормально
-	if x == "USDT" {
-		return false
-	}
-	// если начинается на "USD" — плохой
-	return strings.HasPrefix(x, "USD")
-}
-
-// Проверка на треугольник, где A == "USDT" и B,C не начинаются с "USD"
-func validTriangleUSDT(A, B, C string) bool {
-	if A != "USDT" {
-		return false
-	}
-	if isBadUsd(B) || isBadUsd(C) {
-		return false
-	}
-	return true
-}
-
-// ---------- Fetch OKX ----------
-
-func fetchOkxInstruments() ([]OkxInstrument, error) {
-	url := "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var res OkxResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return nil, err
-	}
-	return res.Data, nil
-}
-
-// ---------- Triangle finder ----------
-
-func findTriangles(instruments []OkxInstrument) []Triangle {
+func findTriangles(symbols []KucoinSymbol) []Triangle {
 	graph := make(map[string]map[string]string)
 
-	// строим граф (и инверсии)
-	for _, inst := range instruments {
-		base := inst.BaseCcy
-		quote := inst.QuoteCcy
+	for _, s := range symbols {
+		if !s.EnableTrading {
+			continue
+		}
+		base := s.BaseCurrency
+		quote := s.QuoteCurrency
 
-		// прямая
 		if graph[base] == nil {
 			graph[base] = make(map[string]string)
 		}
-		graph[base][quote] = inst.InstId
+		graph[base][quote] = s.Symbol
 
-		// инверт (обратное направление)
 		if graph[quote] == nil {
 			graph[quote] = make(map[string]string)
 		}
-		graph[quote][base] = inst.InstId + "_INV"
+		graph[quote][base] = s.Symbol + "_INV"
 	}
 
 	var result []Triangle
-
 	for A, toB := range graph {
-		// сразу фильтр по стартовой валюте
 		if A != "USDT" {
 			continue
 		}
-
 		for B, leg1 := range toB {
-			// B не должен быть плохим USD‑токеном
 			if isBadUsd(B) {
 				continue
 			}
 			if graph[B] == nil {
 				continue
 			}
-
 			for C, leg2 := range graph[B] {
-				// тоже запрещаем
 				if isBadUsd(C) {
 					continue
 				}
 				if graph[C] == nil {
 					continue
 				}
-
 				leg3, ok := graph[C][A]
 				if !ok {
 					continue
 				}
-
-				// финальный фильтр
-				if !validTriangleUSDT(A, B, C) {
+				if isBadUsd(B) || isBadUsd(C) {
 					continue
 				}
-
 				result = append(result, Triangle{
 					A:    A,
 					B:    B,
@@ -210,44 +182,33 @@ func findTriangles(instruments []OkxInstrument) []Triangle {
 			}
 		}
 	}
-
 	return result
 }
 
-// ---------- Main ----------
-
 func main() {
-	instruments, err := fetchOkxInstruments()
+	symbols, err := fetchKucoinSymbols()
 	if err != nil {
-		log.Fatalf("ошибка получения OKX instruments: %v", err)
+		log.Fatalf("Ошибка получения пар KuCoin: %v", err)
 	}
 
-	triangles := findTriangles(instruments)
-	log.Printf("Найдено треугольников (USDT start, без USD*): %d\n", len(triangles))
+	triangles := findTriangles(symbols)
+	log.Printf("Найдено треугольников на KuCoin (USDT + без USD*): %d\n", len(triangles))
 
-	file, err := os.Create("triangles_okx_usdt_only.csv")
+	file, err := os.Create("triangles_kucoin.csv")
 	if err != nil {
-		log.Fatalf("ошибка создания csv: %v", err)
+		log.Fatalf("Ошибка создания файла: %v", err)
 	}
 	defer file.Close()
 
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
+	w := csv.NewWriter(file)
+	defer w.Flush()
 
-	writer.Write([]string{"A", "B", "C", "leg1", "leg2", "leg3"})
-
+	w.Write([]string{"A", "B", "C", "leg1", "leg2", "leg3"})
 	for _, t := range triangles {
-		writer.Write([]string{
-			t.A,
-			t.B,
-			t.C,
-			t.Leg1,
-			t.Leg2,
-			t.Leg3,
-		})
+		w.Write([]string{t.A, t.B, t.C, t.Leg1, t.Leg2, t.Leg3})
 	}
 
-	log.Println("triangles_okx_usdt_only.csv успешно создан.")
+	log.Println("triangles_kucoin.csv успешно создан")
 }
 
 
