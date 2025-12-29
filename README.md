@@ -95,7 +95,8 @@ type Triangle struct {
 
 // ----------------- helpers -----------------
 
-var forbiddenStable = map[string]bool{
+var forbiddenUSD = map[string]bool{
+	"USDT": true,
 	"USDC": true,
 	"USD1": true,
 }
@@ -113,15 +114,8 @@ func isTradable(s Symbol) bool {
 	return has(s.Permissions, "SPOT") && has(s.OrderTypes, "MARKET")
 }
 
-// проверка треугольника: старт USDT, запрещённые стейблы
-func validTriangleUSDT(A, B, C string) bool {
-	if A != "USDT" {
-		return false
-	}
-	if forbiddenStable[B] || forbiddenStable[C] {
-		return false
-	}
-	return true
+func validTriangleNoUSD(A, B, C string) bool {
+	return !forbiddenUSD[A] && !forbiddenUSD[B] && !forbiddenUSD[C]
 }
 
 // ----------------- main logic -----------------
@@ -138,7 +132,6 @@ func findTriangles(symbols []Symbol) []Triangle {
 		}
 		graph[s.BaseAsset][s.QuoteAsset] = s.Symbol
 
-		// инвертированное направление
 		if _, ok := graph[s.QuoteAsset]; !ok {
 			graph[s.QuoteAsset] = make(map[string]string)
 		}
@@ -148,10 +141,6 @@ func findTriangles(symbols []Symbol) []Triangle {
 	var result []Triangle
 
 	for A, toB := range graph {
-		if A != "USDT" {
-			continue
-		}
-
 		for B, leg1 := range toB {
 			if graph[B] == nil {
 				continue
@@ -164,7 +153,7 @@ func findTriangles(symbols []Symbol) []Triangle {
 				if !ok {
 					continue
 				}
-				if !validTriangleUSDT(A, B, C) {
+				if !validTriangleNoUSD(A, B, C) {
 					continue
 				}
 				result = append(result, Triangle{
@@ -210,9 +199,9 @@ func main() {
 	}
 
 	triangles := findTriangles(symbols)
-	log.Printf("Найдено треугольников: %d\n", len(triangles))
+	log.Printf("Найдено треугольников без USD-стейблов: %d\n", len(triangles))
 
-	file, err := os.Create("triangles_usdt.csv")
+	file, err := os.Create("triangles_no_usd.csv")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -221,7 +210,6 @@ func main() {
 	w := csv.NewWriter(file)
 	defer w.Flush()
 
-	// CSV заголовок
 	w.Write([]string{"A", "B", "C", "leg1", "leg2", "leg3"})
 
 	for _, t := range triangles {
@@ -235,5 +223,6 @@ func main() {
 		})
 	}
 
-	log.Println("triangles_usdt.csv успешно создан")
+	log.Println("triangles_no_usd.csv успешно создан")
 }
+
