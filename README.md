@@ -74,17 +74,21 @@ import (
 	"time"
 )
 
-type Symbol struct {
-	Symbol      string   `json:"symbol"`
-	BaseAsset   string   `json:"baseAsset"`
-	QuoteAsset  string   `json:"quoteAsset"`
-	OrderTypes  []string `json:"orderTypes"`
-	Permissions []string `json:"permissions"`
+// ---------------- OKX RESPONSE ----------------
+
+type OkxInstrument struct {
+	InstId   string `json:"instId"`
+	BaseCcy  string `json:"baseCcy"`
+	QuoteCcy string `json:"quoteCcy"`
 }
 
-type ExchangeInfo struct {
-	Symbols []Symbol `json:"symbols"`
+type OkxResponse struct {
+	Code string          `json:"code"`
+	Msg  string          `json:"msg"`
+	Data []OkxInstrument `json:"data"`
 }
+
+// ---------------- TRIANGLE STRUCT ----------------
 
 type Triangle struct {
 	A, B, C string
@@ -93,59 +97,91 @@ type Triangle struct {
 	Leg3    string
 }
 
-// ----------------- helpers -----------------
+// ---------------- FILTERS ----------------
 
 var forbiddenUSD = map[string]bool{
-	"USDT": true,
 	"USDC": true,
 	"USD1": true,
+	// добавь сюда другие, если нужно
 }
 
-func has(list []string, v string) bool {
-	for _, x := range list {
-		if x == v {
-			return true
-		}
+func isStable(x string) bool {
+	if x == "USDT" || forbiddenUSD[x] {
+		return true
 	}
 	return false
 }
 
-func isTradable(s Symbol) bool {
-	return has(s.Permissions, "SPOT") && has(s.OrderTypes, "MARKET")
+// валидность треугольника: стартует с USDT и нет других USD‑стейблов
+func validTriangleUSDT(A, B, C string) bool {
+	if A != "USDT" {
+		return false
+	}
+	if forbiddenUSD[B] || forbiddenUSD[C] {
+		return false
+	}
+	return true
 }
 
-func validTriangleNoUSD(A, B, C string) bool {
-	return !forbiddenUSD[A] && !forbiddenUSD[B] && !forbiddenUSD[C]
+// ---------------- FETCH OKX ----------------
+
+func fetchOkxInstruments() ([]OkxInstrument, error) {
+	url := "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var res OkxResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+	return res.Data, nil
 }
 
-// ----------------- main logic -----------------
+// ---------------- TRIANGLE LOGIC ----------------
 
-func findTriangles(symbols []Symbol) []Triangle {
+func findTriangles(instruments []OkxInstrument) []Triangle {
+	// graph[from][to] = pair
 	graph := make(map[string]map[string]string)
 
-	for _, s := range symbols {
-		if !isTradable(s) {
-			continue
+	// строим граф
+	for _, inst := range instruments {
+		base := inst.BaseCcy
+		quote := inst.QuoteCcy
+		// прямая связь
+		if _, ok := graph[base]; !ok {
+			graph[base] = make(map[string]string)
 		}
-		if _, ok := graph[s.BaseAsset]; !ok {
-			graph[s.BaseAsset] = make(map[string]string)
-		}
-		graph[s.BaseAsset][s.QuoteAsset] = s.Symbol
+		graph[base][quote] = inst.InstId
 
-		if _, ok := graph[s.QuoteAsset]; !ok {
-			graph[s.QuoteAsset] = make(map[string]string)
+		// инверсия — обозначаем явно
+		if _, ok := graph[quote]; !ok {
+			graph[quote] = make(map[string]string)
 		}
-		graph[s.QuoteAsset][s.BaseAsset] = s.Symbol + "_INV"
+		graph[quote][base] = inst.InstId + "_INV"
 	}
 
 	var result []Triangle
 
+	// A→B→C→A
 	for A, toB := range graph {
+
+		// старт должен быть USDT
+		if A != "USDT" {
+			continue
+		}
+
 		for B, leg1 := range toB {
+			// если нет переходов с B → …
 			if graph[B] == nil {
 				continue
 			}
 			for C, leg2 := range graph[B] {
+				// если нет переходов с C → …
 				if graph[C] == nil {
 					continue
 				}
@@ -153,9 +189,12 @@ func findTriangles(symbols []Symbol) []Triangle {
 				if !ok {
 					continue
 				}
-				if !validTriangleNoUSD(A, B, C) {
+
+				// фильтр: нет больших стейбл‑комбинаций
+				if !validTriangleUSDT(A, B, C) {
 					continue
 				}
+
 				result = append(result, Triangle{
 					A:    A,
 					B:    B,
@@ -167,53 +206,36 @@ func findTriangles(symbols []Symbol) []Triangle {
 			}
 		}
 	}
+
 	return result
 }
 
-// ----------------- HTTP -----------------
-
-func fetchExchangeInfo() ([]Symbol, error) {
-	url := "https://api.mexc.com/api/v3/exchangeInfo"
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var info ExchangeInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, err
-	}
-
-	return info.Symbols, nil
-}
-
-// ----------------- main -----------------
+// ---------------- MAIN ----------------
 
 func main() {
-	symbols, err := fetchExchangeInfo()
+	instruments, err := fetchOkxInstruments()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Ошибка получения пар OKX: %v", err)
 	}
 
-	triangles := findTriangles(symbols)
-	log.Printf("Найдено треугольников без USD-стейблов: %d\n", len(triangles))
+	triangles := findTriangles(instruments)
+	log.Printf("Найдено треугольников на OKX (USDT, нет других USD‑стейблов): %d", len(triangles))
 
-	file, err := os.Create("triangles_no_usd.csv")
+	// создаём CSV
+	file, err := os.Create("triangles_okx.csv")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Ошибка создания файла: %v", err)
 	}
 	defer file.Close()
 
-	w := csv.NewWriter(file)
-	defer w.Flush()
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
 
-	w.Write([]string{"A", "B", "C", "leg1", "leg2", "leg3"})
+	// заголовок
+	writer.Write([]string{"A", "B", "C", "leg1", "leg2", "leg3"})
 
 	for _, t := range triangles {
-		w.Write([]string{
+		writer.Write([]string{
 			t.A,
 			t.B,
 			t.C,
@@ -223,6 +245,7 @@ func main() {
 		})
 	}
 
-	log.Println("triangles_no_usd.csv успешно создан")
+	log.Println("triangles_okx.csv успешно создан")
 }
+
 
