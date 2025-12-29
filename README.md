@@ -74,8 +74,6 @@ import (
 	"time"
 )
 
-// ---------------- DATA ----------------
-
 type Symbol struct {
 	Symbol      string   `json:"symbol"`
 	BaseAsset   string   `json:"baseAsset"`
@@ -95,10 +93,10 @@ type Triangle struct {
 	Leg3    string
 }
 
-// ---------------- HELPERS ----------------
+// ---------- helpers ----------
 
-func has(arr []string, v string) bool {
-	for _, x := range arr {
+func has(list []string, v string) bool {
+	for _, x := range list {
 		if x == v {
 			return true
 		}
@@ -110,10 +108,27 @@ func isTradable(s Symbol) bool {
 	return has(s.Permissions, "SPOT") && has(s.OrderTypes, "MARKET")
 }
 
-// ---------------- TRIANGLE LOGIC ----------------
+// ❗ фильтр USDT + USDC
+func hasBothUSDTandUSDC(a, b, c string) bool {
+	hasUSDT := false
+	hasUSDC := false
+
+	for _, x := range []string{a, b, c} {
+		if x == "USDT" {
+			hasUSDT = true
+		}
+		if x == "USDC" {
+			hasUSDC = true
+		}
+	}
+
+	return hasUSDT && hasUSDC
+}
+
+// ---------- main triangle logic ----------
 
 func findTriangles(symbols []Symbol) []Triangle {
-	// graph[from][to] = symbolName
+
 	graph := make(map[string]map[string]string)
 
 	for _, s := range symbols {
@@ -122,13 +137,13 @@ func findTriangles(symbols []Symbol) []Triangle {
 		}
 
 		// прямое направление
-		if graph[s.BaseAsset] == nil {
+		if _, ok := graph[s.BaseAsset]; !ok {
 			graph[s.BaseAsset] = make(map[string]string)
 		}
 		graph[s.BaseAsset][s.QuoteAsset] = s.Symbol
 
-		// инверсия
-		if graph[s.QuoteAsset] == nil {
+		// инверт
+		if _, ok := graph[s.QuoteAsset]; !ok {
 			graph[s.QuoteAsset] = make(map[string]string)
 		}
 		graph[s.QuoteAsset][s.BaseAsset] = s.Symbol + "_INV"
@@ -138,9 +153,20 @@ func findTriangles(symbols []Symbol) []Triangle {
 
 	for A, toB := range graph {
 		for B, leg1 := range toB {
+			if graph[B] == nil {
+				continue
+			}
 			for C, leg2 := range graph[B] {
+				if graph[C] == nil {
+					continue
+				}
 				leg3, ok := graph[C][A]
 				if !ok {
+					continue
+				}
+
+				// ❌ фильтр USDT + USDC
+				if hasBothUSDTandUSDC(A, B, C) {
 					continue
 				}
 
@@ -159,41 +185,7 @@ func findTriangles(symbols []Symbol) []Triangle {
 	return result
 }
 
-// ---------------- NORMALIZATION ----------------
-
-// делает так, чтобы A == USDT
-func normalizeFromUSDT(t Triangle) (Triangle, bool) {
-
-	if t.A == "USDT" {
-		return t, true
-	}
-
-	if t.B == "USDT" {
-		return Triangle{
-			A:    t.B,
-			B:    t.C,
-			C:    t.A,
-			Leg1: t.Leg2,
-			Leg2: t.Leg3,
-			Leg3: t.Leg1,
-		}, true
-	}
-
-	if t.C == "USDT" {
-		return Triangle{
-			A:    t.C,
-			B:    t.A,
-			C:    t.B,
-			Leg1: t.Leg3,
-			Leg2: t.Leg1,
-			Leg3: t.Leg2,
-		}, true
-	}
-
-	return Triangle{}, false
-}
-
-// ---------------- HTTP ----------------
+// ---------- HTTP ----------
 
 func fetchExchangeInfo() ([]Symbol, error) {
 	url := "https://api.mexc.com/api/v3/exchangeInfo"
@@ -213,7 +205,7 @@ func fetchExchangeInfo() ([]Symbol, error) {
 	return info.Symbols, nil
 }
 
-// ---------------- MAIN ----------------
+// ---------- main ----------
 
 func main() {
 	symbols, err := fetchExchangeInfo()
@@ -221,18 +213,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	allTriangles := findTriangles(symbols)
-
-	var filtered []Triangle
-	for _, t := range allTriangles {
-		norm, ok := normalizeFromUSDT(t)
-		if !ok {
-			continue
-		}
-		filtered = append(filtered, norm)
-	}
-
-	log.Printf("Найдено треугольников с USDT: %d\n", len(filtered))
+	triangles := findTriangles(symbols)
+	log.Printf("Найдено треугольников (без USDT+USDC): %d\n", len(triangles))
 
 	file, err := os.Create("triangles.csv")
 	if err != nil {
@@ -240,14 +222,13 @@ func main() {
 	}
 	defer file.Close()
 
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
+	w := csv.NewWriter(file)
+	defer w.Flush()
 
-	// заголовок
-	writer.Write([]string{"A", "B", "C", "leg1", "leg2", "leg3"})
+	w.Write([]string{"A", "B", "C", "leg1", "leg2", "leg3"})
 
-	for _, t := range filtered {
-		writer.Write([]string{
+	for _, t := range triangles {
+		w.Write([]string{
 			t.A,
 			t.B,
 			t.C,
@@ -257,6 +238,7 @@ func main() {
 		})
 	}
 
-	log.Println("triangles.csv успешно создан")
+	log.Println("triangles.csv успешно создан (USDT+USDC исключены)")
 }
+
 
