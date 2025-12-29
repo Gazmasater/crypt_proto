@@ -71,10 +71,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
-// ---------------- OKX RESPONSE ----------------
+// ---------- OKX response structs ----------
 
 type OkxInstrument struct {
 	InstId   string `json:"instId"`
@@ -88,7 +89,7 @@ type OkxResponse struct {
 	Data []OkxInstrument `json:"data"`
 }
 
-// ---------------- TRIANGLE STRUCT ----------------
+// ---------- Triangle struct ----------
 
 type Triangle struct {
 	A, B, C string
@@ -97,33 +98,30 @@ type Triangle struct {
 	Leg3    string
 }
 
-// ---------------- FILTERS ----------------
+// ---------- Helpers ----------
 
-var forbiddenUSD = map[string]bool{
-	"USDC": true,
-	"USD1": true,
-	// добавь сюда другие, если нужно
-}
-
-func isStable(x string) bool {
-	if x == "USDT" || forbiddenUSD[x] {
-		return true
+// Нужно, чтобы B и C не начинались на "USD", кроме точного "USDT"
+func isBadUsd(x string) bool {
+	// если это USDT — нормально
+	if x == "USDT" {
+		return false
 	}
-	return false
+	// если начинается на "USD" — плохой
+	return strings.HasPrefix(x, "USD")
 }
 
-// валидность треугольника: стартует с USDT и нет других USD‑стейблов
+// Проверка на треугольник, где A == "USDT" и B,C не начинаются с "USD"
 func validTriangleUSDT(A, B, C string) bool {
 	if A != "USDT" {
 		return false
 	}
-	if forbiddenUSD[B] || forbiddenUSD[C] {
+	if isBadUsd(B) || isBadUsd(C) {
 		return false
 	}
 	return true
 }
 
-// ---------------- FETCH OKX ----------------
+// ---------- Fetch OKX ----------
 
 func fetchOkxInstruments() ([]OkxInstrument, error) {
 	url := "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
@@ -142,24 +140,24 @@ func fetchOkxInstruments() ([]OkxInstrument, error) {
 	return res.Data, nil
 }
 
-// ---------------- TRIANGLE LOGIC ----------------
+// ---------- Triangle finder ----------
 
 func findTriangles(instruments []OkxInstrument) []Triangle {
-	// graph[from][to] = pair
 	graph := make(map[string]map[string]string)
 
-	// строим граф
+	// строим граф (и инверсии)
 	for _, inst := range instruments {
 		base := inst.BaseCcy
 		quote := inst.QuoteCcy
-		// прямая связь
-		if _, ok := graph[base]; !ok {
+
+		// прямая
+		if graph[base] == nil {
 			graph[base] = make(map[string]string)
 		}
 		graph[base][quote] = inst.InstId
 
-		// инверсия — обозначаем явно
-		if _, ok := graph[quote]; !ok {
+		// инверт (обратное направление)
+		if graph[quote] == nil {
 			graph[quote] = make(map[string]string)
 		}
 		graph[quote][base] = inst.InstId + "_INV"
@@ -167,30 +165,36 @@ func findTriangles(instruments []OkxInstrument) []Triangle {
 
 	var result []Triangle
 
-	// A→B→C→A
 	for A, toB := range graph {
-
-		// старт должен быть USDT
+		// сразу фильтр по стартовой валюте
 		if A != "USDT" {
 			continue
 		}
 
 		for B, leg1 := range toB {
-			// если нет переходов с B → …
+			// B не должен быть плохим USD‑токеном
+			if isBadUsd(B) {
+				continue
+			}
 			if graph[B] == nil {
 				continue
 			}
+
 			for C, leg2 := range graph[B] {
-				// если нет переходов с C → …
+				// тоже запрещаем
+				if isBadUsd(C) {
+					continue
+				}
 				if graph[C] == nil {
 					continue
 				}
+
 				leg3, ok := graph[C][A]
 				if !ok {
 					continue
 				}
 
-				// фильтр: нет больших стейбл‑комбинаций
+				// финальный фильтр
 				if !validTriangleUSDT(A, B, C) {
 					continue
 				}
@@ -210,28 +214,26 @@ func findTriangles(instruments []OkxInstrument) []Triangle {
 	return result
 }
 
-// ---------------- MAIN ----------------
+// ---------- Main ----------
 
 func main() {
 	instruments, err := fetchOkxInstruments()
 	if err != nil {
-		log.Fatalf("Ошибка получения пар OKX: %v", err)
+		log.Fatalf("ошибка получения OKX instruments: %v", err)
 	}
 
 	triangles := findTriangles(instruments)
-	log.Printf("Найдено треугольников на OKX (USDT, нет других USD‑стейблов): %d", len(triangles))
+	log.Printf("Найдено треугольников (USDT start, без USD*): %d\n", len(triangles))
 
-	// создаём CSV
-	file, err := os.Create("triangles_okx.csv")
+	file, err := os.Create("triangles_okx_usdt_only.csv")
 	if err != nil {
-		log.Fatalf("Ошибка создания файла: %v", err)
+		log.Fatalf("ошибка создания csv: %v", err)
 	}
 	defer file.Close()
 
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	// заголовок
 	writer.Write([]string{"A", "B", "C", "leg1", "leg2", "leg3"})
 
 	for _, t := range triangles {
@@ -245,7 +247,8 @@ func main() {
 		})
 	}
 
-	log.Println("triangles_okx.csv успешно создан")
+	log.Println("triangles_okx_usdt_only.csv успешно создан.")
 }
+
 
 
