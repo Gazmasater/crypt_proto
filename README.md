@@ -102,13 +102,13 @@ type Triangle struct {
 
 // список стейблкоинов
 var stableCoins = map[string]bool{
-	"USDT": true,
-	"USDC": true,
-	"BUSD": true,
-	"DAI":  true,
-	"TUSD": true,
+	"USDT":  true,
+	"USDC":  true,
+	"BUSD":  true,
+	"DAI":   true,
+	"TUSD":  true,
 	"FDUSD": true,
-	"USDP": true,
+	"USDP":  true,
 }
 
 func isStable(s string) bool {
@@ -199,7 +199,7 @@ func buildTriangles(pairMap map[string]pairMarket) []Triangle {
 			// формируем ноги с BUY/SELL
 			leg1 := "BUY " + A + "/" + anchor
 			leg2 := "BUY " + B + "/" + A
-			leg3 := "SELL " + B + "/" + anchor
+			leg3 := "SELL " + m3.Base + "/" + m3.Quote
 
 			result = append(result, Triangle{
 				A:    anchor,
@@ -236,30 +236,6 @@ func saveCSV(filename string, data []Triangle) {
 		w.Write([]string{t.A, t.B, t.C, t.Leg1, t.Leg2, t.Leg3})
 	}
 }
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/kucointriangl/sort_usdt/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UnusedVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UnusedVar"
-		}
-	},
-	"severity": 8,
-	"message": "declared and not used: m3",
-	"source": "compiler",
-	"startLineNumber": 129,
-	"startColumn": 4,
-	"endLineNumber": 129,
-	"endColumn": 6,
-	"origin": "extHost1"
-}]
 
 
 
