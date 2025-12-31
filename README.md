@@ -138,8 +138,7 @@ func main() {
 	log.Printf("symbols from API: %d", len(info.Data))
 
 	// фильтруем активные пары
-	markets := make([]pairMarket, 0, len(info.Data))
-	pairMap := make(map[string]pairMarket) // для быстрого поиска
+	pairMap := make(map[string]pairMarket)
 	for _, s := range info.Data {
 		if !s.EnableTrading || s.BaseCurrency == "" || s.QuoteCurrency == "" {
 			continue
@@ -149,21 +148,22 @@ func main() {
 			Base:   s.BaseCurrency,
 			Quote:  s.QuoteCurrency,
 		}
-		markets = append(markets, m)
 		key := m.Base + "_" + m.Quote
 		pairMap[key] = m
 	}
 
-	log.Printf("filtered markets: %d", len(markets))
+	log.Printf("filtered markets: %d", len(pairMap))
 
+	// формируем треугольники
 	triangles := buildTriangles(pairMap)
 
+	// сохраняем CSV
 	saveCSV("triangles_kucoin.csv", triangles)
 	log.Println("Готово: triangles_kucoin.csv")
 }
 
 // =======================================================
-// Формирование треугольников с якорем USDT
+// Формирование всех треугольников с якорем USDT
 // =======================================================
 func buildTriangles(pairMap map[string]pairMarket) []Triangle {
 	var result []Triangle
@@ -189,26 +189,31 @@ func buildTriangles(pairMap map[string]pairMarket) []Triangle {
 				continue
 			}
 
-			// leg3: B -> anchor
-			key3 := B + "_" + anchor
-			m3, ok := pairMap[key3]
-			if !ok {
-				continue
+			// 🔹 Вариант 1: USDT -> A -> B -> USDT
+			if m3, ok := pairMap[B+"_"+anchor]; ok {
+				result = append(result, Triangle{
+					A:    anchor,
+					B:    A,
+					C:    B,
+					Leg1: "BUY " + A + "/" + anchor,
+					Leg2: "BUY " + B + "/" + A,
+					Leg3: "SELL " + m3.Base + "/" + m3.Quote,
+				})
 			}
 
-			// формируем ноги с BUY/SELL
-			leg1 := "BUY " + A + "/" + anchor
-			leg2 := "BUY " + B + "/" + A
-			leg3 := "SELL " + m3.Base + "/" + m3.Quote
-
-			result = append(result, Triangle{
-				A:    anchor,
-				B:    A,
-				C:    B,
-				Leg1: leg1,
-				Leg2: leg2,
-				Leg3: leg3,
-			})
+			// 🔹 Вариант 2: USDT -> B -> A -> USDT
+			if mBA, okBA := pairMap[B+"_"+A]; okBA {
+				if mAU, okAU := pairMap[A+"_"+anchor]; okAU {
+					result = append(result, Triangle{
+						A:    anchor,
+						B:    B,
+						C:    A,
+						Leg1: "BUY " + B + "/" + anchor,
+						Leg2: "BUY " + A + "/" + B,
+						Leg3: "SELL " + mAU.Base + "/" + mAU.Quote,
+					})
+				}
+			}
 		}
 	}
 
@@ -236,7 +241,6 @@ func saveCSV(filename string, data []Triangle) {
 		w.Write([]string{t.A, t.B, t.C, t.Leg1, t.Leg2, t.Leg3})
 	}
 }
-
 
 
 
