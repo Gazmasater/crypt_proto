@@ -243,4 +243,27 @@ func saveCSV(filename string, data []Triangle) {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/kucointriangl/sort_usdt/main.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: mBA",
+	"source": "compiler",
+	"startLineNumber": 140,
+	"startColumn": 7,
+	"endLineNumber": 140,
+	"endColumn": 10,
+	"origin": "extHost1"
+}]
+
 
