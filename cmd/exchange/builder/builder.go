@@ -15,7 +15,7 @@ func BuildTriangles(
 			continue
 		}
 
-		// A -> B
+		// шаг 1: A -> B
 		var B string
 		if m1.Base == anchor {
 			B = m1.Quote
@@ -25,7 +25,8 @@ func BuildTriangles(
 			continue
 		}
 
-		if common.IsStable(B) {
+		// ❌ нельзя стейб в середине
+		if common.StableCoins[B] {
 			continue
 		}
 
@@ -34,7 +35,7 @@ func BuildTriangles(
 				continue
 			}
 
-			// B -> C
+			// шаг 2: B -> C
 			var C string
 			if m2.Base == B {
 				C = m2.Quote
@@ -48,11 +49,11 @@ func BuildTriangles(
 				continue
 			}
 
-			if common.IsStable(C) {
+			if common.StableCoins[C] {
 				continue
 			}
 
-			// проверяем замыкание C -> A
+			// шаг 3: C -> A должен существовать
 			l3, ok := common.FindLeg(C, anchor, markets)
 			if !ok {
 				continue
@@ -64,21 +65,24 @@ func BuildTriangles(
 				continue
 			}
 
-			// ===== дедуп =====
-			key := common.CanonicalKey(anchor, B, C)
+			// 🔒 дедупликация A-X-Y-A / A-Y-X-A
+			key := common.TriangleKey(anchor, B, C)
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 
-			result = append(result, common.NewTriangle(
-				anchor,
-				B,
-				C,
-				l1,
-				l2,
-				l3,
-			))
+			t := common.Triangle{
+				A: anchor,
+				B: B,
+				C: C,
+
+				Leg1: common.ResolveSide(anchor, B, l1) + " " + l1.Base + "/" + l1.Quote,
+				Leg2: common.ResolveSide(B, C, l2) + " " + l2.Base + "/" + l2.Quote,
+				Leg3: common.ResolveSide(C, anchor, l3) + " " + l3.Base + "/" + l3.Quote,
+			}
+
+			result = append(result, t)
 		}
 	}
 

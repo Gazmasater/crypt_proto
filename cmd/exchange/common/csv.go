@@ -15,10 +15,7 @@ func SaveTrianglesCSV(path string, list []Triangle) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	w.Write([]string{
-		"A", "B", "C",
-		"Leg1", "Leg2", "Leg3",
-	})
+	w.Write([]string{"A", "B", "C", "Leg1", "Leg2", "Leg3"})
 
 	for _, t := range list {
 		w.Write([]string{
