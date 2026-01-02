@@ -62,25 +62,25 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-📁 Итоговая структура проекта
-exchange/
-├── common/
-│   ├── market.go
-│   ├── stable.go
-│   ├── leg.go
-│   ├── triangle.go
-│   ├── resolver.go
-│   └── csv.go
-│
-├── builder/
-│   └── triangles.go
-│
-├── kucoin/
-│   └── markets.go   // LoadMarkets()
-│
-└── main.go
+✅ 1. common/stable.go
 
-✅ common/market.go
+Список стейблов — используется как фильтр
+
+package common
+
+var StableCoins = map[string]bool{
+	"USDT": true,
+	"USDC": true,
+	"DAI":  true,
+	"BUSD": true,
+	"TUSD": true,
+	"EUR":  true,
+}
+
+✅ 2. common/market.go
+
+(оставляем как есть, минимально)
+
 package common
 
 type Market struct {
@@ -97,95 +97,164 @@ type Market struct {
 	BaseIncrement  float64
 	QuoteIncrement float64
 	PriceIncrement float64
-
-	OrderTypes []string
 }
 
-func (m Market) HasMarketOrder() bool {
-	for _, t := range m.OrderTypes {
-		if t == "MARKET" {
-			return true
-		}
+✅ 3. common/resolver.go
+
+Поиск пары и направление BUY / SELL
+
+package common
+
+func FindLeg(a, b string, markets map[string]Market) (Market, bool) {
+	if m, ok := markets[a+"_"+b]; ok {
+		return m, true
 	}
-	return false
-}
-
-✅ common/stable.go
-package common
-
-var StableCoins = map[string]bool{
-	"USDT": true,
-	"USDC": true,
-	"BUSD": true,
-	"DAI":  true,
-	"TUSD": true,
-	"FDUSD": true,
-}
-
-✅ common/leg.go
-package common
-
-type Leg struct {
-	From   string
-	To     string
-	Symbol string
-	Side   string // BUY or SELL
-}
-
-✅ common/resolver.go
-package common
-
-func ResolveLeg(from, to string, markets map[string]Market) (*Leg, bool) {
-
-	// BUY → to/from
-	if m, ok := markets[to+"-"+from]; ok {
-		if m.EnableTrading && m.HasMarketOrder() {
-			return &Leg{
-				From:   from,
-				To:     to,
-				Symbol: m.Symbol,
-				Side:   "BUY",
-			}, true
-		}
+	if m, ok := markets[b+"_"+a]; ok {
+		return m, true
 	}
-
-	// SELL → from/to
-	if m, ok := markets[from+"-"+to]; ok {
-		if m.EnableTrading && m.HasMarketOrder() {
-			return &Leg{
-				From:   from,
-				To:     to,
-				Symbol: m.Symbol,
-				Side:   "SELL",
-			}, true
-		}
-	}
-
-	return nil, false
+	return Market{}, false
 }
 
-✅ common/triangle.go
-package common
+func ResolveSide(from, to string, m Market) string {
+	if m.Base == to && m.Quote == from {
+		return "BUY"
+	}
+	if m.Base == from && m.Quote == to {
+		return "SELL"
+	}
+	return ""
+}
 
-import "strings"
+✅ 4. common/triangle.go
+package common
 
 type Triangle struct {
 	A string
-	X string
-	Y string
+	B string
+	C string
 
-	Legs []Leg
+	Leg1 string
+	Leg2 string
+	Leg3 string
 }
 
-func (t Triangle) Key() string {
-	parts := make([]string, 0, 3)
-	for _, l := range t.Legs {
-		parts = append(parts, l.Side+":"+l.Symbol)
+✅ 5. ДЕДУПЛИКАТОР (ключ треугольника)
+
+Чтобы
+USDT → A → B → USDT
+и
+USDT → B → A → USDT
+
+не дублировались.
+
+package common
+
+import "sort"
+
+func TriangleKey(a, b, c string) string {
+	x := []string{b, c}
+	sort.Strings(x)
+	return a + "|" + x[0] + "|" + x[1]
+}
+
+✅ 6. ГЛАВНОЕ — универсальный генератор
+
+📄 builder/triangles.go
+
+package builder
+
+import (
+	"exchange/common"
+)
+
+func BuildTriangles(
+	markets map[string]common.Market,
+	anchor string,
+) []common.Triangle {
+
+	result := []common.Triangle{}
+	seen := map[string]bool{}
+
+	for _, m1 := range markets {
+		if !m1.EnableTrading {
+			continue
+		}
+
+		// шаг 1: A -> B
+		var B string
+		if m1.Base == anchor {
+			B = m1.Quote
+		} else if m1.Quote == anchor {
+			B = m1.Base
+		} else {
+			continue
+		}
+
+		// ❌ нельзя стейб в середине
+		if common.StableCoins[B] {
+			continue
+		}
+
+		for _, m2 := range markets {
+			if !m2.EnableTrading {
+				continue
+			}
+
+			// шаг 2: B -> C
+			var C string
+			if m2.Base == B {
+				C = m2.Quote
+			} else if m2.Quote == B {
+				C = m2.Base
+			} else {
+				continue
+			}
+
+			if C == anchor || C == B {
+				continue
+			}
+
+			if common.StableCoins[C] {
+				continue
+			}
+
+			// шаг 3: C -> A должен существовать
+			l3, ok := common.FindLeg(C, anchor, markets)
+			if !ok {
+				continue
+			}
+
+			l1, ok1 := common.FindLeg(anchor, B, markets)
+			l2, ok2 := common.FindLeg(B, C, markets)
+			if !ok1 || !ok2 {
+				continue
+			}
+
+			// 🔒 дедупликация A-X-Y-A / A-Y-X-A
+			key := common.TriangleKey(anchor, B, C)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+
+			t := common.Triangle{
+				A: anchor,
+				B: B,
+				C: C,
+
+				Leg1: common.ResolveSide(anchor, B, l1) + " " + l1.Base + "/" + l1.Quote,
+				Leg2: common.ResolveSide(B, C, l2) + " " + l2.Base + "/" + l2.Quote,
+				Leg3: common.ResolveSide(C, anchor, l3) + " " + l3.Base + "/" + l3.Quote,
+			}
+
+			result = append(result, t)
+		}
 	}
-	return strings.Join(parts, "|")
+
+	return result
 }
 
-✅ common/csv.go
+✅ 7. CSV сохранение
 package common
 
 import (
@@ -203,113 +272,19 @@ func SaveTrianglesCSV(path string, list []Triangle) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	w.Write([]string{
-		"A", "X", "Y",
-		"LEG1", "LEG2", "LEG3",
-	})
+	w.Write([]string{"A", "B", "C", "Leg1", "Leg2", "Leg3"})
 
 	for _, t := range list {
 		w.Write([]string{
-			t.A,
-			t.X,
-			t.Y,
-			t.Legs[0].Side + " " + t.Legs[0].Symbol,
-			t.Legs[1].Side + " " + t.Legs[1].Symbol,
-			t.Legs[2].Side + " " + t.Legs[2].Symbol,
+			t.A, t.B, t.C,
+			t.Leg1, t.Leg2, t.Leg3,
 		})
 	}
 
 	return nil
 }
 
-✅ builder/triangles.go
-package builder
-
-import (
-	"exchange/common"
-)
-
-func buildTriangle(a, x, y string, markets map[string]common.Market) (*common.Triangle, bool) {
-
-	l1, ok := common.ResolveLeg(a, x, markets)
-	if !ok {
-		return nil, false
-	}
-
-	l2, ok := common.ResolveLeg(x, y, markets)
-	if !ok {
-		return nil, false
-	}
-
-	l3, ok := common.ResolveLeg(y, a, markets)
-	if !ok {
-		return nil, false
-	}
-
-	return &common.Triangle{
-		A: a,
-		X: x,
-		Y: y,
-		Legs: []common.Leg{*l1, *l2, *l3},
-	}, true
-}
-
-✅ builder/triangles.go (основной генератор)
-package builder
-
-import "exchange/common"
-
-func BuildTriangles(
-	markets map[string]common.Market,
-) []common.Triangle {
-
-	var result []common.Triangle
-	seen := map[string]bool{}
-
-	assets := map[string]bool{}
-
-	for _, m := range markets {
-		assets[m.Base] = true
-		assets[m.Quote] = true
-	}
-
-	for a := range assets {
-		if !common.StableCoins[a] {
-			continue
-		}
-
-		for x := range assets {
-			for y := range assets {
-
-				if x == y || x == a || y == a {
-					continue
-				}
-
-				// A-X-Y-A
-				if t, ok := buildTriangle(a, x, y, markets); ok {
-					key := t.Key()
-					if !seen[key] {
-						seen[key] = true
-						result = append(result, *t)
-					}
-				}
-
-				// A-Y-X-A
-				if t, ok := buildTriangle(a, y, x, markets); ok {
-					key := t.Key()
-					if !seen[key] {
-						seen[key] = true
-						result = append(result, *t)
-					}
-				}
-			}
-		}
-	}
-
-	return result
-}
-
-✅ main.go
+✅ 8. main.go
 package main
 
 import (
@@ -319,14 +294,12 @@ import (
 )
 
 func main() {
-
 	markets := kucoin.LoadMarkets()
 
-	triangles := builder.BuildTriangles(markets)
+	triangles := builder.BuildTriangles(markets, "USDT")
 
 	common.SaveTrianglesCSV("data/kucoin_triangles.csv", triangles)
 }
-
 
 
 
