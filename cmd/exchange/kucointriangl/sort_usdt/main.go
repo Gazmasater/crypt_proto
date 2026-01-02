@@ -148,23 +148,44 @@ func loadKuCoinMarkets() map[string]Market {
 func buildTriangles(markets map[string]Market, anchor string) []Triangle {
 	var out []Triangle
 
-	for _, m1 := range markets {
-		// anchor → A
-		if m1.Quote != anchor || isStable(m1.Base) {
-			continue
+	// все монеты, которые торгуются с anchor
+	var coins []string
+	for _, m := range markets {
+		if m.Quote == anchor && !isStable(m.Base) {
+			coins = append(coins, m.Base)
 		}
-		A := m1.Base
+	}
 
-		for _, m2 := range markets {
-			// A → B
-			if m2.Quote != A || isStable(m2.Base) || m2.Base == A {
+	// перебор всех пар (X, Y)
+	for i := 0; i < len(coins); i++ {
+		for j := 0; j < len(coins); j++ {
+			if i == j {
 				continue
 			}
-			B := m2.Base
 
-			// ===== вариант: USDT → A → B → USDT
-			if m3, ok := markets[B+"_"+anchor]; ok {
-				out = append(out, newTriangle(anchor, A, B, m1, m2, m3))
+			X := coins[i]
+			Y := coins[j]
+
+			// =============================
+			// ВАРИАНТ 1: USDT → X → Y → USDT
+			// =============================
+			m1, ok1 := markets[X+"_"+anchor]
+			m2, ok2 := markets[Y+"_"+X]
+			m3, ok3 := markets[Y+"_"+anchor]
+
+			if ok1 && ok2 && ok3 {
+				out = append(out, newTriangle(anchor, X, Y, m1, m2, m3))
+			}
+
+			// =============================
+			// ВАРИАНТ 2: USDT → Y → X → USDT
+			// =============================
+			m1b, ok1b := markets[Y+"_"+anchor]
+			m2b, ok2b := markets[X+"_"+Y]
+			m3b, ok3b := markets[X+"_"+anchor]
+
+			if ok1b && ok2b && ok3b {
+				out = append(out, newTriangle(anchor, Y, X, m1b, m2b, m3b))
 			}
 		}
 	}
