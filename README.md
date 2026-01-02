@@ -62,37 +62,291 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-internal/
-├── exchange/
-│   ├── kucoin/
-│   │   ├── client.go        // HTTP + API
-│   │   ├── dto.go           // структуры ответа API
-│   │   ├── adapter.go       // KuCoin → Market
-│   │   └── loader.go        // LoadMarkets()
-│   │
-│   ├── mexc/
-│   │   ├── client.go
-│   │   ├── dto.go
-│   │   ├── adapter.go
-│   │   └── loader.go
-│   │
-│   ├── okx/
-│   │   ├── client.go
-│   │   ├── dto.go
-│   │   ├── adapter.go
-│   │   └── loader.go
-│   │
-│   └── types.go             // Market (универсальный)
+Я покажу:
+
+📁 структуру папок
+
+📦 общий пакет exchange
+
+🔌 интерфейс биржи
+
+🧱 модель Market
+
+🔍 универсальный поиск leg
+
+🔄 определение BUY / SELL
+
+🔺 генератор треугольников
+
+💾 где и как хранить CSV
+
+✅ итог: что у тебя получается
+
+✅ 1. Структура проекта (рекомендую)
+exchange/
+├── common/
+│   ├── market.go
+│   ├── triangle.go
+│   ├── resolver.go
+│   └── csv.go
 │
-├── arbitrage/
-│   ├── triangle.go          // структура Triangle
-│   ├── builder.go           // генерация треугольников
-│   ├── filters.go           // stable / anchor / правила
-│   └── csv.go               // сохранение CSV
+├── kucoin/
+│   ├── client.go
+│   └── markets.go
 │
-├── output/
-│   └── triangles/
+├── okx/
+│   ├── client.go
+│   └── markets.go
 │
-└── cmd/
-    └── triangles/
-        └── main.go
+├── mexc/
+│   ├── client.go
+│   └── markets.go
+│
+├── builder/
+│   └── triangles.go
+│
+└── main.go
+
+✅ 2. exchange/common/market.go
+package common
+
+type Market struct {
+	Symbol string
+
+	Base  string
+	Quote string
+
+	EnableTrading bool
+
+	BaseMinSize  float64
+	QuoteMinSize float64
+
+	BaseIncrement  float64
+	QuoteIncrement float64
+	PriceIncrement float64
+}
+
+✅ 3. Универсальный поиск пары (в любую сторону)
+
+📄 exchange/common/resolver.go
+
+package common
+
+func FindLeg(from, to string, markets map[string]Market) (Market, bool) {
+	if m, ok := markets[from+"_"+to]; ok {
+		return m, true
+	}
+	if m, ok := markets[to+"_"+from]; ok {
+		return m, true
+	}
+	return Market{}, false
+}
+
+✅ 4. Определение BUY / SELL
+package common
+
+func ResolveSide(from, to string, m Market) string {
+	if m.Quote == from && m.Base == to {
+		return "BUY"
+	}
+	if m.Base == from && m.Quote == to {
+		return "SELL"
+	}
+	return ""
+}
+
+✅ 5. Структура треугольника
+
+📄 exchange/common/triangle.go
+
+package common
+
+type Triangle struct {
+	A string
+	B string
+	C string
+
+	Leg1 string
+	Leg2 string
+	Leg3 string
+
+	BaseMin1  float64
+	QuoteMin1 float64
+	BaseInc1  float64
+	QuoteInc1 float64
+	PriceInc1 float64
+
+	BaseMin2  float64
+	QuoteMin2 float64
+	BaseInc2  float64
+	QuoteInc2 float64
+	PriceInc2 float64
+
+	BaseMin3  float64
+	QuoteMin3 float64
+	BaseInc3  float64
+	QuoteInc3 float64
+	PriceInc3 float64
+}
+
+✅ 6. Универсальный конструктор треугольника
+package common
+
+func NewTriangle(A, B, C string, l1, l2, l3 Market) Triangle {
+	return Triangle{
+		A: A,
+		B: B,
+		C: C,
+
+		Leg1: ResolveSide(A, B, l1) + " " + l1.Base + "/" + l1.Quote,
+		Leg2: ResolveSide(B, C, l2) + " " + l2.Base + "/" + l2.Quote,
+		Leg3: ResolveSide(C, A, l3) + " " + l3.Base + "/" + l3.Quote,
+
+		BaseMin1:  l1.BaseMinSize,
+		QuoteMin1: l1.QuoteMinSize,
+		BaseInc1:  l1.BaseIncrement,
+		QuoteInc1: l1.QuoteIncrement,
+		PriceInc1: l1.PriceIncrement,
+
+		BaseMin2:  l2.BaseMinSize,
+		QuoteMin2: l2.QuoteMinSize,
+		BaseInc2:  l2.BaseIncrement,
+		QuoteInc2: l2.QuoteIncrement,
+		PriceInc2: l2.PriceIncrement,
+
+		BaseMin3:  l3.BaseMinSize,
+		QuoteMin3: l3.QuoteMinSize,
+		BaseInc3:  l3.BaseIncrement,
+		QuoteInc3: l3.QuoteIncrement,
+		PriceInc3: l3.PriceIncrement,
+	}
+}
+
+✅ 7. Генератор треугольников
+
+📄 exchange/builder/triangles.go
+
+package builder
+
+import "exchange/common"
+
+func BuildTriangles(
+	markets map[string]common.Market,
+	anchor string,
+) []common.Triangle {
+
+	var result []common.Triangle
+
+	for _, m1 := range markets {
+		if !m1.EnableTrading {
+			continue
+		}
+
+		var B string
+		if m1.Base == anchor {
+			B = m1.Quote
+		} else if m1.Quote == anchor {
+			B = m1.Base
+		} else {
+			continue
+		}
+
+		for _, m2 := range markets {
+			if !m2.EnableTrading {
+				continue
+			}
+
+			var C string
+			if m2.Base == B {
+				C = m2.Quote
+			} else if m2.Quote == B {
+				C = m2.Base
+			} else {
+				continue
+			}
+
+			if C == anchor || C == B {
+				continue
+			}
+
+			l3, ok := common.FindLeg(C, anchor, markets)
+			if !ok {
+				continue
+			}
+
+			l1, ok1 := common.FindLeg(anchor, B, markets)
+			l2, ok2 := common.FindLeg(B, C, markets)
+
+			if !ok1 || !ok2 {
+				continue
+			}
+
+			t := common.NewTriangle(anchor, B, C, l1, l2, l3)
+			result = append(result, t)
+		}
+	}
+
+	return result
+}
+
+✅ 8. CSV — где хранить и как
+
+📁 рекомендую:
+
+data/
+├── kucoin_triangles.csv
+├── okx_triangles.csv
+└── mexc_triangles.csv
+
+
+📄 exchange/common/csv.go
+
+package common
+
+import (
+	"encoding/csv"
+	"os"
+)
+
+func SaveTrianglesCSV(path string, list []Triangle) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	w.Write([]string{
+		"A", "B", "C",
+		"Leg1", "Leg2", "Leg3",
+	})
+
+	for _, t := range list {
+		w.Write([]string{
+			t.A, t.B, t.C,
+			t.Leg1, t.Leg2, t.Leg3,
+		})
+	}
+
+	return nil
+}
+
+✅ 9. Пример использования (main.go)
+package main
+
+import (
+	"exchange/builder"
+	"exchange/common"
+	"exchange/kucoin"
+)
+
+func main() {
+	markets := kucoin.LoadMarkets()
+
+	triangles := builder.BuildTriangles(markets, "USDT")
+
+	common.SaveTrianglesCSV("data/kucoin_triangles.csv", triangles)
+}
+
