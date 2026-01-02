@@ -75,14 +75,17 @@ import (
 	"strings"
 )
 
-// ----------------------------
-// Универсальные структуры
-// ----------------------------
+//
+// ==========================
+// Универсальная модель рынка
+// ==========================
 type Market struct {
-	Symbol         string
-	Base           string
-	Quote          string
-	EnableTrading  bool
+	Symbol string
+	Base   string
+	Quote  string
+
+	EnableTrading bool
+
 	BaseMinSize    string
 	QuoteMinSize   string
 	BaseIncrement  string
@@ -90,17 +93,26 @@ type Market struct {
 	PriceIncrement string
 }
 
+//
+// ==========================
+// Треугольник
+// ==========================
 type Triangle struct {
-	A, B, C       string
-	Leg1, Leg2, Leg3 string
+	A, B, C string
+
+	Leg1 string
+	Leg2 string
+	Leg3 string
+
 	BaseMin1, QuoteMin1, BaseInc1, QuoteInc1, PriceInc1 string
 	BaseMin2, QuoteMin2, BaseInc2, QuoteInc2, PriceInc2 string
 	BaseMin3, QuoteMin3, BaseInc3, QuoteInc3, PriceInc3 string
 }
 
-// ----------------------------
-// Стейблкоины
-// ----------------------------
+//
+// ==========================
+// Stable coins
+// ==========================
 var stableCoins = map[string]bool{
 	"USDT":  true,
 	"USDC":  true,
@@ -112,13 +124,13 @@ var stableCoins = map[string]bool{
 }
 
 func isStable(s string) bool {
-	_, ok := stableCoins[strings.ToUpper(s)]
-	return ok
+	return stableCoins[strings.ToUpper(s)]
 }
 
-// ----------------------------
-// KuCoin API структуры
-// ----------------------------
+//
+// ==========================
+// KuCoin API structs
+// ==========================
 type KuCoinSymbol struct {
 	Symbol         string `json:"symbol"`
 	BaseCurrency   string `json:"baseCurrency"`
@@ -131,155 +143,148 @@ type KuCoinSymbol struct {
 	PriceIncrement string `json:"priceIncrement"`
 }
 
-type KuCoinExchangeInfo struct {
+type KuCoinResponse struct {
 	Code string         `json:"code"`
 	Data []KuCoinSymbol `json:"data"`
 }
 
-// ----------------------------
-// Main
-// ----------------------------
+//
+// ==========================
+// MAIN
+// ==========================
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	// 1) Загружаем пары KuCoin
-	kucoinMarkets := fetchKuCoin()
-	log.Printf("KuCoin markets loaded: %d", len(kucoinMarkets))
+	markets := loadKuCoinMarkets()
+	log.Printf("markets loaded: %d", len(markets))
 
-	// 2) Построение треугольников
-	triangles := BuildTriangles(kucoinMarkets, "USDT")
-	log.Printf("Triangles found: %d", len(triangles))
+	triangles := buildTriangles(markets, "USDT")
+	log.Printf("triangles found: %d", len(triangles))
 
-	// 3) Сохраняем CSV
-	SaveCSV("triangles.csv", triangles)
-	log.Println("Готово: triangles.csv")
+	saveCSV("triangles.csv", triangles)
+
+	log.Println("done ✅")
 }
 
-// ----------------------------
-// Функции для загрузки и нормализации KuCoin
-// ----------------------------
-func fetchKuCoin() map[string]Market {
+//
+// ==========================
+// Загрузка KuCoin
+// ==========================
+func loadKuCoinMarkets() map[string]Market {
 	resp, err := http.Get("https://api.kucoin.com/api/v2/symbols")
 	if err != nil {
-		log.Fatalf("get symbols: %v", err)
+		log.Fatalf("http error: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		log.Fatalf("status %d: %s", resp.StatusCode, string(b))
+		body, _ := io.ReadAll(resp.Body)
+		log.Fatalf("bad status %d: %s", resp.StatusCode, body)
 	}
 
-	var info KuCoinExchangeInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		log.Fatalf("decode: %v", err)
+	var api KuCoinResponse
+	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
+		log.Fatalf("decode error: %v", err)
 	}
 
-	return KuCoinToMarketMap(info.Data)
-}
+	markets := make(map[string]Market)
 
-func KuCoinToMarketMap(data []KuCoinSymbol) map[string]Market {
-	m := make(map[string]Market)
-	for _, s := range data {
+	for _, s := range api.Data {
 		if !s.EnableTrading || s.BaseCurrency == "" || s.QuoteCurrency == "" {
 			continue
 		}
+
 		key := s.BaseCurrency + "_" + s.QuoteCurrency
-		m[key] = Market{
-			Symbol:         s.Symbol,
-			Base:           s.BaseCurrency,
-			Quote:          s.QuoteCurrency,
-			EnableTrading:  s.EnableTrading,
-			BaseMinSize:    s.BaseMinSize,
-			QuoteMinSize:   s.QuoteMinSize,
-			BaseIncrement:  s.BaseIncrement,
-			QuoteIncrement: s.QuoteIncrement,
-			PriceIncrement: s.PriceIncrement,
+
+		markets[key] = Market{
+			Symbol:          s.Symbol,
+			Base:            s.BaseCurrency,
+			Quote:           s.QuoteCurrency,
+			EnableTrading:   s.EnableTrading,
+			BaseMinSize:     s.BaseMinSize,
+			QuoteMinSize:    s.QuoteMinSize,
+			BaseIncrement:   s.BaseIncrement,
+			QuoteIncrement:  s.QuoteIncrement,
+			PriceIncrement:  s.PriceIncrement,
 		}
 	}
-	return m
+
+	return markets
 }
 
-// ----------------------------
-// Заглушки для OKX и MEXC (будет подключение аналогично)
-// ----------------------------
-/*
-func OKXToMarketMap(data []OKXSymbol) map[string]Market { ... }
-func MEXCToMarketMap(data []MEXCSymbol) map[string]Market { ... }
-*/
-
-// ----------------------------
+//
+// ==========================
 // Генератор треугольников
-// ----------------------------
-func BuildTriangles(pairMap map[string]Market, anchor string) []Triangle {
-	var result []Triangle
+// ==========================
+func buildTriangles(markets map[string]Market, anchor string) []Triangle {
+	var out []Triangle
 
-	for _, m1 := range pairMap {
+	for _, m1 := range markets {
+		// anchor → A
 		if m1.Quote != anchor || isStable(m1.Base) {
 			continue
 		}
 		A := m1.Base
 
-		for _, m2 := range pairMap {
+		for _, m2 := range markets {
+			// A → B
 			if m2.Quote != A || isStable(m2.Base) || m2.Base == A {
 				continue
 			}
 			B := m2.Base
 
-			// Вариант 1: anchor -> A -> B -> anchor
-			if m3, ok := pairMap[B+"_"+anchor]; ok {
-				result = append(result, NewTriangle(anchor, A, B, m1, m2, m3))
-			}
-
-			// Вариант 2: anchor -> B -> A -> anchor
-			if _, okBA := pairMap[B+"_"+A]; okBA {
-				if mAU, okAU := pairMap[A+"_"+anchor]; okAU {
-					result = append(result, NewTriangle(anchor, B, A, pairMap[B+"_"+anchor], pairMap[A+"_"+B], mAU))
-				}
+			// ===== вариант: USDT → A → B → USDT
+			if m3, ok := markets[B+"_"+anchor]; ok {
+				out = append(out, newTriangle(anchor, A, B, m1, m2, m3))
 			}
 		}
 	}
 
-	return result
+	return out
 }
 
-// ----------------------------
-// Создание треугольника
-// ----------------------------
-func NewTriangle(A, B, C string, leg1, leg2, leg3 Market) Triangle {
+//
+// ==========================
+// Конструктор треугольника
+// ==========================
+func newTriangle(A, B, C string, l1, l2, l3 Market) Triangle {
 	return Triangle{
-		A: A, B: B, C: C,
-		Leg1: "BUY " + leg1.Base + "/" + leg1.Quote,
-		Leg2: "BUY " + leg2.Base + "/" + leg2.Quote,
-		Leg3: "SELL " + leg3.Base + "/" + leg3.Quote,
+		A: A,
+		B: B,
+		C: C,
 
-		BaseMin1:    leg1.BaseMinSize,
-		QuoteMin1:   leg1.QuoteMinSize,
-		BaseInc1:    leg1.BaseIncrement,
-		QuoteInc1:   leg1.QuoteIncrement,
-		PriceInc1:   leg1.PriceIncrement,
+		Leg1: "BUY " + l1.Base + "/" + l1.Quote,
+		Leg2: "BUY " + l2.Base + "/" + l2.Quote,
+		Leg3: "SELL " + l3.Base + "/" + l3.Quote,
 
-		BaseMin2:    leg2.BaseMinSize,
-		QuoteMin2:   leg2.QuoteMinSize,
-		BaseInc2:    leg2.BaseIncrement,
-		QuoteInc2:   leg2.QuoteIncrement,
-		PriceInc2:   leg2.PriceIncrement,
+		BaseMin1:  l1.BaseMinSize,
+		QuoteMin1: l1.QuoteMinSize,
+		BaseInc1:  l1.BaseIncrement,
+		QuoteInc1: l1.QuoteIncrement,
+		PriceInc1: l1.PriceIncrement,
 
-		BaseMin3:    leg3.BaseMinSize,
-		QuoteMin3:   leg3.QuoteMinSize,
-		BaseInc3:    leg3.BaseIncrement,
-		QuoteInc3:   leg3.QuoteIncrement,
-		PriceInc3:   leg3.PriceIncrement,
+		BaseMin2:  l2.BaseMinSize,
+		QuoteMin2: l2.QuoteMinSize,
+		BaseInc2:  l2.BaseIncrement,
+		QuoteInc2: l2.QuoteIncrement,
+		PriceInc2: l2.PriceIncrement,
+
+		BaseMin3:  l3.BaseMinSize,
+		QuoteMin3: l3.QuoteMinSize,
+		BaseInc3:  l3.BaseIncrement,
+		QuoteInc3: l3.QuoteIncrement,
+		PriceInc3: l3.PriceIncrement,
 	}
 }
 
-// ----------------------------
-// Сохранение CSV
-// ----------------------------
-func SaveCSV(filename string, data []Triangle) {
+//
+// ==========================
+// CSV
+// ==========================
+func saveCSV(filename string, data []Triangle) {
 	f, err := os.Create(filename)
 	if err != nil {
-		log.Fatalf("create file: %v", err)
+		log.Fatalf("file create error: %v", err)
 	}
 	defer f.Close()
 
@@ -287,7 +292,8 @@ func SaveCSV(filename string, data []Triangle) {
 	defer w.Flush()
 
 	w.Write([]string{
-		"A", "B", "C", "leg1", "leg2", "leg3",
+		"A", "B", "C",
+		"leg1", "leg2", "leg3",
 		"baseMin1", "quoteMin1", "baseInc1", "quoteInc1", "priceInc1",
 		"baseMin2", "quoteMin2", "baseInc2", "quoteInc2", "priceInc2",
 		"baseMin3", "quoteMin3", "baseInc3", "quoteInc3", "priceInc3",
@@ -295,12 +301,11 @@ func SaveCSV(filename string, data []Triangle) {
 
 	for _, t := range data {
 		w.Write([]string{
-			t.A, t.B, t.C, t.Leg1, t.Leg2, t.Leg3,
+			t.A, t.B, t.C,
+			t.Leg1, t.Leg2, t.Leg3,
 			t.BaseMin1, t.QuoteMin1, t.BaseInc1, t.QuoteInc1, t.PriceInc1,
 			t.BaseMin2, t.QuoteMin2, t.BaseInc2, t.QuoteInc2, t.PriceInc2,
 			t.BaseMin3, t.QuoteMin3, t.BaseInc3, t.QuoteInc3, t.PriceInc3,
 		})
 	}
 }
-
-
