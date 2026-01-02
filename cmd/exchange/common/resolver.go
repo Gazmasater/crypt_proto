@@ -1,17 +1,17 @@
 package common
 
-func FindLeg(from, to string, markets map[string]Market) (Market, bool) {
-	if m, ok := markets[from+"_"+to]; ok {
+func FindLeg(a, b string, markets map[string]Market) (Market, bool) {
+	if m, ok := markets[a+"_"+b]; ok {
 		return m, true
 	}
-	if m, ok := markets[to+"_"+from]; ok {
+	if m, ok := markets[b+"_"+a]; ok {
 		return m, true
 	}
 	return Market{}, false
 }
 
 func ResolveSide(from, to string, m Market) string {
-	if m.Quote == from && m.Base == to {
+	if m.Base == to && m.Quote == from {
 		return "BUY"
 	}
 	if m.Base == from && m.Quote == to {
