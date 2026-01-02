@@ -62,174 +62,13 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-Я покажу:
-
-📁 структуру папок
-
-📦 общий пакет exchange
-
-🔌 интерфейс биржи
-
-🧱 модель Market
-
-🔍 универсальный поиск leg
-
-🔄 определение BUY / SELL
-
-🔺 генератор треугольников
-
-💾 где и как хранить CSV
-
-✅ итог: что у тебя получается
-
-✅ 1. Структура проекта (рекомендую)
-exchange/
-├── common/
-│   ├── market.go
-│   ├── triangle.go
-│   ├── resolver.go
-│   └── csv.go
-│
-├── kucoin/
-│   ├── client.go
-│   └── markets.go
-│
-├── okx/
-│   ├── client.go
-│   └── markets.go
-│
-├── mexc/
-│   ├── client.go
-│   └── markets.go
-│
-├── builder/
-│   └── triangles.go
-│
-└── main.go
-
-✅ 2. exchange/common/market.go
-package common
-
-type Market struct {
-	Symbol string
-
-	Base  string
-	Quote string
-
-	EnableTrading bool
-
-	BaseMinSize  float64
-	QuoteMinSize float64
-
-	BaseIncrement  float64
-	QuoteIncrement float64
-	PriceIncrement float64
-}
-
-✅ 3. Универсальный поиск пары (в любую сторону)
-
-📄 exchange/common/resolver.go
-
-package common
-
-func FindLeg(from, to string, markets map[string]Market) (Market, bool) {
-	if m, ok := markets[from+"_"+to]; ok {
-		return m, true
-	}
-	if m, ok := markets[to+"_"+from]; ok {
-		return m, true
-	}
-	return Market{}, false
-}
-
-✅ 4. Определение BUY / SELL
-package common
-
-func ResolveSide(from, to string, m Market) string {
-	if m.Quote == from && m.Base == to {
-		return "BUY"
-	}
-	if m.Base == from && m.Quote == to {
-		return "SELL"
-	}
-	return ""
-}
-
-✅ 5. Структура треугольника
-
-📄 exchange/common/triangle.go
-
-package common
-
-type Triangle struct {
-	A string
-	B string
-	C string
-
-	Leg1 string
-	Leg2 string
-	Leg3 string
-
-	BaseMin1  float64
-	QuoteMin1 float64
-	BaseInc1  float64
-	QuoteInc1 float64
-	PriceInc1 float64
-
-	BaseMin2  float64
-	QuoteMin2 float64
-	BaseInc2  float64
-	QuoteInc2 float64
-	PriceInc2 float64
-
-	BaseMin3  float64
-	QuoteMin3 float64
-	BaseInc3  float64
-	QuoteInc3 float64
-	PriceInc3 float64
-}
-
-✅ 6. Универсальный конструктор треугольника
-package common
-
-func NewTriangle(A, B, C string, l1, l2, l3 Market) Triangle {
-	return Triangle{
-		A: A,
-		B: B,
-		C: C,
-
-		Leg1: ResolveSide(A, B, l1) + " " + l1.Base + "/" + l1.Quote,
-		Leg2: ResolveSide(B, C, l2) + " " + l2.Base + "/" + l2.Quote,
-		Leg3: ResolveSide(C, A, l3) + " " + l3.Base + "/" + l3.Quote,
-
-		BaseMin1:  l1.BaseMinSize,
-		QuoteMin1: l1.QuoteMinSize,
-		BaseInc1:  l1.BaseIncrement,
-		QuoteInc1: l1.QuoteIncrement,
-		PriceInc1: l1.PriceIncrement,
-
-		BaseMin2:  l2.BaseMinSize,
-		QuoteMin2: l2.QuoteMinSize,
-		BaseInc2:  l2.BaseIncrement,
-		QuoteInc2: l2.QuoteIncrement,
-		PriceInc2: l2.PriceIncrement,
-
-		BaseMin3:  l3.BaseMinSize,
-		QuoteMin3: l3.QuoteMinSize,
-		BaseInc3:  l3.BaseIncrement,
-		QuoteInc3: l3.QuoteIncrement,
-		PriceInc3: l3.PriceIncrement,
-	}
-}
-
-✅ 7. Генератор треугольников
-
-📄 exchange/builder/triangles.go
-
 package builder
 
 import "exchange/common"
 
+// BuildTriangles строит треугольники из всех доступных рынков с учётом anchor.
+// Пропускаются стейблкоины, кроме anchor.
+// Возвращает все варианты: anchor → B → C → anchor и anchor → C → B → anchor
 func BuildTriangles(
 	markets map[string]common.Market,
 	anchor string,
@@ -251,231 +90,6 @@ func BuildTriangles(
 			continue
 		}
 
-		for _, m2 := range markets {
-			if !m2.EnableTrading {
-				continue
-			}
-
-			var C string
-			if m2.Base == B {
-				C = m2.Quote
-			} else if m2.Quote == B {
-				C = m2.Base
-			} else {
-				continue
-			}
-
-			if C == anchor || C == B {
-				continue
-			}
-
-			l3, ok := common.FindLeg(C, anchor, markets)
-			if !ok {
-				continue
-			}
-
-			l1, ok1 := common.FindLeg(anchor, B, markets)
-			l2, ok2 := common.FindLeg(B, C, markets)
-
-			if !ok1 || !ok2 {
-				continue
-			}
-
-			t := common.NewTriangle(anchor, B, C, l1, l2, l3)
-			result = append(result, t)
-		}
-	}
-
-	return result
-}
-
-✅ 8. CSV — где хранить и как
-
-📁 рекомендую:
-
-data/
-├── kucoin_triangles.csv
-├── okx_triangles.csv
-└── mexc_triangles.csv
-
-
-📄 exchange/common/csv.go
-
-package common
-
-import (
-	"encoding/csv"
-	"os"
-)
-
-func SaveTrianglesCSV(path string, list []Triangle) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	w.Write([]string{
-		"A", "B", "C",
-		"Leg1", "Leg2", "Leg3",
-	})
-
-	for _, t := range list {
-		w.Write([]string{
-			t.A, t.B, t.C,
-			t.Leg1, t.Leg2, t.Leg3,
-		})
-	}
-
-	return nil
-}
-
-✅ 9. Пример использования (main.go)
-package main
-
-import (
-	"exchange/builder"
-	"exchange/common"
-	"exchange/kucoin"
-)
-
-func main() {
-	markets := kucoin.LoadMarkets()
-
-	triangles := builder.BuildTriangles(markets, "USDT")
-
-	common.SaveTrianglesCSV("data/kucoin_triangles.csv", triangles)
-}
-
-
-
-package kucoin
-
-import (
-	"encoding/json"
-	"io"
-	"log"
-	"net/http"
-
-	"exchange/common"
-)
-
-// Структуры API KuCoin
-type kuCoinSymbol struct {
-	Symbol         string `json:"symbol"`
-	BaseCurrency   string `json:"baseCurrency"`
-	QuoteCurrency  string `json:"quoteCurrency"`
-	EnableTrading  bool   `json:"enableTrading"`
-	BaseMinSize    string `json:"baseMinSize"`
-	QuoteMinSize   string `json:"quoteMinSize"`
-	BaseIncrement  string `json:"baseIncrement"`
-	QuoteIncrement string `json:"quoteIncrement"`
-	PriceIncrement string `json:"priceIncrement"`
-}
-
-type kuCoinResponse struct {
-	Code string         `json:"code"`
-	Data []kuCoinSymbol `json:"data"`
-}
-
-// LoadMarkets загружает все рынки KuCoin и возвращает map[string]common.Market
-func LoadMarkets() map[string]common.Market {
-	resp, err := http.Get("https://api.kucoin.com/api/v2/symbols")
-	if err != nil {
-		log.Fatalf("http error: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		log.Fatalf("bad status %d: %s", resp.StatusCode, body)
-	}
-
-	var api kuCoinResponse
-	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
-		log.Fatalf("decode error: %v", err)
-	}
-
-	markets := make(map[string]common.Market)
-	for _, s := range api.Data {
-		if !s.EnableTrading || s.BaseCurrency == "" || s.QuoteCurrency == "" {
-			continue
-		}
-
-		// Преобразуем строки в float64
-		bMin := parseFloat(s.BaseMinSize)
-		qMin := parseFloat(s.QuoteMinSize)
-		bInc := parseFloat(s.BaseIncrement)
-		qInc := parseFloat(s.QuoteIncrement)
-		pInc := parseFloat(s.PriceIncrement)
-
-		key := s.BaseCurrency + "_" + s.QuoteCurrency
-		markets[key] = common.Market{
-			Symbol:        s.Symbol,
-			Base:          s.BaseCurrency,
-			Quote:         s.QuoteCurrency,
-			EnableTrading: s.EnableTrading,
-			BaseMinSize:   bMin,
-			QuoteMinSize:  qMin,
-			BaseIncrement: bInc,
-			QuoteIncrement: qInc,
-			PriceIncrement: pInc,
-		}
-	}
-
-	return markets
-}
-
-func parseFloat(s string) float64 {
-	var f float64
-	if s == "" {
-		return 0
-	}
-	_, err := fmt.Sscan(s, &f)
-	if err != nil {
-		return 0
-	}
-	return f
-}
-
-
-
-
-
-
-
-package builder
-
-import "exchange/common"
-
-// BuildTriangles строит треугольники из всех доступных рынков,
-// используя anchor (например, "USDT") в качестве начальной и конечной точки.
-// Все другие стейблкоины пропускаются.
-func BuildTriangles(
-	markets map[string]common.Market,
-	anchor string,
-) []common.Triangle {
-
-	var result []common.Triangle
-
-	for _, m1 := range markets {
-		if !m1.EnableTrading {
-			continue
-		}
-
-		var B string
-		if m1.Base == anchor {
-			B = m1.Quote
-		} else if m1.Quote == anchor {
-			B = m1.Base
-		} else {
-			continue
-		}
-
-		// Пропускаем стейблкоины, кроме anchor
 		if common.IsStable(B) && B != anchor {
 			continue
 		}
@@ -494,74 +108,36 @@ func BuildTriangles(
 				continue
 			}
 
-			// Пропускаем anchor и стейблы
-			if C == anchor || (common.IsStable(C) && C != anchor) || C == B {
+			if C == anchor || C == B || (common.IsStable(C) && C != anchor) {
 				continue
 			}
 
-			// Третья нога: C → anchor
-			l3, ok := common.FindLeg(C, anchor, markets)
-			if !ok {
-				continue
-			}
-
+			// Первая нога: anchor → B
 			l1, ok1 := common.FindLeg(anchor, B, markets)
+			// Вторая нога: B → C
 			l2, ok2 := common.FindLeg(B, C, markets)
-			if !ok1 || !ok2 {
-				continue
+			// Третья нога: C → anchor
+			l3, ok3 := common.FindLeg(C, anchor, markets)
+
+			if ok1 && ok2 && ok3 {
+				t := common.NewTriangle(anchor, B, C, l1, l2, l3)
+				result = append(result, t)
 			}
 
-			t := common.NewTriangle(anchor, B, C, l1, l2, l3)
-			result = append(result, t)
+			// Вариант в обратном порядке: anchor → C → B → anchor
+			l1r, ok1r := common.FindLeg(anchor, C, markets)
+			l2r, ok2r := common.FindLeg(C, B, markets)
+			l3r, ok3r := common.FindLeg(B, anchor, markets)
+
+			if ok1r && ok2r && ok3r {
+				t := common.NewTriangle(anchor, C, B, l1r, l2r, l3r)
+				result = append(result, t)
+			}
 		}
 	}
 
 	return result
 }
 
-
-
-
-Вот как можно оформить exchange/common/stable.go — полностью автономно и готово к использованию:
-
-package common
-
-import "strings"
-
-// Список стабильных монет (стейблкоинов)
-var stableCoins = map[string]bool{
-	"USDT":  true,
-	"USDC":  true,
-	"BUSD":  true,
-	"DAI":   true,
-	"TUSD":  true,
-	"FDUSD": true,
-	"USDD":  true,
-	"USDG":  true,
-}
-
-// IsStable проверяет, является ли монета стейблкоином
-func IsStable(s string) bool {
-	return stableCoins[strings.ToUpper(s)]
-}
-
-// AddStableCoin позволяет динамически добавить стейблкоин в список
-func AddStableCoin(s string) {
-	stableCoins[strings.ToUpper(s)] = true
-}
-
-// RemoveStableCoin позволяет удалить стейблкоин из списка
-func RemoveStableCoin(s string) {
-	delete(stableCoins, strings.ToUpper(s))
-}
-
-
-✅ Особенности:
-
-IsStable() — проверка на стейбл
-
-AddStableCoin() / RemoveStableCoin() — можно динамически менять список
-
-Все ключи хранятся в верхнем регистре, чтобы не зависеть от регистра монеты
 
 
