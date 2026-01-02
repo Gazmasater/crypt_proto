@@ -442,3 +442,126 @@ func parseFloat(s string) float64 {
 }
 
 
+
+
+
+
+
+package builder
+
+import "exchange/common"
+
+// BuildTriangles строит треугольники из всех доступных рынков,
+// используя anchor (например, "USDT") в качестве начальной и конечной точки.
+// Все другие стейблкоины пропускаются.
+func BuildTriangles(
+	markets map[string]common.Market,
+	anchor string,
+) []common.Triangle {
+
+	var result []common.Triangle
+
+	for _, m1 := range markets {
+		if !m1.EnableTrading {
+			continue
+		}
+
+		var B string
+		if m1.Base == anchor {
+			B = m1.Quote
+		} else if m1.Quote == anchor {
+			B = m1.Base
+		} else {
+			continue
+		}
+
+		// Пропускаем стейблкоины, кроме anchor
+		if common.IsStable(B) && B != anchor {
+			continue
+		}
+
+		for _, m2 := range markets {
+			if !m2.EnableTrading {
+				continue
+			}
+
+			var C string
+			if m2.Base == B {
+				C = m2.Quote
+			} else if m2.Quote == B {
+				C = m2.Base
+			} else {
+				continue
+			}
+
+			// Пропускаем anchor и стейблы
+			if C == anchor || (common.IsStable(C) && C != anchor) || C == B {
+				continue
+			}
+
+			// Третья нога: C → anchor
+			l3, ok := common.FindLeg(C, anchor, markets)
+			if !ok {
+				continue
+			}
+
+			l1, ok1 := common.FindLeg(anchor, B, markets)
+			l2, ok2 := common.FindLeg(B, C, markets)
+			if !ok1 || !ok2 {
+				continue
+			}
+
+			t := common.NewTriangle(anchor, B, C, l1, l2, l3)
+			result = append(result, t)
+		}
+	}
+
+	return result
+}
+
+
+
+
+Вот как можно оформить exchange/common/stable.go — полностью автономно и готово к использованию:
+
+package common
+
+import "strings"
+
+// Список стабильных монет (стейблкоинов)
+var stableCoins = map[string]bool{
+	"USDT":  true,
+	"USDC":  true,
+	"BUSD":  true,
+	"DAI":   true,
+	"TUSD":  true,
+	"FDUSD": true,
+	"USDD":  true,
+	"USDG":  true,
+}
+
+// IsStable проверяет, является ли монета стейблкоином
+func IsStable(s string) bool {
+	return stableCoins[strings.ToUpper(s)]
+}
+
+// AddStableCoin позволяет динамически добавить стейблкоин в список
+func AddStableCoin(s string) {
+	stableCoins[strings.ToUpper(s)] = true
+}
+
+// RemoveStableCoin позволяет удалить стейблкоин из списка
+func RemoveStableCoin(s string) {
+	delete(stableCoins, strings.ToUpper(s))
+}
+
+
+✅ Особенности:
+
+IsStable() — проверка на стейбл
+
+AddStableCoin() / RemoveStableCoin() — можно динамически менять список
+
+Все ключи хранятся в верхнем регистре, чтобы не зависеть от регистра монеты
+
+
