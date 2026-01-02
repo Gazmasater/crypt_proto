@@ -64,50 +64,35 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 internal/
 ├── exchange/
-│   ├── exchange.go          ← интерфейсы + общие типы
-│   ├── registry.go          ← фабрика (выбор биржи)
-│   │
 │   ├── kucoin/
-│   │   ├── client.go        ← HTTP / WS
-│   │   ├── markets.go       ← загрузка raw рынков
-│   │   ├── normalizer.go    ← KuCoin → Market
-│   │   └── adapter.go       ← implements Exchange
+│   │   ├── client.go        // HTTP + API
+│   │   ├── dto.go           // структуры ответа API
+│   │   ├── adapter.go       // KuCoin → Market
+│   │   └── loader.go        // LoadMarkets()
 │   │
 │   ├── mexc/
 │   │   ├── client.go
-│   │   ├── markets.go
-│   │   ├── normalizer.go
-│   │   └── adapter.go
+│   │   ├── dto.go
+│   │   ├── adapter.go
+│   │   └── loader.go
 │   │
 │   ├── okx/
 │   │   ├── client.go
-│   │   ├── markets.go
-│   │   ├── normalizer.go
-│   │   └── adapter.go
+│   │   ├── dto.go
+│   │   ├── adapter.go
+│   │   └── loader.go
+│   │
+│   └── types.go             // Market (универсальный)
 │
 ├── arbitrage/
-│   ├── triangle.go          ← Triangle, Leg
-│   ├── generator.go         ← построение A-B-C
-│   ├── filters.go           ← стейблы, направления
-│   └── csv.go               ← экспорт
+│   ├── triangle.go          // структура Triangle
+│   ├── builder.go           // генерация треугольников
+│   ├── filters.go           // stable / anchor / правила
+│   └── csv.go               // сохранение CSV
 │
-├── model/
-│   ├── market.go            ← универсальный Market
-│   ├── symbol_filter.go
-│   └── enums.go
-│
-└── main.go
-
-
-
-internal/
-├── exchange/
-├── arbitrage/
-│   ├── triangle.go
-│   ├── generator.go
-│   ├── csv.go        ← логика сохранения
 ├── output/
 │   └── triangles/
-│       ├── kucoin.csv
-│       ├── okx.csv
-│       └── mexc.csv
+│
+└── cmd/
+    └── triangles/
+        └── main.go
