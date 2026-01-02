@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypt_proto/cmd/exchange"
 	"encoding/csv"
 	"encoding/json"
 	"io"
@@ -9,23 +10,6 @@ import (
 	"os"
 	"strings"
 )
-
-// ==========================
-// Универсальная модель рынка
-// ==========================
-type Market struct {
-	Symbol string
-	Base   string
-	Quote  string
-
-	EnableTrading bool
-
-	BaseMinSize    string
-	QuoteMinSize   string
-	BaseIncrement  string
-	QuoteIncrement string
-	PriceIncrement string
-}
 
 // ==========================
 // Треугольник
@@ -100,7 +84,7 @@ func main() {
 // ==========================
 // Загрузка KuCoin
 // ==========================
-func loadKuCoinMarkets() map[string]Market {
+func loadKuCoinMarkets() map[string]exchange.Market {
 	resp, err := http.Get("https://api.kucoin.com/api/v2/symbols")
 	if err != nil {
 		log.Fatalf("http error: %v", err)
@@ -117,7 +101,7 @@ func loadKuCoinMarkets() map[string]Market {
 		log.Fatalf("decode error: %v", err)
 	}
 
-	markets := make(map[string]Market)
+	markets := make(map[string]exchange.Market)
 
 	for _, s := range api.Data {
 		if !s.EnableTrading || s.BaseCurrency == "" || s.QuoteCurrency == "" {
@@ -126,7 +110,7 @@ func loadKuCoinMarkets() map[string]Market {
 
 		key := s.BaseCurrency + "_" + s.QuoteCurrency
 
-		markets[key] = Market{
+		markets[key] = exchange.Market{
 			Symbol:         s.Symbol,
 			Base:           s.BaseCurrency,
 			Quote:          s.QuoteCurrency,
@@ -145,7 +129,7 @@ func loadKuCoinMarkets() map[string]Market {
 // ==========================
 // Генератор треугольников
 // ==========================
-func buildTriangles(markets map[string]Market, anchor string) []Triangle {
+func buildTriangles(markets map[string]exchange.Market, anchor string) []Triangle {
 	var out []Triangle
 
 	// все монеты, которые торгуются с anchor
@@ -196,7 +180,7 @@ func buildTriangles(markets map[string]Market, anchor string) []Triangle {
 // ==========================
 // Конструктор треугольника
 // ==========================
-func newTriangle(A, B, C string, l1, l2, l3 Market) Triangle {
+func newTriangle(A, B, C string, l1, l2, l3 exchange.Market) Triangle {
 	return Triangle{
 		A: A,
 		B: B,
