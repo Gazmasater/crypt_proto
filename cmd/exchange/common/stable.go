@@ -5,4 +5,8 @@ var StableCoins = map[string]bool{
 	"USDC": true,
 	"USD1": true,
 	"USDG": true,
+	"USDE": true,
+	"USDF": true,
+	"USDD": true,
+	"USD":  true,
 }
