@@ -44,7 +44,7 @@ func main() {
 	}
 
 	// === читаем whitelist из CSV ===
-	csvPath := "../exchange/data/mexc_triangles_usdt.csv"
+	csvPath := "mexc_triangles_usdt_routes.csv"
 
 	symbols, err := readSymbolsFromCSV(csvPath)
 	if err != nil {
@@ -122,7 +122,7 @@ func readSymbolsFromCSV(path string) ([]string, error) {
 		colIndex[strings.ToLower(strings.TrimSpace(h))] = i
 	}
 
-	required := []string{"Leg1", "Leg2", "Leg3"}
+	required := []string{"leg1_symbol", "leg2_symbol", "leg3_symbol"}
 	var idx []int
 	for _, name := range required {
 		i, ok := colIndex[name]
