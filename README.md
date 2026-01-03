@@ -62,25 +62,9 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-type mexcSymbol struct {
-	Symbol     string `json:"symbol"`
-	BaseAsset  string `json:"baseAsset"`
-	QuoteAsset string `json:"quoteAsset"`
-	Status     string `json:"status"`
-
-	IsSpotTradingAllowed bool `json:"isSpotTradingAllowed"`
-
-	BaseAssetPrecision  int `json:"baseAssetPrecision"`
-	QuoteAssetPrecision int `json:"quoteAssetPrecision"`
-
-	Filters []struct {
-		FilterType string `json:"filterType"`
-		MinQty     string `json:"minQty"`
-		StepSize   string `json:"stepSize"`
-	} `json:"filters"`
+type mexcResponse struct {
+	Symbols []mexcSymbol `json:"symbols"`
 }
-
-
 
 
 func LoadMarkets() map[string]common.Market {
@@ -97,8 +81,10 @@ func LoadMarkets() map[string]common.Market {
 
 	markets := make(map[string]common.Market)
 
+	fmt.Println("TOTAL SYMBOLS:", len(api.Symbols))
+
 	for _, s := range api.Symbols {
-		if s.Status != "ENABLED" || !s.IsSpotTradingAllowed {
+		if (s.Status != "ENABLED" && s.Status != "TRADING") || !s.IsSpotTradingAllowed {
 			continue
 		}
 
@@ -114,7 +100,7 @@ func LoadMarkets() map[string]common.Market {
 		key := s.BaseAsset + "_" + s.QuoteAsset
 
 		markets[key] = common.Market{
-			Symbol:        s.Symbol,
+			Symbol:        s.Symbol, // BTCUSDT
 			Base:          s.BaseAsset,
 			Quote:         s.QuoteAsset,
 			EnableTrading: true,
@@ -124,8 +110,10 @@ func LoadMarkets() map[string]common.Market {
 		}
 	}
 
+	fmt.Println("SPOT MARKETS:", len(markets))
 	return markets
 }
+
 
 
 
