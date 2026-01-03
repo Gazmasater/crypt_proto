@@ -65,7 +65,7 @@ func main() {
 		c = collector.NewMEXCCollector(symbols, whitelist, marketDataPool)
 	case "okx":
 		//
-		c = collector.NewOKXCollector(symbols, marketDataPool)
+		c = collector.NewOKXCollector(symbols, whitelist, marketDataPool)
 	//case "kucoin":
 	//	c = collector.NewKuCoinCollector(symbols, whitelist, marketDataPool)
 	default:

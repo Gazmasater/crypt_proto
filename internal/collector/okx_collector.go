@@ -20,6 +20,7 @@ type OKXCollector struct {
 	cancel   context.CancelFunc
 	conn     *websocket.Conn
 	symbols  []string
+	allowed  map[string]struct{} // whitelist
 	lastData map[string]struct {
 		Bid, Ask, BidSize, AskSize float64
 	}
@@ -28,12 +29,18 @@ type OKXCollector struct {
 	buf  []byte // для NormalizeSymbol_NoAlloc
 }
 
-func NewOKXCollector(symbols []string, pool *sync.Pool) *OKXCollector {
+// Конструктор с whitelist
+func NewOKXCollector(symbols []string, whitelist []string, pool *sync.Pool) *OKXCollector {
 	ctx, cancel := context.WithCancel(context.Background())
+	allowed := make(map[string]struct{}, len(whitelist))
+	for _, s := range whitelist {
+		allowed[market.NormalizeSymbol_Full(s)] = struct{}{}
+	}
 	return &OKXCollector{
 		ctx:      ctx,
 		cancel:   cancel,
 		symbols:  symbols,
+		allowed:  allowed,
 		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
 		pool:     pool,
 		buf:      make([]byte, 0, 32),
@@ -160,6 +167,13 @@ func (c *OKXCollector) handleData(instID string, data struct {
 	symbol := market.NormalizeSymbol_NoAlloc(instID, &c.buf)
 	if symbol == "" || bid == 0 || ask == 0 {
 		return nil
+	}
+
+	// фильтрация по whitelist
+	if len(c.allowed) > 0 {
+		if _, ok := c.allowed[symbol]; !ok {
+			return nil
+		}
 	}
 
 	// дедупликация
