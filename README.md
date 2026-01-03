@@ -70,7 +70,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
+	"strconv"
 )
 
 type mexcSymbol struct {
@@ -112,12 +114,29 @@ func LoadMarkets() map[string]common.Market {
 	fmt.Println("TOTAL SYMBOLS:", len(api.Symbols))
 
 	for _, s := range api.Symbols {
+		// фильтруем только активные спотовые пары
 		if s.Status != "1" || !s.IsSpotTradingAllowed {
 			continue
 		}
 
-		minQty := float64(s.BaseAssetPrecision)
-		stepSize := minQty
+		var minQty, stepSize float64
+		foundLotSize := false
+
+		// ищем фильтр LOT_SIZE
+		for _, f := range s.Filters {
+			if f.FilterType == "LOT_SIZE" {
+				minQty, _ = strconv.ParseFloat(f.MinQty, 64)
+				stepSize, _ = strconv.ParseFloat(f.StepSize, 64)
+				foundLotSize = true
+				break
+			}
+		}
+
+		// fallback, если фильтра нет
+		if !foundLotSize {
+			minQty = math.Pow10(-s.BaseAssetPrecision)
+			stepSize = minQty
+		}
 
 		key := s.BaseAsset + "_" + s.QuoteAsset
 		markets[key] = common.Market{
@@ -133,9 +152,4 @@ func LoadMarkets() map[string]common.Market {
 	fmt.Println("SPOT MARKETS:", len(markets))
 	return markets
 }
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/exchange$ go run .
-TOTAL SYMBOLS: 2502
-SPOT MARKETS: 1986
 
