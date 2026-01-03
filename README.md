@@ -62,11 +62,6 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-type mexcResponse struct {
-	Symbols []mexcSymbol `json:"symbols"`
-}
-
-
 func LoadMarkets() map[string]common.Market {
 	resp, err := http.Get("https://api.mexc.com/api/v3/exchangeInfo")
 	if err != nil {
@@ -84,27 +79,19 @@ func LoadMarkets() map[string]common.Market {
 	fmt.Println("TOTAL SYMBOLS:", len(api.Symbols))
 
 	for _, s := range api.Symbols {
-		if (s.Status != "ENABLED" && s.Status != "TRADING") || !s.IsSpotTradingAllowed {
+		if s.Status != "1" || !s.IsSpotTradingAllowed {
 			continue
 		}
 
-		var minQty, stepSize float64
-
-		for _, f := range s.Filters {
-			if f.FilterType == "LOT_SIZE" {
-				minQty, _ = strconv.ParseFloat(f.MinQty, 64)
-				stepSize, _ = strconv.ParseFloat(f.StepSize, 64)
-			}
-		}
+		minQty, _ := strconv.ParseFloat(s.BaseSizePrecision, 64)
+		stepSize := minQty
 
 		key := s.BaseAsset + "_" + s.QuoteAsset
-
 		markets[key] = common.Market{
-			Symbol:        s.Symbol, // BTCUSDT
+			Symbol:        s.Symbol,
 			Base:          s.BaseAsset,
 			Quote:         s.QuoteAsset,
 			EnableTrading: true,
-
 			BaseMinSize:   minQty,
 			BaseIncrement: stepSize,
 		}
@@ -113,11 +100,6 @@ func LoadMarkets() map[string]common.Market {
 	fmt.Println("SPOT MARKETS:", len(markets))
 	return markets
 }
-
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/exchange$ go run .
-TOTAL SYMBOLS: 2502
-SPOT MARKETS: 0
 
 
 
