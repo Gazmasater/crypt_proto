@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 )
@@ -28,7 +29,7 @@ type mexcSymbol struct {
 }
 
 type mexcResponse struct {
-	Data []mexcSymbol `json:"data"`
+	Symbols []mexcSymbol `json:"symbols"`
 }
 
 func LoadMarkets() map[string]common.Market {
@@ -44,35 +45,45 @@ func LoadMarkets() map[string]common.Market {
 	}
 
 	markets := make(map[string]common.Market)
-	fmt.Println("STATUS", api.Data)
 
-	for _, s := range api.Data {
-		fmt.Println("STATUS", s.Symbol)
-		if s.Status != "ENABLED" || !s.IsSpotTradingAllowed {
+	fmt.Println("TOTAL SYMBOLS:", len(api.Symbols))
+
+	for _, s := range api.Symbols {
+		// фильтруем только активные спотовые пары
+		if s.Status != "1" || !s.IsSpotTradingAllowed {
 			continue
 		}
 
 		var minQty, stepSize float64
+		foundLotSize := false
 
+		// ищем фильтр LOT_SIZE
 		for _, f := range s.Filters {
 			if f.FilterType == "LOT_SIZE" {
 				minQty, _ = strconv.ParseFloat(f.MinQty, 64)
 				stepSize, _ = strconv.ParseFloat(f.StepSize, 64)
+				foundLotSize = true
+				break
 			}
 		}
 
-		key := s.BaseAsset + "_" + s.QuoteAsset
+		// fallback, если фильтра нет
+		if !foundLotSize {
+			minQty = math.Pow10(-s.BaseAssetPrecision)
+			stepSize = minQty
+		}
 
+		key := s.BaseAsset + "_" + s.QuoteAsset
 		markets[key] = common.Market{
 			Symbol:        s.Symbol,
 			Base:          s.BaseAsset,
 			Quote:         s.QuoteAsset,
 			EnableTrading: true,
-
 			BaseMinSize:   minQty,
 			BaseIncrement: stepSize,
 		}
 	}
 
+	fmt.Println("SPOT MARKETS:", len(markets))
 	return markets
 }
