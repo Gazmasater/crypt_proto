@@ -115,5 +115,9 @@ func LoadMarkets() map[string]common.Market {
 }
 
 
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/exchange$ go run .
+TOTAL SYMBOLS: 2502
+SPOT MARKETS: 0
+
 
 
