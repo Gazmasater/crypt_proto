@@ -62,6 +62,39 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+package mexc
+
+import (
+	"crypt_proto/cmd/exchange/common"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+)
+
+type mexcSymbol struct {
+	Symbol     string `json:"symbol"`
+	BaseAsset  string `json:"baseAsset"`
+	QuoteAsset string `json:"quoteAsset"`
+	Status     string `json:"status"`
+
+	IsSpotTradingAllowed bool `json:"isSpotTradingAllowed"`
+
+	BaseAssetPrecision  int `json:"baseAssetPrecision"`
+	QuoteAssetPrecision int `json:"quoteAssetPrecision"`
+
+	Filters []struct {
+		FilterType string `json:"filterType"`
+		MinQty     string `json:"minQty"`
+		StepSize   string `json:"stepSize"`
+	} `json:"filters"`
+}
+
+type mexcResponse struct {
+	Symbols []mexcSymbol `json:"symbols"`
+}
+
 func LoadMarkets() map[string]common.Market {
 	resp, err := http.Get("https://api.mexc.com/api/v3/exchangeInfo")
 	if err != nil {
@@ -83,7 +116,7 @@ func LoadMarkets() map[string]common.Market {
 			continue
 		}
 
-		minQty, _ := strconv.ParseFloat(s.BaseSizePrecision, 64)
+		minQty, _ := strconv.ParseFloat(s.BaseAssetPrecision, 64)
 		stepSize := minQty
 
 		key := s.BaseAsset + "_" + s.QuoteAsset
@@ -101,5 +134,28 @@ func LoadMarkets() map[string]common.Market {
 	return markets
 }
 
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/exchange/mexc/markets.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use s.BaseAssetPrecision (variable of type int) as string value in argument to strconv.ParseFloat",
+	"source": "compiler",
+	"startLineNumber": 55,
+	"startColumn": 35,
+	"endLineNumber": 55,
+	"endColumn": 55,
+	"origin": "extHost1"
+}]
 
 
