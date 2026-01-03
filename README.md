@@ -74,14 +74,13 @@ import (
 	"sync"
 	"time"
 
-	"crypt_proto/configs"
 	"crypt_proto/internal/market"
 	"crypt_proto/pkg/models"
 
 	"github.com/gorilla/websocket"
 )
 
-type OKXCollector struct {
+type KuCoinCollector struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	conn     *websocket.Conn
@@ -92,17 +91,17 @@ type OKXCollector struct {
 	}
 	mu   sync.Mutex
 	pool *sync.Pool
-	buf  []byte // для NormalizeSymbol_NoAlloc
+	buf  []byte
+	wsURL string
 }
 
-// Конструктор с whitelist
-func NewOKXCollector(symbols []string, whitelist []string, pool *sync.Pool) *OKXCollector {
+func NewKuCoinCollector(symbols []string, whitelist []string, pool *sync.Pool) *KuCoinCollector {
 	ctx, cancel := context.WithCancel(context.Background())
 	allowed := make(map[string]struct{}, len(whitelist))
 	for _, s := range whitelist {
 		allowed[market.NormalizeSymbol_Full(s)] = struct{}{}
 	}
-	return &OKXCollector{
+	return &KuCoinCollector{
 		ctx:      ctx,
 		cancel:   cancel,
 		symbols:  symbols,
@@ -113,18 +112,43 @@ func NewOKXCollector(symbols []string, whitelist []string, pool *sync.Pool) *OKX
 	}
 }
 
-func (c *OKXCollector) Name() string { return "OKX" }
+func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
-func (c *OKXCollector) Start(out chan<- *models.MarketData) error {
-	conn, _, err := websocket.DefaultDialer.Dial(configs.OKX_WS, nil)
+func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
+	if err := c.initWS(); err != nil {
+		return err
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
 	if err != nil {
 		return err
 	}
 	c.conn = conn
-	log.Println("[OKX] connected")
+	log.Println("[KuCoin] Connected to WS")
 
-	if err := c.subscribe(); err != nil {
-		return err
+	// subscribe
+	for _, s := range c.symbols {
+		sym := normalizeKucoinSymbol(s)
+
+		// фильтрация по whitelist
+		if len(c.allowed) > 0 {
+			if _, ok := c.allowed[sym]; !ok {
+				continue
+			}
+		}
+
+		sub := map[string]any{
+			"id":       time.Now().UnixNano(),
+			"type":     "subscribe",
+			"topic":    "/market/ticker:" + sym,
+			"response": true,
+		}
+
+		if err := conn.WriteJSON(sub); err != nil {
+			return err
+		}
+
+		log.Println("[KuCoin] Subscribed:", sym)
 	}
 
 	go c.pingLoop()
@@ -133,7 +157,7 @@ func (c *OKXCollector) Start(out chan<- *models.MarketData) error {
 	return nil
 }
 
-func (c *OKXCollector) Stop() error {
+func (c *KuCoinCollector) Stop() error {
 	c.cancel()
 	if c.conn != nil {
 		_ = c.conn.Close()
@@ -141,25 +165,8 @@ func (c *OKXCollector) Stop() error {
 	return nil
 }
 
-// ----------------- приватные методы -----------------
-
-func (c *OKXCollector) subscribe() error {
-	args := make([]map[string]string, 0, len(c.symbols))
-	for _, s := range c.symbols {
-		args = append(args, map[string]string{
-			"channel": "books5",
-			"instId":  s,
-		})
-	}
-	sub := map[string]interface{}{
-		"op":   "subscribe",
-		"args": args,
-	}
-	return c.conn.WriteJSON(sub)
-}
-
-func (c *OKXCollector) pingLoop() {
-	t := time.NewTicker(configs.OKX_PING_INTERVAL)
+func (c *KuCoinCollector) pingLoop() {
+	t := time.NewTicker(15 * time.Second)
 	defer t.Stop()
 
 	for {
@@ -167,102 +174,111 @@ func (c *OKXCollector) pingLoop() {
 		case <-c.ctx.Done():
 			return
 		case <-t.C:
-			_ = c.conn.WriteMessage(websocket.PingMessage, nil)
+			_ = c.conn.WriteJSON(map[string]string{"type": "ping"})
 		}
 	}
 }
 
-func (c *OKXCollector) readLoop(out chan<- *models.MarketData) {
-	_ = c.conn.SetReadDeadline(time.Now().Add(configs.OKX_READ_TIMEOUT))
+func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
+	defer func() {
+		if c.conn != nil {
+			c.conn.Close()
+		}
+	}()
 
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
-		}
+			_, msg, err := c.conn.ReadMessage()
+			if err != nil {
+				log.Println("[KuCoin] read error:", err)
+				return
+			}
 
-		_, msg, err := c.conn.ReadMessage()
-		if err != nil {
-			log.Println("[OKX] read error:", err)
-			return
-		}
+			var raw map[string]any
+			if err := json.Unmarshal(msg, &raw); err != nil {
+				continue
+			}
 
-		_ = c.conn.SetReadDeadline(time.Now().Add(configs.OKX_READ_TIMEOUT))
+			typ, _ := raw["type"].(string)
+			if typ == "welcome" || typ == "ack" || typ != "message" {
+				continue
+			}
 
-		var resp struct {
-			Arg struct {
-				InstID string `json:"instId"`
-			} `json:"arg"`
-			Data []struct {
-				Asks [][]string `json:"asks"`
-				Bids [][]string `json:"bids"`
-			} `json:"data"`
-		}
+			topic, _ := raw["topic"].(string)
+			data, ok := raw["data"].(map[string]any)
+			if !ok {
+				continue
+			}
 
-		if err := json.Unmarshal(msg, &resp); err != nil {
-			continue
-		}
-		if len(resp.Data) == 0 {
-			continue
-		}
+			rawsymbol := strings.TrimPrefix(topic, "/market/ticker:")
+			symbol := market.NormalizeSymbol_NoAlloc(rawsymbol, &c.buf)
+			if symbol == "" {
+				continue
+			}
 
-		md := c.handleData(resp.Arg.InstID, resp.Data[0])
-		if md != nil {
+			// фильтрация по whitelist
+			if len(c.allowed) > 0 {
+				if _, ok := c.allowed[symbol]; !ok {
+					continue
+				}
+			}
+
+			bid := parseFloat(data["bestBid"])
+			ask := parseFloat(data["bestAsk"])
+			bidSize := parseFloat(data["sizeBid"])
+			askSize := parseFloat(data["sizeAsk"])
+
+			if bid == 0 || ask == 0 {
+				continue
+			}
+
+			// дедупликация
+			c.mu.Lock()
+			last, exists := c.lastData[symbol]
+			if exists && last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+				c.mu.Unlock()
+				continue
+			}
+			c.lastData[symbol] = struct{ Bid, Ask, BidSize, AskSize float64 }{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
+			c.mu.Unlock()
+
+			// объект из пула
+			md := c.pool.Get().(*models.MarketData)
+			md.Exchange = "KuCoin"
+			md.Symbol = symbol
+			md.Bid = bid
+			md.Ask = ask
+			md.BidSize = bidSize
+			md.AskSize = askSize
+			md.Timestamp = time.Now().UnixMilli()
+
 			out <- md
 		}
 	}
 }
 
-func (c *OKXCollector) handleData(instID string, data struct {
-	Asks [][]string `json:"asks"`
-	Bids [][]string `json:"bids"`
-}) *models.MarketData {
-
-	bid, ask, bidSize, askSize := 0.0, 0.0, 0.0, 0.0
-
-	if len(data.Bids) > 0 {
-		bid, _ = strconv.ParseFloat(data.Bids[0][0], 64)
-		bidSize, _ = strconv.ParseFloat(data.Bids[0][1], 64)
+func normalizeKucoinSymbol(s string) string {
+	if strings.Contains(s, "-") {
+		return s
 	}
-	if len(data.Asks) > 0 {
-		ask, _ = strconv.ParseFloat(data.Asks[0][0], 64)
-		askSize, _ = strconv.ParseFloat(data.Asks[0][1], 64)
+	if strings.HasSuffix(s, "USDT") {
+		return strings.Replace(s, "USDT", "-USDT", 1)
 	}
+	return s
+}
 
-	symbol := market.NormalizeSymbol_NoAlloc(instID, &c.buf)
-	if symbol == "" || bid == 0 || ask == 0 {
-		return nil
+func parseFloat(v any) float64 {
+	switch t := v.(type) {
+	case string:
+		f, _ := strconv.ParseFloat(t, 64)
+		return f
+	case float64:
+		return t
+	default:
+		return 0
 	}
-
-	// фильтрация по whitelist
-	if len(c.allowed) > 0 {
-		if _, ok := c.allowed[symbol]; !ok {
-			return nil
-		}
-	}
-
-	// дедупликация
-	c.mu.Lock()
-	last, ok := c.lastData[symbol]
-	if ok && last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
-		c.mu.Unlock()
-		return nil
-	}
-	c.lastData[symbol] = struct{ Bid, Ask, BidSize, AskSize float64 }{
-		Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize,
-	}
-	c.mu.Unlock()
-
-	md := c.pool.Get().(*models.MarketData)
-	md.Exchange = "OKX"
-	md.Symbol = symbol
-	md.Bid = bid
-	md.Ask = ask
-	md.BidSize = bidSize
-	md.AskSize = askSize
-	md.Timestamp = time.Now().UnixMilli()
-
-	return md
 }
 
