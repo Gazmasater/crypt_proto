@@ -63,7 +63,10 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-csvPath := "../exchange/data/mexc_triangles_usdt.csv"
-
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+2026/01/03 20:59:01 EXCHANGE: mexc
+2026/01/03 20:59:01 pprof on http://localhost:6060/debug/pprof/
+2026/01/03 20:59:01 read CSV symbols: wrong number of fields
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ 
 
 
