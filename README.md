@@ -62,31 +62,26 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package mexc
-
-import (
-	"crypt_proto/cmd/exchange/common"
-	"encoding/json"
-	"io"
-	"log"
-	"net/http"
-	"strconv"
-)
-
 type mexcSymbol struct {
-	Symbol              string `json:"symbol"`
-	BaseAsset           string `json:"baseAsset"`
-	QuoteAsset          string `json:"quoteAsset"`
-	Status              string `json:"status"`
-	BaseSizePrecision   int    `json:"baseSizePrecision"`
-	QuotePrecision      int    `json:"quotePrecision"`
-	MinQty              string `json:"minQty"`
-	IsSpotTradingAllowed bool  `json:"isSpotTradingAllowed"`
+	Symbol     string `json:"symbol"`
+	BaseAsset  string `json:"baseAsset"`
+	QuoteAsset string `json:"quoteAsset"`
+	Status     string `json:"status"`
+
+	IsSpotTradingAllowed bool `json:"isSpotTradingAllowed"`
+
+	BaseAssetPrecision  int `json:"baseAssetPrecision"`
+	QuoteAssetPrecision int `json:"quoteAssetPrecision"`
+
+	Filters []struct {
+		FilterType string `json:"filterType"`
+		MinQty     string `json:"minQty"`
+		StepSize   string `json:"stepSize"`
+	} `json:"filters"`
 }
 
-type mexcResponse struct {
-	Data []mexcSymbol `json:"data"`
-}
+
+
 
 func LoadMarkets() map[string]common.Market {
 	resp, err := http.Get("https://api.mexc.com/api/v3/exchangeInfo")
@@ -95,24 +90,26 @@ func LoadMarkets() map[string]common.Market {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-
 	var api mexcResponse
-	if err := json.Unmarshal(body, &api); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
 		log.Fatalf("decode error: %v", err)
 	}
 
 	markets := make(map[string]common.Market)
 
-	for _, s := range api.Data {
+	for _, s := range api.Symbols {
 		if s.Status != "ENABLED" || !s.IsSpotTradingAllowed {
 			continue
 		}
 
-		minQty, _ := strconv.ParseFloat(s.MinQty, 64)
+		var minQty, stepSize float64
 
-		baseStep := precisionToStep(s.BaseSizePrecision)
-		quoteStep := precisionToStep(s.QuotePrecision)
+		for _, f := range s.Filters {
+			if f.FilterType == "LOT_SIZE" {
+				minQty, _ = strconv.ParseFloat(f.MinQty, 64)
+				stepSize, _ = strconv.ParseFloat(f.StepSize, 64)
+			}
+		}
 
 		key := s.BaseAsset + "_" + s.QuoteAsset
 
@@ -121,66 +118,14 @@ func LoadMarkets() map[string]common.Market {
 			Base:          s.BaseAsset,
 			Quote:         s.QuoteAsset,
 			EnableTrading: true,
+
 			BaseMinSize:   minQty,
-			BaseIncrement: baseStep,
-			QuoteIncrement: quoteStep,
+			BaseIncrement: stepSize,
 		}
 	}
 
 	return markets
 }
-
-func precisionToStep(p int) float64 {
-	if p <= 0 {
-		return 1
-	}
-	step := 1.0
-	for i := 0; i < p; i++ {
-		step /= 10
-	}
-	return step
-}
-
-
-
-package main
-
-import (
-	"log"
-
-	"crypt_proto/cmd/exchange/builder"
-	"crypt_proto/cmd/exchange/common"
-	"crypt_proto/cmd/exchange/kucoin"
-	"crypt_proto/cmd/exchange/mexc"
-)
-
-func main() {
-
-	// ---------- KUCOIN ----------
-	kucoinMarkets := kucoin.LoadMarkets()
-
-	kucoinTriangles := builder.BuildTriangles(kucoinMarkets, "USDT")
-
-	if err := common.SaveTrianglesCSV(
-		"data/kucoin_triangles_usdt.csv",
-		kucoinTriangles,
-	); err != nil {
-		log.Fatalf("kucoin csv error: %v", err)
-	}
-
-	// ---------- MEXC ----------
-	mexcMarkets := mexc.LoadMarkets()
-
-	mexcTriangles := builder.BuildTriangles(mexcMarkets, "USDT")
-
-	if err := common.SaveTrianglesCSV(
-		"data/mexc_triangles_usdt.csv",
-		mexcTriangles,
-	); err != nil {
-		log.Fatalf("mexc csv error: %v", err)
-	}
-}
-
 
 
 
