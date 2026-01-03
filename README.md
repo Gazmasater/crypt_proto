@@ -63,7 +63,7 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package mexc
+package okx
 
 import (
 	"crypt_proto/cmd/exchange/common"
@@ -72,55 +72,55 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"strconv"
 )
 
-// Структуры для ответа MEXC
-type mexcSymbol struct {
-	Symbol     string   `json:"symbol"`
-	BaseAsset  string   `json:"baseAsset"`
-	QuoteAsset string   `json:"quoteAsset"`
-	Status     string   `json:"status"`
-	Permissions []string `json:"permissions"`
-
-	BaseAssetPrecision  int `json:"baseAssetPrecision"`
-	QuoteAssetPrecision int `json:"quoteAssetPrecision"`
+type okxSymbol struct {
+	InstID   string `json:"instId"`
+	BaseCcy  string `json:"baseCcy"`
+	QuoteCcy string `json:"quoteCcy"`
+	InstType string `json:"instType"`
+	State    string `json:"state"`
+	MinSz    string `json:"minSz"`
+	TickSz   string `json:"tickSz"`
+	BasePrec int    `json:"baseCcyPrecision"`  // иногда отсутствует
+	QuotePrec int   `json:"quoteCcyPrecision"` // иногда отсутствует
 }
 
-type mexcResponse struct {
-	Symbols []mexcSymbol `json:"symbols"`
+type okxResponse struct {
+	Code string      `json:"code"`
+	Data []okxSymbol `json:"data"`
 }
 
-// LoadMarkets загружает все спотовые рынки MEXC
+// LoadMarkets загружает все активные спотовые пары OKX
 func LoadMarkets() map[string]common.Market {
-	resp, err := http.Get("https://api.mexc.com/api/v3/exchangeInfo")
+	resp, err := http.Get("https://www.okx.com/api/v5/public/instruments?instType=SPOT")
 	if err != nil {
 		log.Fatalf("HTTP error: %v", err)
 	}
 	defer resp.Body.Close()
 
-	var api mexcResponse
+	var api okxResponse
 	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
 		log.Fatalf("JSON decode error: %v", err)
 	}
 
 	markets := make(map[string]common.Market)
-	fmt.Println("TOTAL SYMBOLS:", len(api.Symbols))
+	fmt.Println("TOTAL SYMBOLS:", len(api.Data))
 
-	for _, s := range api.Symbols {
-		// Фильтруем только активные спотовые пары
-		if s.Status != "1" || !hasSpotPermission(s.Permissions) {
+	for _, s := range api.Data {
+		if s.InstType != "SPOT" || s.State != "live" {
 			continue
 		}
 
-		// Используем fallback через BaseAssetPrecision
-		minQty := math.Pow10(-s.BaseAssetPrecision)
-		stepSize := minQty
+		minQty := parseFloatFallback(s.MinSz, s.BasePrec)
+		stepSize := parseFloatFallback(s.TickSz, s.BasePrec)
 
-		key := s.BaseAsset + "_" + s.QuoteAsset
+		key := s.BaseCcy + "_" + s.QuoteCcy
 		markets[key] = common.Market{
-			Symbol:        s.Symbol,
-			Base:          s.BaseAsset,
-			Quote:         s.QuoteAsset,
+			Symbol:        s.InstID,
+			Base:          s.BaseCcy,
+			Quote:         s.QuoteCcy,
 			EnableTrading: true,
 			BaseMinSize:   minQty,
 			BaseIncrement: stepSize,
@@ -131,15 +131,18 @@ func LoadMarkets() map[string]common.Market {
 	return markets
 }
 
-// проверка, есть ли permission "SPOT"
-func hasSpotPermission(perms []string) bool {
-	for _, p := range perms {
-		if p == "SPOT" {
-			return true
-		}
+// parseFloatFallback конвертирует строку в float64 с fallback по точности
+func parseFloatFallback(s string, precision int) float64 {
+	if s == "" {
+		return math.Pow10(-precision)
 	}
-	return false
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return math.Pow10(-precision)
+	}
+	return f
 }
+
 
 
 
