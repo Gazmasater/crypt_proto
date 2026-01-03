@@ -63,10 +63,81 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-2026/01/03 20:59:01 EXCHANGE: mexc
-2026/01/03 20:59:01 pprof on http://localhost:6060/debug/pprof/
-2026/01/03 20:59:01 read CSV symbols: wrong number of fields
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ 
+func readSymbolsFromCSV(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	r.TrimLeadingSpace = true
+
+	// --- читаем header ---
+	header, err := r.Read()
+	if err != nil {
+		return nil, err
+	}
+
+	// map: column name -> index (в lowercase)
+	colIndex := make(map[string]int, len(header))
+	for i, h := range header {
+		colIndex[strings.ToLower(strings.TrimSpace(h))] = i
+	}
+
+	// обязательные колонки
+	required := []string{"leg1", "leg2", "leg3"}
+	idx := make([]int, 0, 3)
+
+	for _, name := range required {
+		i, ok := colIndex[name]
+		if !ok {
+			return nil, fmt.Errorf("CSV: missing required column %q", name)
+		}
+		idx = append(idx, i)
+	}
+
+	// --- собираем уникальные символы ---
+	uniq := make(map[string]struct{})
+
+	for {
+		row, err := r.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		for _, i := range idx {
+			if i >= len(row) {
+				continue
+			}
+
+			cell := strings.TrimSpace(row[i])
+			if cell == "" {
+				continue
+			}
+
+			// "BUY PEPE/USDT" → "PEPE/USDT"
+			parts := strings.Fields(cell)
+			if len(parts) < 2 {
+				continue
+			}
+
+			symbol := parts[len(parts)-1]
+			uniq[symbol] = struct{}{}
+		}
+	}
+
+	// --- map → slice ---
+	out := make([]string, 0, len(uniq))
+	for s := range uniq {
+		out = append(out, s)
+	}
+
+	return out, nil
+}
+
 
 
