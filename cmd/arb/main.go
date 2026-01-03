@@ -45,7 +45,7 @@ func main() {
 	}
 
 	// === читаем whitelist из CSV ===
-	csvPath := "../exchange/data/okx_triangles_usdt.csv"
+	csvPath := "../exchange/data/kucoin_triangles_usdt.csv"
 
 	symbols, err := readSymbolsFromCSV(csvPath, exchange)
 	if err != nil {
@@ -66,8 +66,8 @@ func main() {
 	case "okx":
 		//
 		c = collector.NewOKXCollector(symbols, whitelist, marketDataPool)
-	//case "kucoin":
-	//	c = collector.NewKuCoinCollector(symbols, whitelist, marketDataPool)
+	case "kucoin":
+		c = collector.NewKuCoinCollector(symbols, whitelist, marketDataPool)
 	default:
 		log.Fatal("Unknown exchange:", exchange)
 	}
