@@ -44,7 +44,7 @@ func main() {
 	}
 
 	// === читаем whitelist из CSV ===
-	csvPath := "mexc_triangles_usdt_routes.csv"
+	csvPath := "../exchange/data/mexc_triangles_usdt.csv"
 
 	symbols, err := readSymbolsFromCSV(csvPath)
 	if err != nil {
@@ -112,46 +112,65 @@ func readSymbolsFromCSV(path string) ([]string, error) {
 
 	r := csv.NewReader(f)
 
+	// читаем заголовок
 	header, err := r.Read()
 	if err != nil {
 		return nil, err
 	}
 
+	// ищем колонки Leg1, Leg2, Leg3
 	colIndex := make(map[string]int)
 	for i, h := range header {
 		colIndex[strings.ToLower(strings.TrimSpace(h))] = i
 	}
 
-	required := []string{"leg1_symbol", "leg2_symbol", "leg3_symbol"}
+	required := []string{"leg1", "leg2", "leg3"}
 	var idx []int
 	for _, name := range required {
-		i, ok := colIndex[name]
+		i, ok := colIndex[strings.ToLower(name)]
 		if !ok {
 			return nil, csv.ErrFieldCount
 		}
 		idx = append(idx, i)
 	}
 
+	// множество уникальных символов
 	uniq := make(map[string]struct{})
+
 	for {
 		row, err := r.Read()
 		if err != nil {
 			break
 		}
+
 		for _, i := range idx {
 			if i >= len(row) {
 				continue
 			}
-			s := strings.TrimSpace(row[i])
-			if s != "" {
-				uniq[s] = struct{}{}
+
+			raw := strings.TrimSpace(row[i])
+			if raw == "" {
+				continue
 			}
+
+			// raw = "BUY PEPE/USDT" → вытаскиваем символ
+			parts := strings.Fields(raw)
+			if len(parts) < 2 {
+				continue
+			}
+			symbol := parts[1] // "PEPE/USDT"
+
+			// нормализуем для подписки: PEPE/USDT → PEPEUSDT
+			symbol = strings.ReplaceAll(symbol, "/", "")
+			uniq[symbol] = struct{}{}
 		}
 	}
 
+	// формируем срез
 	out := make([]string, 0, len(uniq))
 	for s := range uniq {
 		out = append(out, s)
 	}
+
 	return out, nil
 }
