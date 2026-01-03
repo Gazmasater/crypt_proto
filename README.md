@@ -62,243 +62,83 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-✅ 1. common/stable.go
-
-Список стейблов — используется как фильтр
-
-package common
-
-var StableCoins = map[string]bool{
-	"USDT": true,
-	"USDC": true,
-	"DAI":  true,
-	"BUSD": true,
-	"TUSD": true,
-	"EUR":  true,
-}
-
-✅ 2. common/market.go
-
-(оставляем как есть, минимально)
-
-package common
-
-type Market struct {
-	Symbol string
-
-	Base  string
-	Quote string
-
-	EnableTrading bool
-
-	BaseMinSize  float64
-	QuoteMinSize float64
-
-	BaseIncrement  float64
-	QuoteIncrement float64
-	PriceIncrement float64
-}
-
-✅ 3. common/resolver.go
-
-Поиск пары и направление BUY / SELL
-
-package common
-
-func FindLeg(a, b string, markets map[string]Market) (Market, bool) {
-	if m, ok := markets[a+"_"+b]; ok {
-		return m, true
-	}
-	if m, ok := markets[b+"_"+a]; ok {
-		return m, true
-	}
-	return Market{}, false
-}
-
-func ResolveSide(from, to string, m Market) string {
-	if m.Base == to && m.Quote == from {
-		return "BUY"
-	}
-	if m.Base == from && m.Quote == to {
-		return "SELL"
-	}
-	return ""
-}
-
-✅ 4. common/triangle.go
-package common
-
-type Triangle struct {
-	A string
-	B string
-	C string
-
-	Leg1 string
-	Leg2 string
-	Leg3 string
-}
-
-✅ 5. ДЕДУПЛИКАТОР (ключ треугольника)
-
-Чтобы
-USDT → A → B → USDT
-и
-USDT → B → A → USDT
-
-не дублировались.
-
-package common
-
-import "sort"
-
-func TriangleKey(a, b, c string) string {
-	x := []string{b, c}
-	sort.Strings(x)
-	return a + "|" + x[0] + "|" + x[1]
-}
-
-✅ 6. ГЛАВНОЕ — универсальный генератор
-
-📄 builder/triangles.go
-
-package builder
+package mexc
 
 import (
-	"exchange/common"
+	"crypt_proto/cmd/exchange/common"
+	"encoding/json"
+	"io"
+	"log"
+	"net/http"
+	"strconv"
 )
 
-func BuildTriangles(
-	markets map[string]common.Market,
-	anchor string,
-) []common.Triangle {
-
-	result := []common.Triangle{}
-	seen := map[string]bool{}
-
-	for _, m1 := range markets {
-		if !m1.EnableTrading {
-			continue
-		}
-
-		// шаг 1: A -> B
-		var B string
-		if m1.Base == anchor {
-			B = m1.Quote
-		} else if m1.Quote == anchor {
-			B = m1.Base
-		} else {
-			continue
-		}
-
-		// ❌ нельзя стейб в середине
-		if common.StableCoins[B] {
-			continue
-		}
-
-		for _, m2 := range markets {
-			if !m2.EnableTrading {
-				continue
-			}
-
-			// шаг 2: B -> C
-			var C string
-			if m2.Base == B {
-				C = m2.Quote
-			} else if m2.Quote == B {
-				C = m2.Base
-			} else {
-				continue
-			}
-
-			if C == anchor || C == B {
-				continue
-			}
-
-			if common.StableCoins[C] {
-				continue
-			}
-
-			// шаг 3: C -> A должен существовать
-			l3, ok := common.FindLeg(C, anchor, markets)
-			if !ok {
-				continue
-			}
-
-			l1, ok1 := common.FindLeg(anchor, B, markets)
-			l2, ok2 := common.FindLeg(B, C, markets)
-			if !ok1 || !ok2 {
-				continue
-			}
-
-			// 🔒 дедупликация A-X-Y-A / A-Y-X-A
-			key := common.TriangleKey(anchor, B, C)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-
-			t := common.Triangle{
-				A: anchor,
-				B: B,
-				C: C,
-
-				Leg1: common.ResolveSide(anchor, B, l1) + " " + l1.Base + "/" + l1.Quote,
-				Leg2: common.ResolveSide(B, C, l2) + " " + l2.Base + "/" + l2.Quote,
-				Leg3: common.ResolveSide(C, anchor, l3) + " " + l3.Base + "/" + l3.Quote,
-			}
-
-			result = append(result, t)
-		}
-	}
-
-	return result
+type mexcSymbol struct {
+	Symbol              string `json:"symbol"`
+	BaseAsset           string `json:"baseAsset"`
+	QuoteAsset          string `json:"quoteAsset"`
+	Status              string `json:"status"`
+	BaseSizePrecision   int    `json:"baseSizePrecision"`
+	QuotePrecision      int    `json:"quotePrecision"`
+	MinQty              string `json:"minQty"`
+	IsSpotTradingAllowed bool  `json:"isSpotTradingAllowed"`
 }
 
-✅ 7. CSV сохранение
-package common
+type mexcResponse struct {
+	Data []mexcSymbol `json:"data"`
+}
 
-import (
-	"encoding/csv"
-	"os"
-)
-
-func SaveTrianglesCSV(path string, list []Triangle) error {
-	f, err := os.Create(path)
+func LoadMarkets() map[string]common.Market {
+	resp, err := http.Get("https://api.mexc.com/api/v3/exchangeInfo")
 	if err != nil {
-		return err
+		log.Fatalf("http error: %v", err)
 	}
-	defer f.Close()
+	defer resp.Body.Close()
 
-	w := csv.NewWriter(f)
-	defer w.Flush()
+	body, _ := io.ReadAll(resp.Body)
 
-	w.Write([]string{"A", "B", "C", "Leg1", "Leg2", "Leg3"})
-
-	for _, t := range list {
-		w.Write([]string{
-			t.A, t.B, t.C,
-			t.Leg1, t.Leg2, t.Leg3,
-		})
+	var api mexcResponse
+	if err := json.Unmarshal(body, &api); err != nil {
+		log.Fatalf("decode error: %v", err)
 	}
 
-	return nil
+	markets := make(map[string]common.Market)
+
+	for _, s := range api.Data {
+		if s.Status != "ENABLED" || !s.IsSpotTradingAllowed {
+			continue
+		}
+
+		minQty, _ := strconv.ParseFloat(s.MinQty, 64)
+
+		baseStep := precisionToStep(s.BaseSizePrecision)
+		quoteStep := precisionToStep(s.QuotePrecision)
+
+		key := s.BaseAsset + "_" + s.QuoteAsset
+
+		markets[key] = common.Market{
+			Symbol:        s.Symbol,
+			Base:          s.BaseAsset,
+			Quote:         s.QuoteAsset,
+			EnableTrading: true,
+			BaseMinSize:   minQty,
+			BaseIncrement: baseStep,
+			QuoteIncrement: quoteStep,
+		}
+	}
+
+	return markets
 }
 
-✅ 8. main.go
-package main
-
-import (
-	"exchange/builder"
-	"exchange/common"
-	"exchange/kucoin"
-)
-
-func main() {
-	markets := kucoin.LoadMarkets()
-
-	triangles := builder.BuildTriangles(markets, "USDT")
-
-	common.SaveTrianglesCSV("data/kucoin_triangles.csv", triangles)
+func precisionToStep(p int) float64 {
+	if p <= 0 {
+		return 1
+	}
+	step := 1.0
+	for i := 0; i < p; i++ {
+		step /= 10
+	}
+	return step
 }
 
 
