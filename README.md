@@ -246,3 +246,57 @@ func readSymbolsFromCSV(path, exchange string) ([]string, error) {
 	return out, nil
 }
 
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidIfaceAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidIfaceAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use collector.NewOKXCollector(symbols, whitelist, marketDataPool) (value of type *collector.OKXCollector) as collector.Collector value in assignment: *collector.OKXCollector does not implement collector.Collector (wrong type for method Start)\n\t\thave Start(chan<- models.MarketData) error\n\t\twant Start(chan<- *models.MarketData) error",
+	"source": "compiler",
+	"startLineNumber": 68,
+	"startColumn": 7,
+	"endLineNumber": 68,
+	"endColumn": 68,
+	"origin": "extHost1"
+}]
+
+func NewOKXCollector(symbols []string) *OKXCollector {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &OKXCollector{
+		ctx:      ctx,
+		cancel:   cancel,
+		symbols:  symbols,
+		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
+	}
+}
+
+
+func NewMEXCCollector(symbols []string, whitelist []string, pool *sync.Pool) *MEXCCollector {
+	ctx, cancel := context.WithCancel(context.Background())
+	allowed := make(map[string]struct{}, len(whitelist))
+	for _, s := range whitelist {
+		allowed[market.NormalizeSymbol_Full(s)] = struct{}{}
+	}
+	return &MEXCCollector{
+		ctx:      ctx,
+		cancel:   cancel,
+		symbols:  symbols,
+		allowed:  allowed,
+		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
+		pool:     pool,
+		buf:      make([]byte, 0, 32),
+	}
+}
+
+
