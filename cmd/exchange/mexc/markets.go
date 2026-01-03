@@ -3,75 +3,51 @@ package mexc
 import (
 	"crypt_proto/cmd/exchange/common"
 	"encoding/json"
-	"fmt"
 	"log"
 	"math"
 	"net/http"
-	"strconv"
 )
 
+// Структуры для ответа MEXC
 type mexcSymbol struct {
-	Symbol     string `json:"symbol"`
-	BaseAsset  string `json:"baseAsset"`
-	QuoteAsset string `json:"quoteAsset"`
-	Status     string `json:"status"`
-
-	IsSpotTradingAllowed bool `json:"isSpotTradingAllowed"`
+	Symbol      string   `json:"symbol"`
+	BaseAsset   string   `json:"baseAsset"`
+	QuoteAsset  string   `json:"quoteAsset"`
+	Status      string   `json:"status"`
+	Permissions []string `json:"permissions"`
 
 	BaseAssetPrecision  int `json:"baseAssetPrecision"`
 	QuoteAssetPrecision int `json:"quoteAssetPrecision"`
-
-	Filters []struct {
-		FilterType string `json:"filterType"`
-		MinQty     string `json:"minQty"`
-		StepSize   string `json:"stepSize"`
-	} `json:"filters"`
 }
 
 type mexcResponse struct {
 	Symbols []mexcSymbol `json:"symbols"`
 }
 
+// LoadMarkets загружает все спотовые рынки MEXC
 func LoadMarkets() map[string]common.Market {
 	resp, err := http.Get("https://api.mexc.com/api/v3/exchangeInfo")
 	if err != nil {
-		log.Fatalf("http error: %v", err)
+		log.Fatalf("HTTP error: %v", err)
 	}
 	defer resp.Body.Close()
 
 	var api mexcResponse
 	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
-		log.Fatalf("decode error: %v", err)
+		log.Fatalf("JSON decode error: %v", err)
 	}
 
 	markets := make(map[string]common.Market)
 
-	fmt.Println("TOTAL SYMBOLS:", len(api.Symbols))
-
 	for _, s := range api.Symbols {
-		// фильтруем только активные спотовые пары
-		if s.Status != "1" || !s.IsSpotTradingAllowed {
+		// Фильтруем только активные спотовые пары
+		if s.Status != "1" || !hasSpotPermission(s.Permissions) {
 			continue
 		}
 
-		var minQty, stepSize float64
-		foundLotSize := false
-
-		// ищем фильтр LOT_SIZE
-		for _, f := range s.Filters {
-			if f.FilterType == "LOT_SIZE" {
-				minQty, _ = strconv.ParseFloat(f.MinQty, 64)
-				stepSize, _ = strconv.ParseFloat(f.StepSize, 64)
-				foundLotSize = true
-				break
-			}
-		}
-
-		// fallback, если фильтра нет
-		if !foundLotSize {
-			minQty = math.Pow10(-s.BaseAssetPrecision)
-			stepSize = minQty
-		}
+		// Используем fallback через BaseAssetPrecision
+		minQty := math.Pow10(-s.BaseAssetPrecision)
+		stepSize := minQty
 
 		key := s.BaseAsset + "_" + s.QuoteAsset
 		markets[key] = common.Market{
@@ -84,6 +60,15 @@ func LoadMarkets() map[string]common.Market {
 		}
 	}
 
-	fmt.Println("SPOT MARKETS:", len(markets))
 	return markets
+}
+
+// проверка, есть ли permission "SPOT"
+func hasSpotPermission(perms []string) bool {
+	for _, p := range perms {
+		if p == "SPOT" {
+			return true
+		}
+	}
+	return false
 }
