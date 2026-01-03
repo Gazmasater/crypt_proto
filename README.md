@@ -63,11 +63,13 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+/home/gaz358/myprog/crypt_proto/cmd/exchange/data/mexc_triangles_usdt.csv
+
+
 package main
 
 import (
 	"encoding/csv"
-	"fmt"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -110,9 +112,9 @@ func main() {
 	}
 
 	// === читаем whitelist из CSV ===
-	csvPath := "mexc_triangles_usdt_routes.csv"
+	csvPath := "cmd/exchange/data/mexc_triangles_usdt.csv"
 
-	symbols, err := readSymbolsFromCSV(csvPath, exchange)
+	symbols, err := readSymbolsFromCSV(csvPath)
 	if err != nil {
 		log.Fatalf("read CSV symbols: %v", err)
 	}
@@ -127,10 +129,13 @@ func main() {
 	switch exchange {
 	case "mexc":
 		c = collector.NewMEXCCollector(symbols, whitelist, marketDataPool)
-	case "okx":
-		c = collector.NewOKXCollector(symbols)
-	case "kucoin":
-		c = collector.NewKuCoinCollector(symbols)
+
+	//case "okx":
+	//	c = collector.NewOKXCollector(symbols)
+	//
+	//case "kucoin":
+	//	c = collector.NewKuCoinCollector(symbols)
+	//
 	default:
 		log.Fatal("Unknown exchange:", exchange)
 	}
@@ -146,6 +151,7 @@ func main() {
 			log.Printf("[%s] %s bid=%.8f ask=%.8f",
 				md.Exchange, md.Symbol, md.Bid, md.Ask,
 			)
+			// возвращаем объект обратно в пул
 			marketDataPool.Put(md)
 		}
 	}()
@@ -165,7 +171,7 @@ func main() {
 // CSV → symbols
 // ------------------------------------------------------------
 
-func readSymbolsFromCSV(path, exchange string) ([]string, error) {
+func readSymbolsFromCSV(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -173,6 +179,7 @@ func readSymbolsFromCSV(path, exchange string) ([]string, error) {
 	defer f.Close()
 
 	r := csv.NewReader(f)
+
 	header, err := r.Read()
 	if err != nil {
 		return nil, err
@@ -183,12 +190,12 @@ func readSymbolsFromCSV(path, exchange string) ([]string, error) {
 		colIndex[strings.ToLower(strings.TrimSpace(h))] = i
 	}
 
-	required := []string{"leg1", "leg2", "leg3"}
+	required := []string{"leg1_symbol", "leg2_symbol", "leg3_symbol"}
 	var idx []int
 	for _, name := range required {
-		i, ok := colIndex[strings.ToLower(name)]
+		i, ok := colIndex[name]
 		if !ok {
-			return nil, fmt.Errorf("CSV missing column %s", name)
+			return nil, csv.ErrFieldCount
 		}
 		idx = append(idx, i)
 	}
@@ -204,12 +211,9 @@ func readSymbolsFromCSV(path, exchange string) ([]string, error) {
 				continue
 			}
 			s := strings.TrimSpace(row[i])
-			s = extractSymbolFromLeg(s)
-			if s == "" {
-				continue
+			if s != "" {
+				uniq[s] = struct{}{}
 			}
-			s = normalizeSymbolForExchange(s, exchange)
-			uniq[s] = struct{}{}
 		}
 	}
 
@@ -220,43 +224,12 @@ func readSymbolsFromCSV(path, exchange string) ([]string, error) {
 	return out, nil
 }
 
-func extractSymbolFromLeg(leg string) string {
-	parts := strings.Fields(leg) // разделяем по пробелу
-	if len(parts) == 0 {
-		return ""
-	}
-	if len(parts) == 1 {
-		return parts[0] // уже чистый символ
-	}
-	return parts[1] // берем второй элемент после BUY/SELL
-}
 
-func normalizeSymbolForExchange(sym, exchange string) string {
-	parts := strings.Split(sym, "/")
-	if len(parts) != 2 {
-		return sym
-	}
-	base, quote := parts[0], parts[1]
-	switch exchange {
-	case "kucoin", "okx":
-		return base + "-" + quote
-	case "mexc":
-		return base + "_" + quote
-	default:
-		return sym
-	}
-}
-
-
-package collector
-
-import "crypt_proto/pkg/models"
-
-type Collector interface {
-	Start(out chan<- *models.MarketData) error
-	Stop() error
-	Name() string
-}
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+2026/01/03 20:47:35 EXCHANGE: mexc
+2026/01/03 20:47:35 pprof on http://localhost:6060/debug/pprof/
+2026/01/03 20:47:35 read CSV symbols: open cmd/exchange/data/mexc_triangles_usdt.csv: no such file or directory
+exit status 1
 
 
 
