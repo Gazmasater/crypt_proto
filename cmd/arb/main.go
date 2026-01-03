@@ -20,6 +20,7 @@ import (
 func main() {
 	_ = godotenv.Load(".env")
 
+	// pprof
 	go func() {
 		log.Println("pprof on http://localhost:6060/debug/pprof/")
 		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
@@ -44,9 +45,9 @@ func main() {
 	}
 
 	// === читаем whitelist из CSV ===
-	csvPath := "../exchange/data/mexc_triangles_usdt.csv"
+	csvPath := "../exchange/data/triangles.csv"
 
-	symbols, err := readSymbolsFromCSV(csvPath)
+	symbols, err := readSymbolsFromCSV(csvPath, exchange)
 	if err != nil {
 		log.Fatalf("read CSV symbols: %v", err)
 	}
@@ -58,26 +59,25 @@ func main() {
 
 	var c collector.Collector
 
+	// создаём collector в зависимости от биржи
 	switch exchange {
 	case "mexc":
 		c = collector.NewMEXCCollector(symbols, whitelist, marketDataPool)
-
 	//case "okx":
-	//	c = collector.NewOKXCollector(symbols)
 	//
+	//	c = collector.NewOKXCollector(symbols, whitelist, marketDataPool)
 	//case "kucoin":
-	//	c = collector.NewKuCoinCollector(symbols)
-	//
+	//	c = collector.NewKuCoinCollector(symbols, whitelist, marketDataPool)
 	default:
 		log.Fatal("Unknown exchange:", exchange)
 	}
 
-	// старт
+	// старт collector
 	if err := c.Start(marketDataCh); err != nil {
 		log.Fatal("start collector:", err)
 	}
 
-	// consumer
+	// consumer маркет-данных
 	go func() {
 		for md := range marketDataCh {
 			log.Printf("[%s] %s bid=%.8f ask=%.8f",
@@ -100,10 +100,9 @@ func main() {
 }
 
 // ------------------------------------------------------------
-// CSV → symbols
+// CSV → symbols, нормализуем под биржу
 // ------------------------------------------------------------
-
-func readSymbolsFromCSV(path string) ([]string, error) {
+func readSymbolsFromCSV(path, exchange string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -160,8 +159,16 @@ func readSymbolsFromCSV(path string) ([]string, error) {
 			}
 			symbol := parts[1] // "PEPE/USDT"
 
-			// нормализуем для подписки: PEPE/USDT → PEPEUSDT
-			symbol = strings.ReplaceAll(symbol, "/", "")
+			// нормализуем под биржу
+			switch exchange {
+			case "mexc":
+				symbol = strings.ReplaceAll(symbol, "/", "") // PEPEUSDT
+			case "okx", "kucoin":
+				symbol = strings.ReplaceAll(symbol, "/", "-") // PEPE-USDT
+			default:
+				// оставляем как есть
+			}
+
 			uniq[symbol] = struct{}{}
 		}
 	}
