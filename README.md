@@ -385,16 +385,35 @@ func parseFloat(v any) float64 {
 }
 
 
-2026/01/04 11:25:34 [KuCoin] connect: wss://ws-api-spot.kucoin.com/?token=2neAiuYvAU61ZDXANAGAsiL4-iAExhsBXZxftpOeh_55i3Ysy2q2LEsEWU64mdzUOPusi34M_wGoSf7iNyEWJzP9evvOrxtv30MhfOvDMxlwLvwvfH4J2diYB9J6i9GjsxUuhPw3Blq6rhZlGykT3Vp1phUafnulOOpts-MEmEHtGZR-Jl-TQtzCQxbLF0kVJBvJHl5Vs9Y=.nmAnl7bXIz7cIP4_r_Dbew==&connectId=1767515134453591035
-2026/01/04 11:25:35 [KuCoin] connected
-2026/01/04 11:25:35 [KuCoin] subscribed batch: 50 symbols
-2026/01/04 11:25:35 [KuCoin] subscribed batch: 50 symbols
-2026/01/04 11:25:36 [KuCoin] subscribed batch: 50 symbols
-2026/01/04 11:25:36 [KuCoin] subscribed batch: 50 symbols
-2026/01/04 11:25:36 start collector:write tcp 192.168.1.71:52536->108.157.229.57:443: write: broken pipe
-exit status 1
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ 
 
+
+
+func (c *KuCoinCollector) subscribe() error {
+	for i, s := range c.symbols {
+		sym := normalizeKucoinSymbol(s)
+
+		msg := map[string]any{
+			"id":       fmt.Sprintf("sub-%s", sym),
+			"type":     "subscribe",
+			"topic":    "/market/ticker:" + sym,
+			"response": true,
+		}
+
+		if err := c.conn.WriteJSON(msg); err != nil {
+			return fmt.Errorf("subscribe failed (%s): %w", sym, err)
+		}
+
+		if i%10 == 0 {
+			log.Printf("[KuCoin] subscribed %d / %d\n", i+1, len(c.symbols))
+		}
+
+		// ⬅️ КРИТИЧЕСКИ ВАЖНО
+		time.Sleep(400 * time.Millisecond)
+	}
+
+	log.Printf("[KuCoin] subscribed TOTAL: %d symbols\n", len(c.symbols))
+	return nil
+}
 
 
 
