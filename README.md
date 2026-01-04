@@ -380,4 +380,28 @@ func main() {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidIfaceAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidIfaceAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use collector.NewKuCoinCollector([]string{…}) (value of type *collector.KuCoinCollector) as collector.Collector value in assignment: *collector.KuCoinCollector does not implement collector.Collector (wrong type for method Start)\n\t\thave Start(chan<- models.MarketData) error\n\t\twant Start(chan<- *models.MarketData) error",
+	"source": "compiler",
+	"startLineNumber": 70,
+	"startColumn": 7,
+	"endLineNumber": 70,
+	"endColumn": 113,
+	"origin": "extHost1"
+}]
+
+
 
