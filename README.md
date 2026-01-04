@@ -426,6 +426,25 @@ func parseFloat(v any) float64 {
 
 
 
+2026/01/04 16:06:36 EXCHANGE: kucoin
+2026/01/04 16:06:36 pprof on http://localhost:6060/debug/pprof/
+2026/01/04 16:06:36 Loaded 246 unique symbols from ../exchange/data/kucoin_triangles_usdt.csv
+2026/01/04 16:06:36 [KuCoin] init WS
+2026/01/04 16:06:37 [KuCoin] wsURL ready, pingInterval=18s
+2026/01/04 16:06:37 [KuCoin] connect: wss://ws-api-spot.kucoin.com/?token=2neAiuYvAU61ZDXANAGAsiL4-iAExhsBXZxftpOeh_55i3Ysy2q2LEsEWU64mdzUOPusi34M_wGoSf7iNyEWJ3qC8zu5Yz5AZ3_oRjxFoa6_k1pAuYXVudiYB9J6i9GjsxUuhPw3Blq6rhZlGykT3Vp1phUafnulOOpts-MEmEHtGZR-Jl-TQoCqCnec6Y_sJBvJHl5Vs9Y=.2SsaV2nQPU-90Qa8eu9N_g==&connectId=1767531997763402774
+2026/01/04 16:06:38 [KuCoin] connected
+2026/01/04 16:06:38 [KuCoin] welcome received
+2026/01/04 16:06:38 [KuCoin] subscribed 20 / 246
+2026/01/04 16:06:39 [KuCoin] subscribed 40 / 246
+2026/01/04 16:06:39 [KuCoin] subscribed 60 / 246
+2026/01/04 16:06:39 [KuCoin] subscribed 80 / 246
+2026/01/04 16:06:40 [KuCoin] subscribed 100 / 246
+2026/01/04 16:06:40 [KuCoin] subscribed 120 / 246
+2026/01/04 16:06:40 [KuCoin] subscribed 140 / 246
+2026/01/04 16:06:40 start collector:write tcp 192.168.1.71:44250->108.157.229.57:443: write: connection reset by peer
+exit status 1
+
+
 
 
 
