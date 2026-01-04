@@ -75,30 +75,25 @@ import (
 	"strings"
 	"time"
 
-	"crypt_proto/internal/market"
 	"crypt_proto/pkg/models"
 
 	"github.com/gorilla/websocket"
 )
 
 type KuCoinCollector struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	symbols  []string
-	conn     *websocket.Conn
-	wsURL    string
-	lastData map[string]struct {
-		Bid, Ask, BidSize, AskSize float64
-	}
+	ctx     context.Context
+	cancel  context.CancelFunc
+	symbols []string
+	conn    *websocket.Conn
+	wsURL   string
 }
 
 func NewKuCoinCollector(symbols []string) *KuCoinCollector {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &KuCoinCollector{
-		ctx:      ctx,
-		cancel:   cancel,
-		symbols:  symbols,
-		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
+		ctx:     ctx,
+		cancel:  cancel,
+		symbols: symbols,
 	}
 }
 
@@ -114,6 +109,7 @@ func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
 		return err
 	}
 	c.conn = conn
+
 	log.Println("[KuCoin] Connected to WS")
 
 	// subscribe
@@ -146,114 +142,6 @@ func (c *KuCoinCollector) Stop() error {
 		_ = c.conn.Close()
 	}
 	return nil
-}
-
-func (c *KuCoinCollector) pingLoop() {
-	t := time.NewTicker(15 * time.Second)
-	defer t.Stop()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-t.C:
-			_ = c.conn.WriteJSON(map[string]string{"type": "ping"})
-		}
-	}
-}
-
-func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
-	defer func() {
-		if c.conn != nil {
-			c.conn.Close()
-		}
-	}()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-			_, msg, err := c.conn.ReadMessage()
-			if err != nil {
-				log.Println("[KuCoin] read error:", err)
-				return
-			}
-
-			var raw map[string]any
-			if err := json.Unmarshal(msg, &raw); err != nil {
-				continue
-			}
-
-			typ, _ := raw["type"].(string)
-			if typ == "welcome" || typ == "ack" || typ != "message" {
-				continue
-			}
-
-			topic, _ := raw["topic"].(string)
-			data, ok := raw["data"].(map[string]any)
-			if !ok {
-				continue
-			}
-
-			rawsymbol := strings.TrimPrefix(topic, "/market/ticker:")
-			symbol := market.NormalizeSymbol_Full(rawsymbol)
-			if symbol == "" {
-				continue
-			}
-
-			bid := parseFloat(data["bestBid"])
-			ask := parseFloat(data["bestAsk"])
-			bidSize := parseFloat(data["sizeBid"])
-			askSize := parseFloat(data["sizeAsk"])
-
-			if bid == 0 || ask == 0 {
-				continue
-			}
-
-			// фильтрация повторов
-			if last, exists := c.lastData[symbol]; exists {
-				if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
-					continue // ничего не поменялось — пропускаем
-				}
-			}
-
-			// обновляем последние данные
-			c.lastData[symbol] = struct {
-				Bid, Ask, BidSize, AskSize float64
-			}{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
-
-			out <- models.MarketData{
-				Exchange: "KuCoin",
-				Symbol:   symbol,
-				Bid:      bid,
-				Ask:      ask,
-				// при желании можно добавить объёмы
-			}
-		}
-	}
-}
-
-func normalizeKucoinSymbol(s string) string {
-	if strings.Contains(s, "-") {
-		return s
-	}
-	if strings.HasSuffix(s, "USDT") {
-		return strings.Replace(s, "USDT", "-USDT", 1)
-	}
-	return s
-}
-
-func parseFloat(v any) float64 {
-	switch t := v.(type) {
-	case string:
-		f, _ := strconv.ParseFloat(t, 64)
-		return f
-	case float64:
-		return t
-	default:
-		return 0
-	}
 }
 
 func (c *KuCoinCollector) initWS() error {
@@ -306,5 +194,107 @@ func (c *KuCoinCollector) initWS() error {
 
 	return nil
 }
+
+func (c *KuCoinCollector) pingLoop() {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			_ = c.conn.WriteJSON(map[string]string{
+				"type": "ping",
+			})
+		}
+	}
+}
+
+func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
+	defer func() {
+		if c.conn != nil {
+			c.conn.Close()
+		}
+	}()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			_, msg, err := c.conn.ReadMessage()
+			if err != nil {
+				log.Println("[KuCoin] read error:", err)
+				return
+			}
+
+			var raw map[string]any
+			if err := json.Unmarshal(msg, &raw); err != nil {
+				continue
+			}
+
+			typ, _ := raw["type"].(string)
+
+			// служебные
+			if typ == "welcome" || typ == "ack" {
+				continue
+			}
+
+			if typ != "message" {
+				continue
+			}
+
+			topic, _ := raw["topic"].(string)
+			data, ok := raw["data"].(map[string]any)
+			if !ok {
+				continue
+			}
+
+			symbol := strings.TrimPrefix(topic, "/market/ticker:")
+
+			bid := parseFloat(data["bestBid"])
+			ask := parseFloat(data["bestAsk"])
+
+			if bid == 0 || ask == 0 {
+				continue
+			}
+
+			out <- models.MarketData{
+				Exchange: "KuCoin",
+				Symbol:   symbol,
+				Bid:      bid,
+				Ask:      ask,
+			}
+		}
+	}
+}
+
+func normalizeKucoinSymbol(s string) string {
+	if strings.Contains(s, "-") {
+		return s
+	}
+	if strings.HasSuffix(s, "USDT") {
+		return strings.Replace(s, "USDT", "-USDT", 1)
+	}
+	return s
+}
+
+func parseFloat(v any) float64 {
+	switch t := v.(type) {
+	case string:
+		f, _ := strconv.ParseFloat(t, 64)
+		return f
+	case float64:
+		return t
+	default:
+		return 0
+	}
+}
+
+
+
+		c = collector.NewKuCoinCollector([]string{"BTCUSDT", "ETHUSDT", "ETHBTC"})
+
 
 
