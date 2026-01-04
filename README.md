@@ -399,6 +399,17 @@ func (c *KuCoinCollector) initWS() error {
 
 
 
+2026/01/04 15:58:11 EXCHANGE: kucoin
+2026/01/04 15:58:11 pprof on http://localhost:6060/debug/pprof/
+2026/01/04 15:58:11 Loaded 246 unique symbols from ../exchange/data/kucoin_triangles_usdt.csv
+2026/01/04 15:58:11 [KuCoin] init WS
+2026/01/04 15:58:11 [KuCoin] request bullet-public
+2026/01/04 15:58:12 [KuCoin] wsURL ready, pingInterval=18s
+2026/01/04 15:58:12 [KuCoin] connect: wss://ws-api-spot.kucoin.com/?token=2neAiuYvAU61ZDXANAGAsiL4-iAExhsBXZxftpOeh_55i3Ysy2q2LEsEWU64mdzUOPusi34M_wGoSf7iNyEWJzol2EqSCY6BS3WLilYf0d7iW3huFvsBhdiYB9J6i9GjsxUuhPw3Blq6rhZlGykT3Vp1phUafnulOOpts-MEmEHtGZR-Jl-TQp-jYMTABSOLJBvJHl5Vs9Y=.ZZ7HxQJs0e0kh9BTut_kjQ==&connectId=1767531492207213818
+2026/01/04 15:58:13 [KuCoin] connected
+
+
+
 
 
 
