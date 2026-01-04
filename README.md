@@ -63,52 +63,340 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-2026/01/04 11:33:05 EXCHANGE: kucoin
-2026/01/04 11:33:05 pprof on http://localhost:6060/debug/pprof/
-2026/01/04 11:33:05 Loaded 246 unique symbols from ../exchange/data/kucoin_triangles_usdt.csv
-2026/01/04 11:33:05 [KuCoin] init WS
-2026/01/04 11:33:05 [KuCoin] request bullet-public
-2026/01/04 11:33:06 [KuCoin] wsURL ready, pingInterval=0s
-2026/01/04 11:33:06 [KuCoin] connect: wss://ws-api-spot.kucoin.com/?token=2neAiuYvAU61ZDXANAGAsiL4-iAExhsBXZxftpOeh_55i3Ysy2q2LEsEWU64mdzUOPusi34M_wGoSf7iNyEWJyRQQkns52iq8lDQcWAtencR3R2PfzVokdiYB9J6i9GjsxUuhPw3Blq6rhZlGykT3Vp1phUafnulOOpts-MEmEHtGZR-Jl-TQpU-gjzmv_-6JBvJHl5Vs9Y=.56dJLGSKb9deoowHoR7FKQ==&connectId=1767515586042933615
-2026/01/04 11:33:07 [KuCoin] connected
-2026/01/04 11:33:07 [KuCoin] subscribed 1 / 246
-2026/01/04 11:33:11 [KuCoin] subscribed 11 / 246
-2026/01/04 11:33:15 [KuCoin] subscribed 21 / 246
-2026/01/04 11:33:19 [KuCoin] subscribed 31 / 246
-2026/01/04 11:33:23 [KuCoin] subscribed 41 / 246
-2026/01/04 11:33:27 [KuCoin] subscribed 51 / 246
-2026/01/04 11:33:31 [KuCoin] subscribed 61 / 246
-2026/01/04 11:33:35 [KuCoin] subscribed 71 / 246
-2026/01/04 11:33:39 [KuCoin] subscribed 81 / 246
-2026/01/04 11:33:43 [KuCoin] subscribed 91 / 246
-2026/01/04 11:33:47 [KuCoin] subscribed 101 / 246
-2026/01/04 11:33:51 [KuCoin] subscribed 111 / 246
-2026/01/04 11:33:55 [KuCoin] subscribed 121 / 246
-2026/01/04 11:33:59 [KuCoin] subscribed 131 / 246
-2026/01/04 11:34:03 [KuCoin] subscribed 141 / 246
-2026/01/04 11:34:07 [KuCoin] subscribed 151 / 246
-2026/01/04 11:34:11 [KuCoin] subscribed 161 / 246
-2026/01/04 11:34:15 [KuCoin] subscribed 171 / 246
-2026/01/04 11:34:19 [KuCoin] subscribed 181 / 246
-2026/01/04 11:34:23 [KuCoin] subscribed 191 / 246
-2026/01/04 11:34:27 [KuCoin] subscribed 201 / 246
-2026/01/04 11:34:31 [KuCoin] subscribed 211 / 246
-2026/01/04 11:34:35 [KuCoin] subscribed 221 / 246
-2026/01/04 11:34:39 [KuCoin] subscribed 231 / 246
-2026/01/04 11:34:43 [KuCoin] subscribed 241 / 246
-2026/01/04 11:34:45 [KuCoin] subscribed TOTAL: 246 symbols
-2026/01/04 11:34:45 [KuCoin] readLoop started
-panic: non-positive interval for NewTicker
+package collector
 
-goroutine 52 [running]:
-time.NewTicker(0xc000305720?)
-        /usr/local/go/src/time/tick.go:38 +0xbb
-crypt_proto/internal/collector.(*KuCoinCollector).pingLoop(0xc0000ea200)
-        /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go:149 +0x3a
-created by crypt_proto/internal/collector.(*KuCoinCollector).Start in goroutine 1
-        /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go:84 +0x27e
-exit status 2
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ 
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"crypt_proto/internal/market"
+	"crypt_proto/pkg/models"
+
+	"github.com/gorilla/websocket"
+)
+
+type KuCoinCollector struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	conn        *websocket.Conn
+	wsURL       string
+	pingInterval time.Duration
+
+	symbols []string
+	allowed map[string]struct{}
+
+	last map[string]lastTick
+	mu   sync.Mutex
+
+	pool *sync.Pool
+	buf  []byte
+}
+
+type lastTick struct {
+	Bid, Ask, BidSize, AskSize float64
+}
+
+// ---------------- Constructor ----------------
+func NewKuCoinCollector(symbols []string, whitelist []string, pool *sync.Pool) *KuCoinCollector {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	allowed := make(map[string]struct{}, len(whitelist))
+	for _, s := range whitelist {
+		allowed[market.NormalizeSymbol_Full(s)] = struct{}{}
+	}
+
+	return &KuCoinCollector{
+		ctx:      ctx,
+		cancel:   cancel,
+		symbols:  symbols,
+		allowed:  allowed,
+		last:     make(map[string]lastTick),
+		pool:     pool,
+		buf:      make([]byte, 0, 32),
+	}
+}
+
+// ---------------- Name ----------------
+func (c *KuCoinCollector) Name() string { return "KuCoin" }
+
+// ---------------- Start ----------------
+func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
+	log.Println("[KuCoin] init WS")
+
+	if err := c.initWS(); err != nil {
+		return err
+	}
+
+	log.Println("[KuCoin] connect:", c.wsURL)
+	conn, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
+	if err != nil {
+		return err
+	}
+	c.conn = conn
+	log.Println("[KuCoin] connected")
+
+	if err := c.subscribeBatch(50); err != nil {
+		return err
+	}
+
+	// pingLoop только если pingInterval > 0
+	if c.pingInterval > 0 {
+		go c.pingLoop()
+		log.Printf("[KuCoin] pingLoop started, interval=%s\n", c.pingInterval)
+	} else {
+		log.Println("[KuCoin] pingLoop disabled (pingInterval=0)")
+	}
+
+	go c.readLoop(out)
+	return nil
+}
+
+// ---------------- Stop ----------------
+func (c *KuCoinCollector) Stop() error {
+	log.Println("[KuCoin] stopping")
+	c.cancel()
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+	return nil
+}
+
+// ---------------- Batch Subscribe ----------------
+func (c *KuCoinCollector) subscribeBatch(batchSize int) error {
+	total := len(c.symbols)
+	for i := 0; i < total; i += batchSize {
+		end := i + batchSize
+		if end > total {
+			end = total
+		}
+		batch := c.symbols[i:end]
+
+		count := 0
+		for _, s := range batch {
+			sym := normalizeKucoinSymbol(s)
+			norm := market.NormalizeSymbol_Full(sym)
+			if len(c.allowed) > 0 {
+				if _, ok := c.allowed[norm]; !ok {
+					continue
+				}
+			}
+			msg := map[string]any{
+				"id":             fmt.Sprintf("sub-%s", sym),
+				"type":           "subscribe",
+				"topic":          "/market/ticker:" + sym,
+				"privateChannel": false,
+				"response":       true,
+			}
+			if err := c.conn.WriteJSON(msg); err != nil {
+				return err
+			}
+			count++
+		}
+		log.Printf("[KuCoin] subscribed batch: %d symbols\n", count)
+	}
+	log.Printf("[KuCoin] subscribed TOTAL: %d symbols\n", total)
+	return nil
+}
+
+// ---------------- Ping Loop ----------------
+func (c *KuCoinCollector) pingLoop() {
+	if c.pingInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(c.pingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			err := c.conn.WriteJSON(map[string]string{"type": "ping"})
+			if err != nil {
+				log.Println("[KuCoin] ping error:", err)
+				return
+			}
+		}
+	}
+}
+
+// ---------------- Read Loop ----------------
+func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
+	defer func() {
+		log.Println("[KuCoin] readLoop stopped")
+		_ = c.conn.Close()
+	}()
+
+	log.Println("[KuCoin] readLoop started")
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			_, msg, err := c.conn.ReadMessage()
+			if err != nil {
+				log.Println("[KuCoin] read error:", err)
+				return
+			}
+
+			var raw map[string]any
+			if err := json.Unmarshal(msg, &raw); err != nil {
+				continue
+			}
+
+			typ, _ := raw["type"].(string)
+			switch typ {
+			case "welcome", "ack", "pong":
+				continue
+			case "message":
+			default:
+				continue
+			}
+
+			topic, _ := raw["topic"].(string)
+			data, ok := raw["data"].(map[string]any)
+			if !ok {
+				continue
+			}
+
+			rawSym := strings.TrimPrefix(topic, "/market/ticker:")
+			symbol := market.NormalizeSymbol_NoAlloc(rawSym, &c.buf)
+			if symbol == "" {
+				continue
+			}
+
+			if len(c.allowed) > 0 {
+				if _, ok := c.allowed[symbol]; !ok {
+					continue
+				}
+			}
+
+			bid := parseFloat(data["bestBid"])
+			ask := parseFloat(data["bestAsk"])
+			bidSize := parseFloat(data["sizeBid"])
+			askSize := parseFloat(data["sizeAsk"])
+
+			if bid == 0 || ask == 0 {
+				continue
+			}
+
+			c.mu.Lock()
+			prev, ok := c.last[symbol]
+			if ok &&
+				prev.Bid == bid &&
+				prev.Ask == ask &&
+				prev.BidSize == bidSize &&
+				prev.AskSize == askSize {
+				c.mu.Unlock()
+				continue
+			}
+			c.last[symbol] = lastTick{bid, ask, bidSize, askSize}
+			c.mu.Unlock()
+
+			md := c.pool.Get().(*models.MarketData)
+			md.Exchange = "KuCoin"
+			md.Symbol = symbol
+			md.Bid = bid
+			md.Ask = ask
+			md.BidSize = bidSize
+			md.AskSize = askSize
+			md.Timestamp = time.Now().UnixMilli()
+
+			out <- md
+		}
+	}
+}
+
+// ---------------- Helpers ----------------
+func normalizeKucoinSymbol(s string) string {
+	if strings.Contains(s, "-") {
+		return s
+	}
+	if strings.HasSuffix(s, "USDT") {
+		return strings.Replace(s, "USDT", "-USDT", 1)
+	}
+	return s
+}
+
+func parseFloat(v any) float64 {
+	switch t := v.(type) {
+	case string:
+		f, _ := strconv.ParseFloat(t, 64)
+		return f
+	case float64:
+		return t
+	default:
+		return 0
+	}
+}
+
+// ---------------- Init WS ----------------
+func (c *KuCoinCollector) initWS() error {
+	log.Println("[KuCoin] request bullet-public")
+
+	req, err := http.NewRequest(
+		"POST",
+		"https://api.kucoin.com/api/v1/bullet-public",
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bullet status: %s", resp.Status)
+	}
+
+	var r struct {
+		Data struct {
+			Token           string `json:"token"`
+			InstanceServers []struct {
+				Endpoint     string `json:"endpoint"`
+				PingInterval int    `json:"pingInterval"` // ms
+			} `json:"instanceServers"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return err
+	}
+
+	if len(r.Data.InstanceServers) == 0 {
+		return fmt.Errorf("no ws endpoints")
+	}
+
+	c.wsURL = fmt.Sprintf(
+		"%s?token=%s&connectId=%d",
+		r.Data.InstanceServers[0].Endpoint,
+		r.Data.Token,
+		time.Now().UnixNano(),
+	)
+
+	// Ping interval
+	if len(r.Data.InstanceServers) > 0 {
+		c.pingInterval = time.Duration(r.Data.InstanceServers[0].PingInterval) * time.Millisecond
+	}
+	log.Printf("[KuCoin] wsURL ready, pingInterval=%s\n", c.pingInterval)
+
+	return nil
+}
+
 
 
 
