@@ -398,19 +398,6 @@ func (c *KuCoinCollector) initWS() error {
 }
 
 
-2026/01/04 11:44:01 [KuCoin] subscribed batch: 50 symbols
-2026/01/04 11:44:01 [KuCoin] subscribed batch: 50 symbols
-2026/01/04 11:44:01 [KuCoin] subscribed batch: 50 symbols
-2026/01/04 11:44:01 [KuCoin] subscribed batch: 50 symbols
-2026/01/04 11:44:01 [KuCoin] subscribed batch: 46 symbols
-2026/01/04 11:44:01 [KuCoin] subscribed TOTAL: 246 symbols
-2026/01/04 11:44:01 [KuCoin] pingLoop started, interval=18s
-2026/01/04 11:44:01 [KuCoin] readLoop started
-2026/01/04 11:44:02 [KuCoin] read error: websocket: close 1006 (abnormal closure): unexpected EOF
-2026/01/04 11:44:02 [KuCoin] readLoop stopped
-2026/01/04 11:44:19 [KuCoin] ping error: use of closed network connection
-
-
 
 
 
