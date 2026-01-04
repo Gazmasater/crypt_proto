@@ -82,6 +82,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	kucoinBatchSize = 50
+)
+
 type KuCoinCollector struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -89,8 +93,9 @@ type KuCoinCollector struct {
 	conn  *websocket.Conn
 	wsURL string
 
+	pingInterval time.Duration
+
 	symbols []string
-	allowed map[string]struct{}
 
 	last map[string]lastTick
 	mu   sync.Mutex
@@ -103,25 +108,13 @@ type lastTick struct {
 	Bid, Ask, BidSize, AskSize float64
 }
 
-func NewKuCoinCollector(
-	symbols []string,
-	whitelist []string,
-	pool *sync.Pool,
-) *KuCoinCollector {
-
+func NewKuCoinCollector(symbols []string, pool *sync.Pool) *KuCoinCollector {
 	ctx, cancel := context.WithCancel(context.Background())
-
-	allowed := make(map[string]struct{}, len(whitelist))
-	for _, s := range whitelist {
-		allowed[market.NormalizeSymbol_Full(s)] = struct{}{}
-	}
 
 	return &KuCoinCollector{
 		ctx:     ctx,
 		cancel:  cancel,
 		symbols: symbols,
-		//allowed: allowed,
-		allowed: nil,
 		last:    make(map[string]lastTick),
 		pool:    pool,
 		buf:     make([]byte, 0, 32),
@@ -129,6 +122,8 @@ func NewKuCoinCollector(
 }
 
 func (c *KuCoinCollector) Name() string { return "KuCoin" }
+
+// -------------------- START / STOP --------------------
 
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	log.Println("[KuCoin] init WS")
@@ -166,40 +161,52 @@ func (c *KuCoinCollector) Stop() error {
 	return nil
 }
 
+// -------------------- SUBSCRIBE --------------------
+
 func (c *KuCoinCollector) subscribe() error {
-	count := 0
+	var batch []string
 
 	for _, s := range c.symbols {
-		sym := normalizeKucoinSymbol(s)
-		norm := market.NormalizeSymbol_Full(sym)
+		batch = append(batch, normalizeKucoinSymbol(s))
 
-		if len(c.allowed) > 0 {
-			if _, ok := c.allowed[norm]; !ok {
-				continue
+		if len(batch) == kucoinBatchSize {
+			if err := c.subscribeBatch(batch); err != nil {
+				return err
 			}
+			batch = batch[:0]
+			time.Sleep(300 * time.Millisecond)
 		}
+	}
 
+	if len(batch) > 0 {
+		return c.subscribeBatch(batch)
+	}
+
+	return nil
+}
+
+func (c *KuCoinCollector) subscribeBatch(symbols []string) error {
+	for _, sym := range symbols {
 		msg := map[string]any{
-			"id":             fmt.Sprintf("sub-%s", sym),
-			"type":           "subscribe",
-			"topic":          "/market/ticker:" + sym,
-			"privateChannel": false,
-			"response":       true,
+			"id":       fmt.Sprintf("sub-%s", sym),
+			"type":     "subscribe",
+			"topic":    "/market/ticker:" + sym,
+			"response": true,
 		}
 
 		if err := c.conn.WriteJSON(msg); err != nil {
 			return err
 		}
-
-		count++
 	}
 
-	log.Printf("[KuCoin] subscribed to %d symbols\n", count)
+	log.Printf("[KuCoin] subscribed batch: %d symbols\n", len(symbols))
 	return nil
 }
 
+// -------------------- PING --------------------
+
 func (c *KuCoinCollector) pingLoop() {
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(c.pingInterval)
 	defer ticker.Stop()
 
 	for {
@@ -211,6 +218,8 @@ func (c *KuCoinCollector) pingLoop() {
 		}
 	}
 }
+
+// -------------------- READ LOOP --------------------
 
 func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
 	defer func() {
@@ -258,12 +267,6 @@ func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
 				continue
 			}
 
-			if len(c.allowed) > 0 {
-				if _, ok := c.allowed[symbol]; !ok {
-					continue
-				}
-			}
-
 			bid := parseFloat(data["bestBid"])
 			ask := parseFloat(data["bestAsk"])
 			bidSize := parseFloat(data["sizeBid"])
@@ -300,27 +303,7 @@ func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
 	}
 }
 
-func normalizeKucoinSymbol(s string) string {
-	if strings.Contains(s, "-") {
-		return s
-	}
-	if strings.HasSuffix(s, "USDT") {
-		return strings.Replace(s, "USDT", "-USDT", 1)
-	}
-	return s
-}
-
-func parseFloat(v any) float64 {
-	switch t := v.(type) {
-	case string:
-		f, _ := strconv.ParseFloat(t, 64)
-		return f
-	case float64:
-		return t
-	default:
-		return 0
-	}
-}
+// -------------------- INIT WS --------------------
 
 func (c *KuCoinCollector) initWS() error {
 	log.Println("[KuCoin] request bullet-public")
@@ -347,8 +330,10 @@ func (c *KuCoinCollector) initWS() error {
 
 	var r struct {
 		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
+			Token        string `json:"token"`
+			PingInterval int64  `json:"pingInterval"`
+			PingTimeout  int64  `json:"pingTimeout"`
+			Instance     []struct {
 				Endpoint string `json:"endpoint"`
 			} `json:"instanceServers"`
 		} `json:"data"`
@@ -358,33 +343,47 @@ func (c *KuCoinCollector) initWS() error {
 		return err
 	}
 
-	if len(r.Data.InstanceServers) == 0 {
+	if len(r.Data.Instance) == 0 {
 		return fmt.Errorf("no ws endpoints")
 	}
 
 	c.wsURL = fmt.Sprintf(
 		"%s?token=%s&connectId=%d",
-		r.Data.InstanceServers[0].Endpoint,
+		r.Data.Instance[0].Endpoint,
 		r.Data.Token,
 		time.Now().UnixNano(),
 	)
 
-	log.Println("[KuCoin] wsURL ready")
+	c.pingInterval = time.Duration(r.Data.PingInterval) * time.Millisecond
+
+	log.Printf("[KuCoin] wsURL ready, pingInterval=%v\n", c.pingInterval)
 	return nil
 }
 
+// -------------------- HELPERS --------------------
 
-026/01/04 11:14:48 [KuCoin] request bullet-public
-2026/01/04 11:14:49 [KuCoin] wsURL ready
-2026/01/04 11:14:49 [KuCoin] connect: wss://ws-api-spot.kucoin.com/?token=2neAiuYvAU61ZDXANAGAsiL4-iAExhsBXZxftpOeh_55i3Ysy2q2LEsEWU64mdzUOPusi34M_wGoSf7iNyEWJ0KEA2VFjuQW8lDQcWAtenfFVr8PU1w7htiYB9J6i9GjsxUuhPw3Blq6rhZlGykT3Vp1phUafnulOOpts-MEmEHtGZR-Jl-TQhvnQN86Zj_-JBvJHl5Vs9Y=.Ys1eOuDpfMSIbRTbZsuetw==&connectId=1767514489208860364
-2026/01/04 11:14:50 [KuCoin] connected
-2026/01/04 11:14:50 [KuCoin] subscribed to 246 symbols
-2026/01/04 11:14:50 [KuCoin] readLoop started
-2026/01/04 11:14:50 [KuCoin] read error: websocket: close 1006 (abnormal closure): unexpected EOF
-2026/01/04 11:14:50 [KuCoin] readLoop stopped
+func normalizeKucoinSymbol(s string) string {
+	if strings.Contains(s, "-") {
+		return s
+	}
+	if strings.HasSuffix(s, "USDT") {
+		return strings.Replace(s, "USDT", "-USDT", 1)
+	}
+	return s
+}
 
-A,B,C,Leg1,Leg2,Leg3
-USDT,MANA,ETH,BUY MANA/USDT,SELL MANA/ETH,SELL ETH/USDT
+func parseFloat(v any) float64 {
+	switch t := v.(type) {
+	case string:
+		f, _ := strconv.ParseFloat(t, 64)
+		return f
+	case float64:
+		return t
+	default:
+		return 0
+	}
+}
+
 
 
 
