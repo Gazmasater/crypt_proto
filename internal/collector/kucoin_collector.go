@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"crypt_proto/internal/market"
@@ -20,38 +19,27 @@ import (
 type KuCoinCollector struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
-	conn     *websocket.Conn
 	symbols  []string
-	allowed  map[string]struct{} // whitelist
+	conn     *websocket.Conn
+	wsURL    string
 	lastData map[string]struct {
 		Bid, Ask, BidSize, AskSize float64
 	}
-	mu    sync.Mutex
-	pool  *sync.Pool
-	buf   []byte
-	wsURL string
 }
 
-func NewKuCoinCollector(symbols []string, whitelist []string, pool *sync.Pool) *KuCoinCollector {
+func NewKuCoinCollector(symbols []string) *KuCoinCollector {
 	ctx, cancel := context.WithCancel(context.Background())
-	allowed := make(map[string]struct{}, len(whitelist))
-	for _, s := range whitelist {
-		allowed[market.NormalizeSymbol_Full(s)] = struct{}{}
-	}
 	return &KuCoinCollector{
 		ctx:      ctx,
 		cancel:   cancel,
 		symbols:  symbols,
-		allowed:  allowed,
 		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
-		pool:     pool,
-		buf:      make([]byte, 0, 32),
 	}
 }
 
 func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
-func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
+func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
 	if err := c.initWS(); err != nil {
 		return err
 	}
@@ -66,13 +54,6 @@ func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	// subscribe
 	for _, s := range c.symbols {
 		sym := normalizeKucoinSymbol(s)
-
-		// фильтрация по whitelist
-		if len(c.allowed) > 0 {
-			if _, ok := c.allowed[sym]; !ok {
-				continue
-			}
-		}
 
 		sub := map[string]any{
 			"id":       time.Now().UnixNano(),
@@ -116,7 +97,7 @@ func (c *KuCoinCollector) pingLoop() {
 	}
 }
 
-func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
+func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
 	defer func() {
 		if c.conn != nil {
 			c.conn.Close()
@@ -151,16 +132,9 @@ func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
 			}
 
 			rawsymbol := strings.TrimPrefix(topic, "/market/ticker:")
-			symbol := market.NormalizeSymbol_NoAlloc(rawsymbol, &c.buf)
+			symbol := market.NormalizeSymbol_Full(rawsymbol)
 			if symbol == "" {
 				continue
-			}
-
-			// фильтрация по whitelist
-			if len(c.allowed) > 0 {
-				if _, ok := c.allowed[symbol]; !ok {
-					continue
-				}
 			}
 
 			bid := parseFloat(data["bestBid"])
@@ -172,27 +146,25 @@ func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
 				continue
 			}
 
-			// дедупликация
-			c.mu.Lock()
-			last, exists := c.lastData[symbol]
-			if exists && last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
-				c.mu.Unlock()
-				continue
+			// фильтрация повторов
+			if last, exists := c.lastData[symbol]; exists {
+				if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+					continue // ничего не поменялось — пропускаем
+				}
 			}
-			c.lastData[symbol] = struct{ Bid, Ask, BidSize, AskSize float64 }{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
-			c.mu.Unlock()
 
-			// объект из пула
-			md := c.pool.Get().(*models.MarketData)
-			md.Exchange = "KuCoin"
-			md.Symbol = symbol
-			md.Bid = bid
-			md.Ask = ask
-			md.BidSize = bidSize
-			md.AskSize = askSize
-			md.Timestamp = time.Now().UnixMilli()
+			// обновляем последние данные
+			c.lastData[symbol] = struct {
+				Bid, Ask, BidSize, AskSize float64
+			}{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
 
-			out <- md
+			out <- models.MarketData{
+				Exchange: "KuCoin",
+				Symbol:   symbol,
+				Bid:      bid,
+				Ask:      ask,
+				// при желании можно добавить объёмы
+			}
 		}
 	}
 }
@@ -218,6 +190,7 @@ func parseFloat(v any) float64 {
 		return 0
 	}
 }
+
 func (c *KuCoinCollector) initWS() error {
 	req, err := http.NewRequest(
 		"POST",
