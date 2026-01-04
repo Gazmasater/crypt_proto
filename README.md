@@ -296,4 +296,28 @@ func parseFloat(v any) float64 {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use *md (variable of struct type models.MarketData) as *models.MarketData value in send",
+	"source": "compiler",
+	"startLineNumber": 208,
+	"startColumn": 11,
+	"endLineNumber": 208,
+	"endColumn": 14,
+	"origin": "extHost1"
+}]
+
+
 
