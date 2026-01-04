@@ -406,6 +406,17 @@ func parseFloat(v any) float64 {
 
 
 
+2026/01/04 16:15:11 [KuCoin] init WS
+2026/01/04 16:15:11 [KuCoin] wsURL ready, pingInterval=18s
+2026/01/04 16:15:11 [KuCoin] connect: wss://ws-api-spot.kucoin.com/?token=2neAiuYvAU61ZDXANAGAsiL4-iAExhsBXZxftpOeh_55i3Ysy2q2LEsEWU64mdzUOPusi34M_wGoSf7iNyEWJ2llAY9QVsncDXU8rWaGJhfpbKAEnMjLGNiYB9J6i9GjsxUuhPw3Blq6rhZlGykT3Vp1phUafnulOOpts-MEmEHtGZR-Jl-TQolZlECGzgLKJBvJHl5Vs9Y=.5SA9NFY2vSmQGIKqP-MUPw==&connectId=1767532511707894070
+2026/01/04 16:15:12 [KuCoin] connected
+2026/01/04 16:15:12 [KuCoin] welcome received
+2026/01/04 16:15:12 [KuCoin] subscribed: /market/ticker:all
+2026/01/04 16:15:12 [KuCoin] pingLoop started (18s)
+2026/01/04 16:15:12 [KuCoin] readLoop started
+
+
+
 
 
 
