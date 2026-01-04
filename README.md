@@ -120,7 +120,8 @@ func NewKuCoinCollector(
 		ctx:     ctx,
 		cancel:  cancel,
 		symbols: symbols,
-		allowed: allowed,
+		//allowed: allowed,
+		allowed: nil,
 		last:    make(map[string]lastTick),
 		pool:    pool,
 		buf:     make([]byte, 0, 32),
@@ -179,11 +180,11 @@ func (c *KuCoinCollector) subscribe() error {
 		}
 
 		msg := map[string]any{
-			"id":              fmt.Sprintf("sub-%s", sym),
-			"type":            "subscribe",
-			"topic":           "/market/ticker:" + sym,
-			"privateChannel":  false,
-			"response":        true,
+			"id":             fmt.Sprintf("sub-%s", sym),
+			"type":           "subscribe",
+			"topic":          "/market/ticker:" + sym,
+			"privateChannel": false,
+			"response":       true,
 		}
 
 		if err := c.conn.WriteJSON(msg); err != nil {
@@ -373,17 +374,17 @@ func (c *KuCoinCollector) initWS() error {
 }
 
 
+026/01/04 11:14:48 [KuCoin] request bullet-public
+2026/01/04 11:14:49 [KuCoin] wsURL ready
+2026/01/04 11:14:49 [KuCoin] connect: wss://ws-api-spot.kucoin.com/?token=2neAiuYvAU61ZDXANAGAsiL4-iAExhsBXZxftpOeh_55i3Ysy2q2LEsEWU64mdzUOPusi34M_wGoSf7iNyEWJ0KEA2VFjuQW8lDQcWAtenfFVr8PU1w7htiYB9J6i9GjsxUuhPw3Blq6rhZlGykT3Vp1phUafnulOOpts-MEmEHtGZR-Jl-TQhvnQN86Zj_-JBvJHl5Vs9Y=.Ys1eOuDpfMSIbRTbZsuetw==&connectId=1767514489208860364
+2026/01/04 11:14:50 [KuCoin] connected
+2026/01/04 11:14:50 [KuCoin] subscribed to 246 symbols
+2026/01/04 11:14:50 [KuCoin] readLoop started
+2026/01/04 11:14:50 [KuCoin] read error: websocket: close 1006 (abnormal closure): unexpected EOF
+2026/01/04 11:14:50 [KuCoin] readLoop stopped
 
-~/myprog/crypt_proto/cmd/arb$ go run .
-2026/01/04 11:08:08 EXCHANGE: kucoin
-2026/01/04 11:08:08 pprof on http://localhost:6060/debug/pprof/
-2026/01/04 11:08:08 Loaded 246 unique symbols from ../exchange/data/kucoin_triangles_usdt.csv
-2026/01/04 11:08:08 [KuCoin] init WS
-2026/01/04 11:08:08 [KuCoin] request bullet-public
-2026/01/04 11:08:09 [KuCoin] wsURL ready
-2026/01/04 11:08:09 [KuCoin] connect: wss://ws-api-spot.kucoin.com/?token=2neAiuYvAU61ZDXANAGAsiL4-iAExhsBXZxftpOeh_55i3Ysy2q2LEsEWU64mdzUOPusi34M_wGoSf7iNyEWJ6-4fSZQDzDy0aXdHOe8xcMTml9TPMOoxNiYB9J6i9GjsxUuhPw3Blq6rhZlGykT3Vp1phUafnulOOpts-MEmEHtGZR-Jl-TQswkYtm9oxbCJBvJHl5Vs9Y=.3VtVTG4wVKBLn8YrQ2j1LQ==&connectId=1767514089223084964
-2026/01/04 11:08:10 [KuCoin] connected
-
+A,B,C,Leg1,Leg2,Leg3
+USDT,MANA,ETH,BUY MANA/USDT,SELL MANA/ETH,SELL ETH/USDT
 
 
 
