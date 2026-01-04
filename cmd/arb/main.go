@@ -67,7 +67,7 @@ func main() {
 		//
 		c = collector.NewOKXCollector(symbols, whitelist, marketDataPool)
 	case "kucoin":
-		c = collector.NewKuCoinCollector(symbols, whitelist, marketDataPool)
+		c = collector.NewKuCoinCollector(marketDataPool)
 	default:
 		log.Fatal("Unknown exchange:", exchange)
 	}
