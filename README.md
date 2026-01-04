@@ -178,3 +178,18 @@ func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
 	}
 }
 
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+2026/01/04 10:33:30 EXCHANGE: kucoin
+2026/01/04 10:33:30 pprof on http://localhost:6060/debug/pprof/
+2026/01/04 10:33:30 Loaded 246 unique symbols from ../exchange/data/kucoin_triangles_usdt.csv
+2026/01/04 10:33:32 [KuCoin] Connected to WS
+2026/01/04 10:33:32 [KuCoin] readLoop started
+2026/01/04 10:33:32 [KuCoin RAW] {"id":"1767512011685881016","type":"welcome"}
+2026/01/04 10:33:32 [KuCoin] skip type: welcome
+2026/01/04 10:33:47 [KuCoin RAW] {"type":"pong","timestamp":1767512027821936}
+2026/01/04 10:33:47 [KuCoin] skip type: pong
+2026/01/04 10:34:03 [KuCoin RAW] {"type":"pong","timestamp":1767512042819729}
+2026/01/04 10:34:03 [KuCoin] skip type: pong
+^C2026/01/04 10:34:07 Stopping collector...
+
