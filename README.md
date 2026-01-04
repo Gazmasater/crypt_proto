@@ -63,6 +63,10 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+2026/01/04 22:54:43 [KuCoin] Subscribed: MANAETH
+2026/01/04 22:54:43 [KuCoin] Subscribed: MANA-USDT
+
+
 package collector
 
 import (
@@ -95,9 +99,9 @@ type KuCoinCollector struct {
 func NewKuCoinCollector(symbols []string) *KuCoinCollector {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &KuCoinCollector{
-		ctx:      ctx,
-		cancel:   cancel,
-		symbols:  symbols,
+		ctx:     ctx,
+		cancel:  cancel,
+		symbols: symbols,
 		lastData: make(map[string]struct {
 			Bid, Ask, BidSize, AskSize float64
 		}),
@@ -106,9 +110,7 @@ func NewKuCoinCollector(symbols []string) *KuCoinCollector {
 
 func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
-//
 // 🔧 ИСПРАВЛЕНО: chan<- *models.MarketData
-//
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	if err := c.initWS(); err != nil {
 		return err
