@@ -75,6 +75,52 @@ func FilterPairsForTriangles(pairs []string, allSymbols map[string]struct {
 	return symbols
 }
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use pairs (variable of type [][2]string) as []string value in argument to FilterPairsForTriangles",
+	"source": "compiler",
+	"startLineNumber": 153,
+	"startColumn": 37,
+	"endLineNumber": 153,
+	"endColumn": 42,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use allSymbols (variable of type []string) as map[string]struct{EnableTrading bool} value in argument to FilterPairsForTriangles",
+	"source": "compiler",
+	"startLineNumber": 153,
+	"startColumn": 44,
+	"endLineNumber": 153,
+	"endColumn": 54,
+	"origin": "extHost1"
+}]
+
 
 
 
