@@ -67,7 +67,7 @@ func main() {
 		//
 		c = collector.NewOKXCollector(symbols, whitelist, marketDataPool)
 	case "kucoin":
-		c = collector.NewKuCoinCollector(marketDataPool)
+		c = collector.KuCoinCollector([]string{"BTCUSDT", "ETHUSDT", "ETHBTC"})
 	default:
 		log.Fatal("Unknown exchange:", exchange)
 	}
