@@ -63,133 +63,45 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
-	defer func() {
-		if c.conn != nil {
-			_ = c.conn.Close()
-		}
-	}()
+func (c *KuCoinCollector) Connect() error {
+	conn, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
+	if err != nil {
+		return err
+	}
 
-	log.Println("[KuCoin] readLoop started")
+	c.conn = conn
+	log.Println("[KuCoin] Connected to WS")
 
-	for {
-		select {
-		case <-c.ctx.Done():
-			log.Println("[KuCoin] context cancelled")
-			return
-		default:
-		}
+	// ВАЖНО: подписка
+	c.subscribe()
 
-		_, msg, err := c.conn.ReadMessage()
-		if err != nil {
-			log.Println("[KuCoin] read error:", err)
-			return
-		}
+	go c.readLoop()
+	return nil
+}
 
-		// 🔍 RAW LOG
-		log.Printf("[KuCoin RAW] %s\n", msg)
 
-		var raw map[string]any
-		if err := json.Unmarshal(msg, &raw); err != nil {
-			log.Println("[KuCoin] json unmarshal error:", err)
-			continue
+func (c *KuCoinCollector) subscribe() {
+	for _, symbol := range c.symbols {
+		topic := "/market/ticker:" + symbol
+
+		msg := map[string]interface{}{
+			"id":              fmt.Sprintf("sub-%s", symbol),
+			"type":            "subscribe",
+			"topic":           topic,
+			"privateChannel":  false,
+			"response":        true,
 		}
 
-		typ, _ := raw["type"].(string)
-		if typ != "message" {
-			log.Println("[KuCoin] skip type:", typ)
-			continue
+		b, _ := json.Marshal(msg)
+
+		log.Printf("[KuCoin SUBSCRIBE] %s", topic)
+
+		if err := c.conn.WriteMessage(websocket.TextMessage, b); err != nil {
+			log.Printf("[KuCoin] subscribe error %s: %v", symbol, err)
 		}
-
-		topic, _ := raw["topic"].(string)
-		if !strings.HasPrefix(topic, "/market/ticker:") {
-			log.Println("[KuCoin] skip topic:", topic)
-			continue
-		}
-
-		data, ok := raw["data"].(map[string]any)
-		if !ok {
-			log.Println("[KuCoin] data is not map")
-			continue
-		}
-
-		rawSymbol := strings.TrimPrefix(topic, "/market/ticker:")
-		symbol := market.NormalizeSymbol_NoAlloc(rawSymbol, &c.buf)
-
-		log.Printf("[KuCoin] symbol raw=%s normalized=%s\n", rawSymbol, symbol)
-
-		if symbol == "" {
-			log.Println("[KuCoin] empty symbol after normalize")
-			continue
-		}
-
-		// whitelist
-		if len(c.allowed) > 0 {
-			if _, ok := c.allowed[symbol]; !ok {
-				log.Println("[KuCoin] symbol not in whitelist:", symbol)
-				continue
-			}
-		}
-
-		bid := parseFloat(data["bestBid"])
-		ask := parseFloat(data["bestAsk"])
-		bidSize := parseFloat(data["sizeBid"])
-		askSize := parseFloat(data["sizeAsk"])
-
-		log.Printf(
-			"[KuCoin] parsed %s bid=%f ask=%f bidSize=%f askSize=%f",
-			symbol, bid, ask, bidSize, askSize,
-		)
-
-		if bid == 0 || ask == 0 {
-			log.Println("[KuCoin] zero bid or ask")
-			continue
-		}
-
-		// ⚠ дедупликация (ПО ЦЕНАМ)
-		c.mu.Lock()
-		last, exists := c.lastData[symbol]
-		if exists && last.Bid == bid && last.Ask == ask {
-			c.mu.Unlock()
-			log.Println("[KuCoin] dedup price:", symbol)
-			continue
-		}
-
-		c.lastData[symbol] = struct {
-			Bid, Ask, BidSize, AskSize float64
-		}{
-			Bid: bid, Ask: ask,
-			BidSize: bidSize, AskSize: askSize,
-		}
-		c.mu.Unlock()
-
-		md := c.pool.Get().(*models.MarketData)
-		md.Exchange = "KuCoin"
-		md.Symbol = symbol
-		md.Bid = bid
-		md.Ask = ask
-		md.BidSize = bidSize
-		md.AskSize = askSize
-		md.Timestamp = time.Now().UnixMilli()
-
-		log.Printf("[KuCoin] PUSH %s bid=%f ask=%f\n", symbol, bid, ask)
-
-		out <- md
 	}
 }
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-2026/01/04 10:33:30 EXCHANGE: kucoin
-2026/01/04 10:33:30 pprof on http://localhost:6060/debug/pprof/
-2026/01/04 10:33:30 Loaded 246 unique symbols from ../exchange/data/kucoin_triangles_usdt.csv
-2026/01/04 10:33:32 [KuCoin] Connected to WS
-2026/01/04 10:33:32 [KuCoin] readLoop started
-2026/01/04 10:33:32 [KuCoin RAW] {"id":"1767512011685881016","type":"welcome"}
-2026/01/04 10:33:32 [KuCoin] skip type: welcome
-2026/01/04 10:33:47 [KuCoin RAW] {"type":"pong","timestamp":1767512027821936}
-2026/01/04 10:33:47 [KuCoin] skip type: pong
-2026/01/04 10:34:03 [KuCoin RAW] {"type":"pong","timestamp":1767512042819729}
-2026/01/04 10:34:03 [KuCoin] skip type: pong
-^C2026/01/04 10:34:07 Stopping collector...
+
 
