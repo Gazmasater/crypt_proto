@@ -269,4 +269,74 @@ func parseFloat(v string) (float64, error) {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredImportedName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredImportedName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: collector.NewKuCoinCollectorFromCSV",
+	"source": "compiler",
+	"startLineNumber": 18,
+	"startColumn": 23,
+	"endLineNumber": 18,
+	"endColumn": 48,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingLitField",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingLitField"
+		}
+	},
+	"severity": 8,
+	"message": "unknown field Price in struct literal of type models.MarketData",
+	"source": "compiler",
+	"startLineNumber": 177,
+	"startColumn": 4,
+	"endLineNumber": 177,
+	"endColumn": 9,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingLitField",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingLitField"
+		}
+	},
+	"severity": 8,
+	"message": "unknown field Time in struct literal of type models.MarketData",
+	"source": "compiler",
+	"startLineNumber": 178,
+	"startColumn": 4,
+	"endLineNumber": 178,
+	"endColumn": 8,
+	"origin": "extHost1"
+}]
+
+
 
