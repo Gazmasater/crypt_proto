@@ -444,4 +444,6 @@ func (c *KuCoinCollector) subscribeBatches(batch int, delay time.Duration) {
 
 
 
+026/01/05 11:32:27 [KuCoin] raw msg: {"id":"1767601946770280831","type":"error","code":400,"data":"topic /market/ticker:BUY XDC-BTC is invalid"}
+
 
