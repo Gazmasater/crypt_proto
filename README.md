@@ -383,3 +383,13 @@ func parseFloat(v any) float64 {
 
 
 
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+2026/01/05 11:11:05 [KuCoin] WS connected
+2026/01/05 11:11:05 [KuCoin] started
+2026/01/05 11:11:05 [Main] KuCoinCollector started. Listening for data...
+2026/01/05 11:11:05 [KuCoin] welcome
+2026/01/05 11:11:05 [KuCoin] subscribing...
+2026/01/05 11:11:07 [KuCoin] read error: websocket: close 1000 (normal): Bye
+
+
+
