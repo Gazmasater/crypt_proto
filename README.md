@@ -68,10 +68,14 @@ package collector
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -87,24 +91,77 @@ type KuCoinCollector struct {
 	wsURL   string
 	symbols []string
 
-	out chan<- *models.MarketData
-	mu  sync.Mutex
+	out  chan<- *models.MarketData
+	last map[string][2]float64
+	mu   sync.Mutex
 }
 
-func NewKuCoinCollector(symbols []string) *KuCoinCollector {
+/* ================= CSV ================= */
+
+func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
+	symbols, err := readPairsFromCSV(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(symbols) == 0 {
+		return nil, fmt.Errorf("no symbols from csv")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &KuCoinCollector{
 		ctx:     ctx,
 		cancel:  cancel,
-		wsURL:   "wss://ws-api-spot.kucoin.com/?token=public",
 		symbols: symbols,
-	}
+		last:    make(map[string][2]float64),
+	}, nil
 }
 
-func (c *KuCoinCollector) Name() string {
-	return "kucoin"
+func readPairsFromCSV(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	rows, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	set := make(map[string]struct{})
+	for _, row := range rows[1:] {
+		for i := 3; i <= 5 && i < len(row); i++ {
+			p := parseLeg(row[i])
+			if p != "" {
+				set[p] = struct{}{}
+			}
+		}
+	}
+
+	var res []string
+	for k := range set {
+		res = append(res, k)
+	}
+	return res, nil
 }
+
+func parseLeg(s string) string {
+	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
+	if len(parts) < 2 {
+		return ""
+	}
+	p := strings.Split(parts[1], "/")
+	if len(p) != 2 {
+		return ""
+	}
+	return p[0] + "-" + p[1]
+}
+
+/* ================= PUBLIC ================= */
+
+func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	c.out = out
@@ -113,13 +170,14 @@ func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 		return err
 	}
 
-	if err := c.subscribe(); err != nil {
-		return err
+	for _, s := range c.symbols {
+		c.subscribe(s)
 	}
 
 	go c.readLoop()
 	go c.pingLoop()
 
+	log.Println("[KuCoin] started")
 	return nil
 }
 
@@ -131,69 +189,79 @@ func (c *KuCoinCollector) Stop() error {
 	return nil
 }
 
-//
-// ------------------- WS INIT -------------------
-//
+/* ================= WS INIT ================= */
 
 func (c *KuCoinCollector) initWS() error {
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
+	req, _ := http.NewRequest(
+		"POST",
+		"https://api.kucoin.com/api/v1/bullet-public",
+		nil,
+	)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Data struct {
+			Token string `json:"token"`
+			InstanceServers []struct {
+				Endpoint string `json:"endpoint"`
+			} `json:"instanceServers"`
+		} `json:"data"`
 	}
 
-	headers := http.Header{}
-	headers.Set("Origin", "https://www.kucoin.com")
-	headers.Set("User-Agent", "Mozilla/5.0")
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return err
+	}
 
-	conn, _, err := dialer.Dial(c.wsURL, headers)
+	c.wsURL = fmt.Sprintf(
+		"%s?token=%s&connectId=%d",
+		r.Data.InstanceServers[0].Endpoint,
+		r.Data.Token,
+		time.Now().UnixNano(),
+	)
+
+	conn, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
 	if err != nil {
-		return fmt.Errorf("kucoin ws dial error: %w", err)
+		return err
 	}
 
 	c.conn = conn
-	log.Println("[KUCOIN] WS connected")
-
+	log.Println("[KuCoin] WS connected")
 	return nil
 }
 
-//
-// ------------------- SUBSCRIBE -------------------
-//
+/* ================= SUBSCRIBE ================= */
 
-func (c *KuCoinCollector) subscribe() error {
-	msg := map[string]interface{}{
-		"id":              "sub-ticker",
-		"type":            "subscribe",
-		"topic":           "/market/ticker:" + joinSymbols(c.symbols),
-		"privateChannel":  false,
-		"response":        true,
-	}
-
-	return c.conn.WriteJSON(msg)
+func (c *KuCoinCollector) subscribe(symbol string) {
+	_ = c.conn.WriteJSON(map[string]any{
+		"id":       time.Now().UnixNano(),
+		"type":     "subscribe",
+		"topic":    "/market/ticker:" + symbol,
+		"response": true,
+	})
 }
 
-//
-// ------------------- PING -------------------
-//
+/* ================= LOOPS ================= */
 
 func (c *KuCoinCollector) pingLoop() {
-	ticker := time.NewTicker(25 * time.Second)
-	defer ticker.Stop()
+	t := time.NewTicker(20 * time.Second)
+	defer t.Stop()
 
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-t.C:
 			_ = c.conn.WriteJSON(map[string]string{
 				"type": "ping",
 			})
 		}
 	}
 }
-
-//
-// ------------------- READ -------------------
-//
 
 func (c *KuCoinCollector) readLoop() {
 	for {
@@ -203,140 +271,75 @@ func (c *KuCoinCollector) readLoop() {
 		default:
 			_, msg, err := c.conn.ReadMessage()
 			if err != nil {
-				log.Printf("[KUCOIN] read error: %v", err)
+				log.Println("[KuCoin] read error:", err)
 				return
 			}
-			c.handleMessage(msg)
+			c.handle(msg)
 		}
 	}
 }
 
-//
-// ------------------- HANDLE -------------------
-//
+/* ================= HANDLE ================= */
 
-func (c *KuCoinCollector) handleMessage(msg []byte) {
-	var raw map[string]interface{}
+func (c *KuCoinCollector) handle(msg []byte) {
+	var raw map[string]any
 	if err := json.Unmarshal(msg, &raw); err != nil {
 		return
 	}
 
-	switch raw["type"] {
-	case "welcome", "pong", "ack":
+	if raw["type"] != "message" {
 		return
-	case "message":
-		data, ok := raw["data"].(map[string]interface{})
-		if !ok {
-			return
-		}
+	}
 
-		symbol, _ := data["symbol"].(string)
-		priceStr, _ := data["price"].(string)
-		price, err := parseFloat(priceStr)
-		if err != nil {
-			return
-		}
+	data, ok := raw["data"].(map[string]any)
+	if !ok {
+		return
+	}
 
-		c.out <- &models.MarketData{
-			Exchange: c.Name(),
-			Symbol:   symbol,
-			Price:    price,
-			Time:     time.Now(),
-		}
+	bid := parseFloat(data["bestBid"])
+	ask := parseFloat(data["bestAsk"])
+	if bid == 0 || ask == 0 {
+		return
+	}
+
+	symbol := normalize(data["symbol"].(string))
+
+	c.mu.Lock()
+	last := c.last[symbol]
+	if last[0] == bid && last[1] == ask {
+		c.mu.Unlock()
+		return
+	}
+	c.last[symbol] = [2]float64{bid, ask}
+	c.mu.Unlock()
+
+	c.out <- &models.MarketData{
+		Exchange: c.Name(),
+		Symbol:   symbol,
+		Bid:      bid,
+		Ask:      ask,
 	}
 }
 
-//
-// ------------------- HELPERS -------------------
-//
+/* ================= HELPERS ================= */
 
-func joinSymbols(symbols []string) string {
-	res := ""
-	for i, s := range symbols {
-		if i > 0 {
-			res += ","
-		}
-		res += s
+func normalize(s string) string {
+	p := strings.Split(s, "-")
+	return p[0] + "/" + p[1]
+}
+
+func parseFloat(v any) float64 {
+	switch t := v.(type) {
+	case string:
+		f, _ := strconv.ParseFloat(t, 64)
+		return f
+	case float64:
+		return t
+	default:
+		return 0
 	}
-	return res
 }
 
-func parseFloat(v string) (float64, error) {
-	var f float64
-	_, err := fmt.Sscan(v, &f)
-	return f, err
-}
-
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredImportedName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredImportedName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: collector.NewKuCoinCollectorFromCSV",
-	"source": "compiler",
-	"startLineNumber": 18,
-	"startColumn": 23,
-	"endLineNumber": 18,
-	"endColumn": 48,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingLitField",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingLitField"
-		}
-	},
-	"severity": 8,
-	"message": "unknown field Price in struct literal of type models.MarketData",
-	"source": "compiler",
-	"startLineNumber": 177,
-	"startColumn": 4,
-	"endLineNumber": 177,
-	"endColumn": 9,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingLitField",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingLitField"
-		}
-	},
-	"severity": 8,
-	"message": "unknown field Time in struct literal of type models.MarketData",
-	"source": "compiler",
-	"startLineNumber": 178,
-	"startColumn": 4,
-	"endLineNumber": 178,
-	"endColumn": 8,
-	"origin": "extHost1"
-}]
 
 
 
