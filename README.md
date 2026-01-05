@@ -63,14 +63,14 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-2026/01/05 00:03:50 [KuCoin] Connected to WS
-2026/01/05 00:03:50 [KuCoin] Subscribed: MANA-USDT
-2026/01/05 00:03:50 [KuCoin] Subscribed: ETH-USDT
 
 
-A,B,C,Leg1,Leg2,Leg3
-USDT,MANA,ETH,BUY MANA/USDT,SELL MANA/ETH,SELL ETH/USDT
+2026/01/05 03:25:27 [KuCoin] Subscribed: AAVE-BTC
+2026/01/05 03:25:27 [KuCoin] Subscribed: BNB-USDT
+2026/01/05 03:25:27 [KuCoin] Subscribed: XDC-ETH
+2026/01/05 03:25:27 [Main] KuCoinCollector started. Listening for data...
+2026/01/05 03:25:27 [KuCoin] read error: websocket: close 1006 (abnormal closure): unexpected EOF
+
 
 
 package collector
@@ -190,7 +190,7 @@ func FetchKuCoinSymbols() ([]string, error) {
 
 	symbols := []string{}
 	for _, s := range result.Data {
-		if s.EnableTrading && s.Market == "USDS" { // фильтр спота
+		if s.EnableTrading { // фильтр спота
 			symbols = append(symbols, s.Symbol)
 		}
 	}
