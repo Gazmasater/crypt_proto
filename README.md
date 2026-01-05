@@ -64,17 +64,209 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-026/01/05 03:46:09 [KuCoin] Subscribed: ZEC-BTC
-2026/01/05 03:46:09 [KuCoin] Subscribed: XRP-KCS
-2026/01/05 03:46:09 [KuCoin] Subscribed: ENJ-ETH
-2026/01/05 03:46:09 [KuCoin] Subscribed: VRA-BTC
-2026/01/05 03:46:09 [KuCoin] Subscribed: IOTA-USDT
-2026/01/05 03:46:09 [KuCoin] Subscribed: XLM-USDT
-2026/01/05 03:46:09 [KuCoin] Subscribed: VSYS-USDT
-2026/01/05 03:46:09 [KuCoin] Subscribed: KRL-BTC
-2026/01/05 03:46:09 [KuCoin] Subscribed: USDT-DAI
-2026/01/05 03:46:09 [Main] KuCoinCollector started. Listening for data...
-2026/01/05 03:46:10 [KuCoin] read error: websocket: close 1006 (abnormal closure): unexpected EOF
+package collector
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"sync"
+	"time"
+
+	"crypt_proto/pkg/models"
+
+	"github.com/gorilla/websocket"
+)
+
+type KuCoinCollector struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	conn    *websocket.Conn
+	wsURL   string
+	symbols []string
+
+	out chan<- *models.MarketData
+	mu  sync.Mutex
+}
+
+func NewKuCoinCollector(symbols []string) *KuCoinCollector {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	return &KuCoinCollector{
+		ctx:     ctx,
+		cancel:  cancel,
+		wsURL:   "wss://ws-api-spot.kucoin.com/?token=public",
+		symbols: symbols,
+	}
+}
+
+func (c *KuCoinCollector) Name() string {
+	return "kucoin"
+}
+
+func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
+	c.out = out
+
+	if err := c.initWS(); err != nil {
+		return err
+	}
+
+	if err := c.subscribe(); err != nil {
+		return err
+	}
+
+	go c.readLoop()
+	go c.pingLoop()
+
+	return nil
+}
+
+func (c *KuCoinCollector) Stop() error {
+	c.cancel()
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
+
+//
+// ------------------- WS INIT -------------------
+//
+
+func (c *KuCoinCollector) initWS() error {
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+	}
+
+	headers := http.Header{}
+	headers.Set("Origin", "https://www.kucoin.com")
+	headers.Set("User-Agent", "Mozilla/5.0")
+
+	conn, _, err := dialer.Dial(c.wsURL, headers)
+	if err != nil {
+		return fmt.Errorf("kucoin ws dial error: %w", err)
+	}
+
+	c.conn = conn
+	log.Println("[KUCOIN] WS connected")
+
+	return nil
+}
+
+//
+// ------------------- SUBSCRIBE -------------------
+//
+
+func (c *KuCoinCollector) subscribe() error {
+	msg := map[string]interface{}{
+		"id":              "sub-ticker",
+		"type":            "subscribe",
+		"topic":           "/market/ticker:" + joinSymbols(c.symbols),
+		"privateChannel":  false,
+		"response":        true,
+	}
+
+	return c.conn.WriteJSON(msg)
+}
+
+//
+// ------------------- PING -------------------
+//
+
+func (c *KuCoinCollector) pingLoop() {
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			_ = c.conn.WriteJSON(map[string]string{
+				"type": "ping",
+			})
+		}
+	}
+}
+
+//
+// ------------------- READ -------------------
+//
+
+func (c *KuCoinCollector) readLoop() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			_, msg, err := c.conn.ReadMessage()
+			if err != nil {
+				log.Printf("[KUCOIN] read error: %v", err)
+				return
+			}
+			c.handleMessage(msg)
+		}
+	}
+}
+
+//
+// ------------------- HANDLE -------------------
+//
+
+func (c *KuCoinCollector) handleMessage(msg []byte) {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(msg, &raw); err != nil {
+		return
+	}
+
+	switch raw["type"] {
+	case "welcome", "pong", "ack":
+		return
+	case "message":
+		data, ok := raw["data"].(map[string]interface{})
+		if !ok {
+			return
+		}
+
+		symbol, _ := data["symbol"].(string)
+		priceStr, _ := data["price"].(string)
+		price, err := parseFloat(priceStr)
+		if err != nil {
+			return
+		}
+
+		c.out <- &models.MarketData{
+			Exchange: c.Name(),
+			Symbol:   symbol,
+			Price:    price,
+			Time:     time.Now(),
+		}
+	}
+}
+
+//
+// ------------------- HELPERS -------------------
+//
+
+func joinSymbols(symbols []string) string {
+	res := ""
+	for i, s := range symbols {
+		if i > 0 {
+			res += ","
+		}
+		res += s
+	}
+	return res
+}
+
+func parseFloat(v string) (float64, error) {
+	var f float64
+	_, err := fmt.Sscan(v, &f)
+	return f, err
+}
+
 
 
 
