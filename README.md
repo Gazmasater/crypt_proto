@@ -96,7 +96,7 @@ type KuCoinCollector struct {
 	mu   sync.Mutex
 }
 
-/* ================= CSV ================= */
+/* ================= CONSTRUCTOR ================= */
 
 func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 	symbols, err := readPairsFromCSV(path)
@@ -117,51 +117,9 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 	}, nil
 }
 
-func readPairsFromCSV(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	rows, err := r.ReadAll()
-	if err != nil {
-		return nil, err
-	}
-
-	set := make(map[string]struct{})
-	for _, row := range rows[1:] {
-		for i := 3; i <= 5 && i < len(row); i++ {
-			p := parseLeg(row[i])
-			if p != "" {
-				set[p] = struct{}{}
-			}
-		}
-	}
-
-	var res []string
-	for k := range set {
-		res = append(res, k)
-	}
-	return res, nil
-}
-
-func parseLeg(s string) string {
-	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
-	if len(parts) < 2 {
-		return ""
-	}
-	p := strings.Split(parts[1], "/")
-	if len(p) != 2 {
-		return ""
-	}
-	return p[0] + "-" + p[1]
-}
-
-/* ================= PUBLIC ================= */
-
 func (c *KuCoinCollector) Name() string { return "KuCoin" }
+
+/* ================= START / STOP ================= */
 
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	c.out = out
@@ -175,7 +133,6 @@ func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	}
 
 	go c.readLoop()
-	go c.pingLoop()
 
 	log.Println("[KuCoin] started")
 	return nil
@@ -229,6 +186,13 @@ func (c *KuCoinCollector) initWS() error {
 		return err
 	}
 
+	// защита от таймаута
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
 	c.conn = conn
 	log.Println("[KuCoin] WS connected")
 	return nil
@@ -243,25 +207,10 @@ func (c *KuCoinCollector) subscribe(symbol string) {
 		"topic":    "/market/ticker:" + symbol,
 		"response": true,
 	})
+	log.Println("[KuCoin] Subscribed:", symbol)
 }
 
-/* ================= LOOPS ================= */
-
-func (c *KuCoinCollector) pingLoop() {
-	t := time.NewTicker(20 * time.Second)
-	defer t.Stop()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-t.C:
-			_ = c.conn.WriteJSON(map[string]string{
-				"type": "ping",
-			})
-		}
-	}
-}
+/* ================= READ LOOP ================= */
 
 func (c *KuCoinCollector) readLoop() {
 	for {
@@ -274,20 +223,35 @@ func (c *KuCoinCollector) readLoop() {
 				log.Println("[KuCoin] read error:", err)
 				return
 			}
-			c.handle(msg)
+			c.handleMessage(msg)
 		}
 	}
 }
 
 /* ================= HANDLE ================= */
 
-func (c *KuCoinCollector) handle(msg []byte) {
+func (c *KuCoinCollector) handleMessage(msg []byte) {
 	var raw map[string]any
 	if err := json.Unmarshal(msg, &raw); err != nil {
 		return
 	}
 
-	if raw["type"] != "message" {
+	switch raw["type"] {
+
+	case "welcome", "ack":
+		return
+
+	case "ping":
+		// 🔥 ОБЯЗАТЕЛЬНО pong с тем же id
+		_ = c.conn.WriteJSON(map[string]any{
+			"id":   raw["id"],
+			"type": "pong",
+		})
+		return
+
+	case "message":
+		// обработка ниже
+	default:
 		return
 	}
 
@@ -302,7 +266,11 @@ func (c *KuCoinCollector) handle(msg []byte) {
 		return
 	}
 
-	symbol := normalize(data["symbol"].(string))
+	symbolRaw, ok := data["symbol"].(string)
+	if !ok {
+		return
+	}
+	symbol := normalize(symbolRaw)
 
 	c.mu.Lock()
 	last := c.last[symbol]
@@ -319,6 +287,50 @@ func (c *KuCoinCollector) handle(msg []byte) {
 		Bid:      bid,
 		Ask:      ask,
 	}
+}
+
+/* ================= CSV ================= */
+
+func readPairsFromCSV(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	rows, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	set := make(map[string]struct{})
+	for _, row := range rows[1:] {
+		for i := 3; i <= 5 && i < len(row); i++ {
+			p := parseLeg(row[i])
+			if p != "" {
+				set[p] = struct{}{}
+			}
+		}
+	}
+
+	var res []string
+	for k := range set {
+		res = append(res, k)
+	}
+	return res, nil
+}
+
+func parseLeg(s string) string {
+	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
+	if len(parts) < 2 {
+		return ""
+	}
+	p := strings.Split(parts[1], "/")
+	if len(p) != 2 {
+		return ""
+	}
+	return p[0] + "-" + p[1]
 }
 
 /* ================= HELPERS ================= */
@@ -339,7 +351,5 @@ func parseFloat(v any) float64 {
 		return 0
 	}
 }
-
-
 
 
