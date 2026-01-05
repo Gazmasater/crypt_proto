@@ -88,8 +88,8 @@ type KuCoinCollector struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	conn   *websocket.Conn
-	wsURL  string
+	conn    *websocket.Conn
+	wsURL   string
 	symbols []string
 
 	last map[string][2]float64
@@ -179,12 +179,6 @@ func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 		return err
 	}
 
-	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		return nil
-	})
-
 	c.conn = conn
 	log.Println("[KuCoin] WS connected")
 
@@ -196,7 +190,6 @@ func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 		c.subscribe(s)
 	}
 
-	go c.pingLoop()
 	go c.readLoop(out)
 
 	return nil
@@ -224,7 +217,7 @@ func (c *KuCoinCollector) initWS() error {
 
 	var r struct {
 		Data struct {
-			Token string `json:"token"`
+			Token           string `json:"token"`
 			InstanceServers []struct {
 				Endpoint string `json:"endpoint"`
 			} `json:"instanceServers"`
@@ -273,24 +266,7 @@ func (c *KuCoinCollector) subscribe(symbol string) {
 	log.Println("[KuCoin] Subscribed:", symbol)
 }
 
-/* ================= LOOPS ================= */
-
-func (c *KuCoinCollector) pingLoop() {
-	t := time.NewTicker(10 * time.Second)
-	defer t.Stop()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-t.C:
-			_ = c.conn.WriteJSON(map[string]any{
-				"id":   time.Now().UnixNano(),
-				"type": "ping",
-			})
-		}
-	}
-}
+/* ================= READ LOOP ================= */
 
 func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
 	for {
@@ -310,8 +286,20 @@ func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
 			}
 
 			switch raw["type"] {
+
+			case "welcome":
+				continue
+
+			case "ping":
+				_ = c.conn.WriteJSON(map[string]any{
+					"id":   raw["id"],
+					"type": "pong",
+				})
+				continue
+
 			case "pong", "ack":
 				continue
+
 			case "message":
 				c.handleTicker(raw, out)
 			}
@@ -368,16 +356,6 @@ func parseFloat(v any) float64 {
 		return 0
 	}
 }
-
-
-026/01/05 03:35:06 [KuCoin] Subscribed: RSR-BTC
-2026/01/05 03:35:06 [KuCoin] Subscribed: KNC-USDT
-2026/01/05 03:35:06 [KuCoin] Subscribed: AAVE-USDT
-2026/01/05 03:35:06 [KuCoin] Subscribed: USDT-BRL
-2026/01/05 03:35:06 [KuCoin] Subscribed: XDC-ETH
-2026/01/05 03:35:06 [KuCoin] Subscribed: MOVR-ETH
-2026/01/05 03:35:06 [Main] KuCoinCollector started. Listening for data...
-2026/01/05 03:35:07 [KuCoin] read error: websocket: close 1006 (abnormal closure): unexpected EOF
 
 
 
