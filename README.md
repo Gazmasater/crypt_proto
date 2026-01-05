@@ -206,7 +206,7 @@ func (c *KuCoinCollector) initWS() error {
 
 	var r struct {
 		Data struct {
-			Token string `json:"token"`
+			Token           string `json:"token"`
 			InstanceServers []struct {
 				Endpoint string `json:"endpoint"`
 			} `json:"instanceServers"`
