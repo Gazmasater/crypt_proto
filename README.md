@@ -370,4 +370,15 @@ func parseFloat(v any) float64 {
 }
 
 
+026/01/05 03:35:06 [KuCoin] Subscribed: RSR-BTC
+2026/01/05 03:35:06 [KuCoin] Subscribed: KNC-USDT
+2026/01/05 03:35:06 [KuCoin] Subscribed: AAVE-USDT
+2026/01/05 03:35:06 [KuCoin] Subscribed: USDT-BRL
+2026/01/05 03:35:06 [KuCoin] Subscribed: XDC-ETH
+2026/01/05 03:35:06 [KuCoin] Subscribed: MOVR-ETH
+2026/01/05 03:35:06 [Main] KuCoinCollector started. Listening for data...
+2026/01/05 03:35:07 [KuCoin] read error: websocket: close 1006 (abnormal closure): unexpected EOF
+
+
+
 
