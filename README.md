@@ -84,16 +84,22 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+/* ================= STRUCT ================= */
+
 type KuCoinCollector struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	conn    *websocket.Conn
-	wsURL   string
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	conn   *websocket.Conn
+	wsURL  string
 	symbols []string
 
-	out  chan<- *models.MarketData
+	out chan<- *models.MarketData
+
 	last map[string][2]float64
 	mu   sync.Mutex
+
+	ready bool
 }
 
 /* ================= CONSTRUCTOR ================= */
@@ -104,7 +110,7 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 		return nil, err
 	}
 	if len(symbols) == 0 {
-		return nil, fmt.Errorf("no symbols from csv")
+		return nil, fmt.Errorf("no symbols")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -117,9 +123,9 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 	}, nil
 }
 
-func (c *KuCoinCollector) Name() string { return "KuCoin" }
+/* ================= INTERFACE ================= */
 
-/* ================= START / STOP ================= */
+func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	c.out = out
@@ -128,11 +134,8 @@ func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 		return err
 	}
 
-	for _, s := range c.symbols {
-		c.subscribe(s)
-	}
-
 	go c.readLoop()
+	go c.subscribeBatches(15, 400*time.Millisecond)
 
 	log.Println("[KuCoin] started")
 	return nil
@@ -186,7 +189,7 @@ func (c *KuCoinCollector) initWS() error {
 		return err
 	}
 
-	// защита от таймаута
+	// deadlines
 	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -200,14 +203,36 @@ func (c *KuCoinCollector) initWS() error {
 
 /* ================= SUBSCRIBE ================= */
 
-func (c *KuCoinCollector) subscribe(symbol string) {
-	_ = c.conn.WriteJSON(map[string]any{
-		"id":       time.Now().UnixNano(),
-		"type":     "subscribe",
-		"topic":    "/market/ticker:" + symbol,
-		"response": true,
-	})
-	log.Println("[KuCoin] Subscribed:", symbol)
+func (c *KuCoinCollector) subscribeBatches(batch int, delay time.Duration) {
+	// ждём welcome
+	for !c.ready {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	log.Println("[KuCoin] subscribing...")
+
+	for i := 0; i < len(c.symbols); i += batch {
+		end := i + batch
+		if end > len(c.symbols) {
+			end = len(c.symbols)
+		}
+
+		for _, s := range c.symbols[i:end] {
+			_ = c.conn.WriteJSON(map[string]any{
+				"id":       time.Now().UnixNano(),
+				"type":     "subscribe",
+				"topic":    "/market/ticker:" + s,
+				"response": true,
+			})
+		}
+
+		time.Sleep(delay)
+	}
 }
 
 /* ================= READ LOOP ================= */
@@ -223,14 +248,14 @@ func (c *KuCoinCollector) readLoop() {
 				log.Println("[KuCoin] read error:", err)
 				return
 			}
-			c.handleMessage(msg)
+			c.handle(msg)
 		}
 	}
 }
 
 /* ================= HANDLE ================= */
 
-func (c *KuCoinCollector) handleMessage(msg []byte) {
+func (c *KuCoinCollector) handle(msg []byte) {
 	var raw map[string]any
 	if err := json.Unmarshal(msg, &raw); err != nil {
 		return
@@ -238,11 +263,15 @@ func (c *KuCoinCollector) handleMessage(msg []byte) {
 
 	switch raw["type"] {
 
-	case "welcome", "ack":
+	case "welcome":
+		c.ready = true
+		log.Println("[KuCoin] welcome")
+		return
+
+	case "ack":
 		return
 
 	case "ping":
-		// 🔥 ОБЯЗАТЕЛЬНО pong с тем же id
 		_ = c.conn.WriteJSON(map[string]any{
 			"id":   raw["id"],
 			"type": "pong",
@@ -250,7 +279,7 @@ func (c *KuCoinCollector) handleMessage(msg []byte) {
 		return
 
 	case "message":
-		// обработка ниже
+		// continue
 	default:
 		return
 	}
@@ -266,11 +295,11 @@ func (c *KuCoinCollector) handleMessage(msg []byte) {
 		return
 	}
 
-	symbolRaw, ok := data["symbol"].(string)
+	sym, ok := data["symbol"].(string)
 	if !ok {
 		return
 	}
-	symbol := normalize(symbolRaw)
+	symbol := normalize(sym)
 
 	c.mu.Lock()
 	last := c.last[symbol]
@@ -351,5 +380,6 @@ func parseFloat(v any) float64 {
 		return 0
 	}
 }
+
 
 
