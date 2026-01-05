@@ -395,5 +395,11 @@ func parseFloat(v any) float64 {
 }
 
 
+2026/01/05 11:20:38 [KuCoin] WS connected
+2026/01/05 11:20:38 [KuCoin] started
+2026/01/05 11:20:38 [Main] KuCoinCollector started. Listening for data...
+2026/01/05 11:20:38 [KuCoin] welcome
+2026/01/05 11:20:38 [KuCoin] subscribing
+
 
 
