@@ -2,19 +2,23 @@ package collector
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"crypt_proto/internal/market"
 	"crypt_proto/pkg/models"
 
 	"github.com/gorilla/websocket"
 )
+
+// ------------------- Структуры -------------------
 
 type KuCoinCollector struct {
 	ctx      context.Context
@@ -25,21 +29,162 @@ type KuCoinCollector struct {
 	lastData map[string]struct {
 		Bid, Ask, BidSize, AskSize float64
 	}
+	mu sync.Mutex
 }
 
-func NewKuCoinCollector(symbols []string) *KuCoinCollector {
+// ------------------- Чтение CSV -------------------
+
+func readPairsFromCSV(csvFile string) ([][2]string, error) {
+	file, err := os.Open(csvFile)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	r := csv.NewReader(file)
+	rows, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(rows) < 2 {
+		return nil, nil
+	}
+
+	pairsMap := make(map[string][2]string)
+	for _, row := range rows[1:] { // пропускаем заголовок
+		if len(row) < 6 {
+			continue
+		}
+		for i := 3; i <= 5; i++ { // Leg1..Leg3
+			pair := splitLegPair(row[i])
+			if pair[0] != "" && pair[1] != "" {
+				key := pair[0] + "-" + pair[1] // формат KuCoin BASE-QUOTE
+				pairsMap[key] = pair
+			}
+		}
+	}
+
+	pairs := make([][2]string, 0, len(pairsMap))
+	for _, p := range pairsMap {
+		pairs = append(pairs, p)
+	}
+	return pairs, nil
+}
+
+func splitLegPair(s string) [2]string {
+	s = strings.ToUpper(strings.TrimSpace(s))
+	fields := strings.Fields(s)
+	if len(fields) < 2 {
+		return [2]string{}
+	}
+	parts := strings.Split(fields[1], "/")
+	if len(parts) != 2 {
+		return [2]string{}
+	}
+	return [2]string{parts[0], parts[1]}
+}
+
+// ------------------- API KuCoin -------------------
+
+type KuCoinSymbol struct {
+	Symbol        string `json:"symbol"`
+	EnableTrading bool   `json:"enableTrading"`
+	Market        string `json:"market"`
+}
+
+func FetchKuCoinSymbols() ([]string, error) {
+	resp, err := http.Get("https://api.kucoin.com/api/v2/symbols")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Code string         `json:"code"`
+		Data []KuCoinSymbol `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	if result.Code != "200000" {
+		return nil, fmt.Errorf("kucoin API error: %s", result.Code)
+	}
+
+	symbols := []string{}
+	for _, s := range result.Data {
+		if s.EnableTrading { // фильтр спота
+			symbols = append(symbols, s.Symbol)
+		}
+	}
+
+	return symbols, nil
+}
+
+// ------------------- Фильтрация по треугольникам -------------------
+
+func FilterPairsForTriangles(pairs []string, allSymbols map[string]struct {
+	EnableTrading bool
+}) []string {
+	var symbols []string
+	for _, s := range pairs {
+		if info, ok := allSymbols[s]; ok && info.EnableTrading {
+			symbols = append(symbols, s)
+		}
+	}
+	return symbols
+}
+
+// ------------------- Создание коллектора -------------------
+
+func NewKuCoinCollectorFromCSV(csvFile string) (*KuCoinCollector, error) {
+	// 1. Получаем пары из CSV
+	pairs2D, err := readPairsFromCSV(csvFile)
+	if err != nil {
+		return nil, err
+	}
+
+	// Преобразуем пары [2]string -> "BASE-QUOTE"
+	pairs := make([]string, 0, len(pairs2D))
+	for _, p := range pairs2D {
+		pairs = append(pairs, p[0]+"-"+p[1])
+	}
+
+	// 2. Получаем все символы KuCoin
+	rawSymbols, err := FetchKuCoinSymbols()
+	if err != nil {
+		return nil, err
+	}
+
+	// Преобразуем в map для фильтра
+	allSymbols := make(map[string]struct{ EnableTrading bool })
+	for _, s := range rawSymbols {
+		allSymbols[s] = struct{ EnableTrading bool }{EnableTrading: true}
+	}
+
+	// 3. Фильтруем
+	symbols := FilterPairsForTriangles(pairs, allSymbols)
+	if len(symbols) == 0 {
+		return nil, fmt.Errorf("no valid symbols to subscribe")
+	}
+
+	// 4. Создаём коллектор
 	ctx, cancel := context.WithCancel(context.Background())
 	return &KuCoinCollector{
 		ctx:      ctx,
 		cancel:   cancel,
 		symbols:  symbols,
 		lastData: make(map[string]struct{ Bid, Ask, BidSize, AskSize float64 }),
-	}
+	}, nil
 }
 
 func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
-func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
+// ------------------- WS -------------------
+
+func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	if err := c.initWS(); err != nil {
 		return err
 	}
@@ -51,22 +196,17 @@ func (c *KuCoinCollector) Start(out chan<- models.MarketData) error {
 	c.conn = conn
 	log.Println("[KuCoin] Connected to WS")
 
-	// subscribe
 	for _, s := range c.symbols {
-		sym := normalizeKucoinSymbol(s)
-
 		sub := map[string]any{
 			"id":       time.Now().UnixNano(),
 			"type":     "subscribe",
-			"topic":    "/market/ticker:" + sym,
+			"topic":    "/market/ticker:" + s,
 			"response": true,
 		}
-
 		if err := conn.WriteJSON(sub); err != nil {
 			return err
 		}
-
-		log.Println("[KuCoin] Subscribed:", sym)
+		log.Println("[KuCoin] Subscribed:", s)
 	}
 
 	go c.pingLoop()
@@ -86,7 +226,6 @@ func (c *KuCoinCollector) Stop() error {
 func (c *KuCoinCollector) pingLoop() {
 	t := time.NewTicker(15 * time.Second)
 	defer t.Stop()
-
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -97,13 +236,12 @@ func (c *KuCoinCollector) pingLoop() {
 	}
 }
 
-func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
+func (c *KuCoinCollector) readLoop(out chan<- *models.MarketData) {
 	defer func() {
 		if c.conn != nil {
-			c.conn.Close()
+			_ = c.conn.Close()
 		}
 	}()
-
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -121,7 +259,7 @@ func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
 			}
 
 			typ, _ := raw["type"].(string)
-			if typ == "welcome" || typ == "ack" || typ != "message" {
+			if typ != "message" {
 				continue
 			}
 
@@ -131,52 +269,37 @@ func (c *KuCoinCollector) readLoop(out chan<- models.MarketData) {
 				continue
 			}
 
-			rawsymbol := strings.TrimPrefix(topic, "/market/ticker:")
-			symbol := market.NormalizeSymbol_Full(rawsymbol)
+			rawSymbol := strings.TrimPrefix(topic, "/market/ticker:")
+			symbol := normalizeSymbol(rawSymbol)
 			if symbol == "" {
 				continue
 			}
 
 			bid := parseFloat(data["bestBid"])
 			ask := parseFloat(data["bestAsk"])
-			bidSize := parseFloat(data["sizeBid"])
-			askSize := parseFloat(data["sizeAsk"])
 
 			if bid == 0 || ask == 0 {
 				continue
 			}
 
-			// фильтрация повторов
-			if last, exists := c.lastData[symbol]; exists {
-				if last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
-					continue // ничего не поменялось — пропускаем
+			c.mu.Lock()
+			if last, ok := c.lastData[symbol]; ok {
+				if last.Bid == bid && last.Ask == ask {
+					c.mu.Unlock()
+					continue
 				}
 			}
+			c.lastData[symbol] = struct{ Bid, Ask, BidSize, AskSize float64 }{Bid: bid, Ask: ask}
+			c.mu.Unlock()
 
-			// обновляем последние данные
-			c.lastData[symbol] = struct {
-				Bid, Ask, BidSize, AskSize float64
-			}{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
-
-			out <- models.MarketData{
+			out <- &models.MarketData{
 				Exchange: "KuCoin",
 				Symbol:   symbol,
 				Bid:      bid,
 				Ask:      ask,
-				// при желании можно добавить объёмы
 			}
 		}
 	}
-}
-
-func normalizeKucoinSymbol(s string) string {
-	if strings.Contains(s, "-") {
-		return s
-	}
-	if strings.HasSuffix(s, "USDT") {
-		return strings.Replace(s, "USDT", "-USDT", 1)
-	}
-	return s
 }
 
 func parseFloat(v any) float64 {
@@ -191,16 +314,19 @@ func parseFloat(v any) float64 {
 	}
 }
 
+func normalizeSymbol(s string) string {
+	parts := strings.Split(s, "-")
+	if len(parts) != 2 {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
+}
+
 func (c *KuCoinCollector) initWS() error {
-	req, err := http.NewRequest(
-		"POST",
-		"https://api.kucoin.com/api/v1/bullet-public",
-		nil,
-	)
+	req, err := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
 	if err != nil {
 		return err
 	}
-
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
@@ -210,10 +336,6 @@ func (c *KuCoinCollector) initWS() error {
 		return err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("kucoin bullet status: %s", resp.Status)
-	}
 
 	var r struct {
 		Data struct {
@@ -227,17 +349,14 @@ func (c *KuCoinCollector) initWS() error {
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return err
 	}
-
 	if len(r.Data.InstanceServers) == 0 {
 		return fmt.Errorf("no kucoin ws endpoints")
 	}
 
-	c.wsURL = fmt.Sprintf(
-		"%s?token=%s&connectId=%d",
+	c.wsURL = fmt.Sprintf("%s?token=%s&connectId=%d",
 		r.Data.InstanceServers[0].Endpoint,
 		r.Data.Token,
 		time.Now().UnixNano(),
 	)
-
 	return nil
 }
