@@ -90,15 +90,14 @@ type KuCoinCollector struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	conn   *websocket.Conn
-	wsURL  string
+	conn    *websocket.Conn
+	wsURL   string
 	symbols []string
 
 	out chan<- *models.MarketData
 
-	last map[string][2]float64
-	mu   sync.Mutex
-
+	last  map[string][2]float64
+	mu    sync.Mutex
 	ready bool
 }
 
@@ -110,7 +109,7 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 		return nil, err
 	}
 	if len(symbols) == 0 {
-		return nil, fmt.Errorf("no symbols")
+		return nil, fmt.Errorf("no symbols from csv")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -135,6 +134,7 @@ func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	}
 
 	go c.readLoop()
+	go c.pingLoop()
 	go c.subscribeBatches(15, 400*time.Millisecond)
 
 	log.Println("[KuCoin] started")
@@ -153,7 +153,7 @@ func (c *KuCoinCollector) Stop() error {
 
 func (c *KuCoinCollector) initWS() error {
 	req, _ := http.NewRequest(
-		"POST",
+		http.MethodPost,
 		"https://api.kucoin.com/api/v1/bullet-public",
 		nil,
 	)
@@ -189,22 +189,15 @@ func (c *KuCoinCollector) initWS() error {
 		return err
 	}
 
-	// deadlines
-	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		return nil
-	})
-
 	c.conn = conn
 	log.Println("[KuCoin] WS connected")
+
 	return nil
 }
 
 /* ================= SUBSCRIBE ================= */
 
 func (c *KuCoinCollector) subscribeBatches(batch int, delay time.Duration) {
-	// ждём welcome
 	for !c.ready {
 		select {
 		case <-c.ctx.Done():
@@ -214,7 +207,7 @@ func (c *KuCoinCollector) subscribeBatches(batch int, delay time.Duration) {
 		}
 	}
 
-	log.Println("[KuCoin] subscribing...")
+	log.Println("[KuCoin] subscribing")
 
 	for i := 0; i < len(c.symbols); i += batch {
 		end := i + batch
@@ -222,20 +215,45 @@ func (c *KuCoinCollector) subscribeBatches(batch int, delay time.Duration) {
 			end = len(c.symbols)
 		}
 
-		for _, s := range c.symbols[i:end] {
-			_ = c.conn.WriteJSON(map[string]any{
-				"id":       time.Now().UnixNano(),
-				"type":     "subscribe",
-				"topic":    "/market/ticker:" + s,
-				"response": true,
-			})
+		topic := "/market/ticker:" + strings.Join(c.symbols[i:end], ",")
+
+		err := c.conn.WriteJSON(map[string]any{
+			"id":              time.Now().UnixNano(),
+			"type":            "subscribe",
+			"topic":           topic,
+			"privateChannel":  false,
+			"response":        true,
+		})
+
+		if err != nil {
+			log.Println("[KuCoin] subscribe error:", err)
+			return
 		}
 
 		time.Sleep(delay)
 	}
 }
 
-/* ================= READ LOOP ================= */
+/* ================= PING ================= */
+
+func (c *KuCoinCollector) pingLoop() {
+	t := time.NewTicker(25 * time.Second)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			_ = c.conn.WriteJSON(map[string]any{
+				"id":   time.Now().UnixNano(),
+				"type": "ping",
+			})
+		}
+	}
+}
+
+/* ================= READ ================= */
 
 func (c *KuCoinCollector) readLoop() {
 	for {
@@ -268,18 +286,12 @@ func (c *KuCoinCollector) handle(msg []byte) {
 		log.Println("[KuCoin] welcome")
 		return
 
-	case "ack":
-		return
-
-	case "ping":
-		_ = c.conn.WriteJSON(map[string]any{
-			"id":   raw["id"],
-			"type": "pong",
-		})
+	case "pong", "ack":
 		return
 
 	case "message":
 		// continue
+
 	default:
 		return
 	}
@@ -299,6 +311,7 @@ func (c *KuCoinCollector) handle(msg []byte) {
 	if !ok {
 		return
 	}
+
 	symbol := normalize(sym)
 
 	c.mu.Lock()
@@ -381,15 +394,6 @@ func parseFloat(v any) float64 {
 	}
 }
 
-
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-2026/01/05 11:11:05 [KuCoin] WS connected
-2026/01/05 11:11:05 [KuCoin] started
-2026/01/05 11:11:05 [Main] KuCoinCollector started. Listening for data...
-2026/01/05 11:11:05 [KuCoin] welcome
-2026/01/05 11:11:05 [KuCoin] subscribing...
-2026/01/05 11:11:07 [KuCoin] read error: websocket: close 1000 (normal): Bye
 
 
 
