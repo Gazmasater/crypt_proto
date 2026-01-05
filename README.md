@@ -64,16 +64,17 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (c *KuCoinCollector) subscribe(symbol string) {
-	_ = c.conn.WriteJSON(map[string]any{
-		"id":             time.Now().UnixNano(),
-		"type":           "subscribe",
-		"topic":          "/market/ticker:" + symbol,
-		"privateChannel": false,
-		"response":       true,
-	})
-	log.Println("[KuCoin] Subscribed:", symbol)
-}
+026/01/05 03:46:09 [KuCoin] Subscribed: ZEC-BTC
+2026/01/05 03:46:09 [KuCoin] Subscribed: XRP-KCS
+2026/01/05 03:46:09 [KuCoin] Subscribed: ENJ-ETH
+2026/01/05 03:46:09 [KuCoin] Subscribed: VRA-BTC
+2026/01/05 03:46:09 [KuCoin] Subscribed: IOTA-USDT
+2026/01/05 03:46:09 [KuCoin] Subscribed: XLM-USDT
+2026/01/05 03:46:09 [KuCoin] Subscribed: VSYS-USDT
+2026/01/05 03:46:09 [KuCoin] Subscribed: KRL-BTC
+2026/01/05 03:46:09 [KuCoin] Subscribed: USDT-DAI
+2026/01/05 03:46:09 [Main] KuCoinCollector started. Listening for data...
+2026/01/05 03:46:10 [KuCoin] read error: websocket: close 1006 (abnormal closure): unexpected EOF
 
 
 
