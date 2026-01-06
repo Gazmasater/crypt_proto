@@ -487,6 +487,49 @@ func main() {
 
 
 
+026/01/06 11:26:49 [KuCoin WS 0] subscribed BDX-USDT
+2026/01/06 11:26:49 [KuCoin WS 4] subscribed DASH-BTC
+2026/01/06 11:26:49 [KuCoin WS 2] subscribed EGLD-BTC
+2026/01/06 11:26:49 [KuCoin WS 3] subscribed BTC-BRL
+2026/01/06 11:26:49 [KuCoin WS 1] subscribed CRO-BTC
+2026/01/06 11:26:49 [KuCoin WS 0] subscribed DOGE-KCS
+2026/01/06 11:26:49 [KuCoin WS 4] subscribed IOTX-USDT
+2026/01/06 11:26:49 [KuCoin WS 2] subscribed ETH-BRL
+2026/01/06 11:26:49 [KuCoin WS 3] subscribed ELA-BTC
+2026/01/06 11:26:49 [KuCoin WS 1] subscribed A-BTC
+2026/01/06 11:26:49 [KuCoin WS 0] subscribed DAG-USDT
+2026/01/06 11:26:49 [KuCoin WS 4] subscribed XDC-USDT
+2026/01/06 11:26:49 [KuCoin WS 2] subscribed FET-ETH
+2026/01/06 11:26:49 [KuCoin WS 3] subscribed KLV-USDT
+2026/01/06 11:26:49 [KuCoin WS 1] subscribed TEL-BTC
+2026/01/06 11:26:49 [KuCoin WS 0] subscribed STORJ-USDT
+2026/01/06 11:26:49 [KuCoin WS 4] subscribed PAXG-USDT
+2026/01/06 11:26:49 [KuCoin WS 2] subscribed IOTX-BTC
+2026/01/06 11:26:49 [KuCoin WS 3] subscribed AVA-BTC
+2026/01/06 11:26:49 [KuCoin WS 1] subscribed KLV-BTC
+2026/01/06 11:26:49 [KuCoin WS 0] subscribed KCS-ETH
+2026/01/06 11:26:49 [KuCoin WS 2] subscribed VRA-USDT
+2026/01/06 11:26:49 [KuCoin WS 3] subscribed RSR-USDT
+2026/01/06 11:26:49 [KuCoin WS 1] subscribed CKB-USDT
+2026/01/06 11:26:49 [KuCoin WS 0] subscribed KNC-ETH
+2026/01/06 11:26:49 [KuCoin WS 2] subscribed AAVE-USDT
+2026/01/06 11:26:49 [KuCoin WS 1] subscribed LTC-USDT
+2026/01/06 11:26:49 [KuCoin WS 3] subscribed TRX-USDT
+2026/01/06 11:26:50 [KuCoin WS 0] subscribed FET-USDT
+2026/01/06 11:26:50 [KuCoin WS 2] subscribed WBTC-BTC
+2026/01/06 11:26:50 [KuCoin WS 1] subscribed BNB-KCS
+2026/01/06 11:26:50 [KuCoin WS 3] subscribed DGB-BTC
+2026/01/06 11:26:50 [KuCoin WS 0] subscribed SOL-KCS
+2026/01/06 11:26:50 [KuCoin WS 2] subscribed ONE-USDT
+2026/01/06 11:26:50 [KuCoin WS 3] subscribed NKN-USDT
+2026/01/06 11:26:50 [KuCoin WS 1] subscribed COTI-BTC
+2026/01/06 11:26:50 [KuCoin WS 0] subscribed VSYS-USDT
+2026/01/06 11:26:50 [KuCoin WS 3] subscribed USDT-BRL
+2026/01/06 11:26:50 [KuCoin WS 1] subscribed DAG-ETH
+2026/01/06 11:26:50 [KuCoin WS 0] subscribed VSYS-BTC
+
+
+
 
 
 
