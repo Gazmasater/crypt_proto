@@ -427,54 +427,63 @@ func chunk[T any](arr []T, size int) [][]T {
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "WrongAssignCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongAssignCount"
+
+
+
+package main
+
+import (
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"crypt_proto/internal/collector"
+	"crypt_proto/pkg/models"
+)
+
+func main() {
+
+	// 1️⃣ Загружаем символы из CSV
+	symbols, err := collector.LoadSymbolsFromCSV(
+		"../exchange/data/kucoin_triangles_usdt.csv",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("loaded %d symbols from csv", len(symbols))
+
+	// 2️⃣ Создаём коллектор (ОДНО значение!)
+	kc := collector.NewKuCoinCollector(symbols)
+
+	out := make(chan *models.MarketData, 1000)
+
+	// 3️⃣ Запуск
+	go func() {
+		if err := kc.Start(out); err != nil {
+			log.Fatal(err)
 		}
-	},
-	"severity": 8,
-	"message": "assignment mismatch: 2 variables but collector.NewKuCoinCollector returns 1 value",
-	"source": "compiler",
-	"startLineNumber": 18,
-	"startColumn": 13,
-	"endLineNumber": 18,
-	"endColumn": 87,
-	"origin": "extHost1"
-}]
+	}()
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "IncompatibleAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "IncompatibleAssign"
+	// 4️⃣ Чтение котировок
+	go func() {
+		for md := range out {
+			log.Printf(
+				"[KUCOIN] %s bid=%.8f ask=%.8f",
+				md.Symbol, md.Bid, md.Ask,
+			)
 		}
-	},
-	"severity": 8,
-	"message": "cannot use \"../exchange/data/kucoin_triangles_usdt.csv\" (untyped string constant) as []string value in argument to collector.NewKuCoinCollector",
-	"source": "compiler",
-	"startLineNumber": 18,
-	"startColumn": 42,
-	"endLineNumber": 18,
-	"endColumn": 86,
-	"origin": "extHost1"
-}]
+	}()
 
+	// 5️⃣ Graceful shutdown
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
 
-
+	log.Println("shutdown...")
+	_ = kc.Stop()
+}
 
 
 
