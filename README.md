@@ -389,3 +389,166 @@ func parseFloat(v any) float64 {
 
 
 
+2026/01/06 09:57:55 [KuCoin] raw msg: {"topic":"/market/level2:DAG-USDT","type":"message","subject":"trade.l2update","data":{"changes":{"asks":[],"bids":[["0.014142","0","3428888568"]]},"sequenceEnd":3428888568,"sequenceStart":3428888568,"symbol":"DAG-USDT","time":1767682674903}}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"topic":"/market/level2:BCH-USDT","type":"message","subject":"trade.l2update","data":{"changes":{"asks":[],"bids":[["645.34","0.0154","4359956823"]]},"sequenceEnd":4359956823,"sequenceStart":4359956823,"symbol":"BCH-USDT","time":1767682674903}}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"topic":"/market/level2:LINK-BTC","type":"message","subject":"trade.l2update","data":{"changes":{"asks":[],"bids":[["0.00014805","0","2339568791"]]},"sequenceEnd":2339568791,"sequenceStart":2339568791,"symbol":"LINK-BTC","time":1767682674903}}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"topic":"/market/level2:LINK-BTC","type":"message","subject":"trade.l2update","data":{"changes":{"asks":[["0.00014868","6.2437","2339568792"]],"bids":[]},"sequenceEnd":2339568792,"sequenceStart":2339568792,"symbol":"LINK-BTC","time":1767682674904}}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"id":"1767682674776323797","type":"ack"}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"id":"1767682674776409489","type":"ack"}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"id":"1767682674776423020","type":"ack"}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"id":"1767682674776442132","type":"ack"}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"id":"1767682674776458933","type":"ack"}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"id":"1767682674776469443","type":"ack"}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"topic":"/market/level2:BCH-USDT","type":"message","subject":"trade.l2update","data":{"changes":{"asks":[["646.67","0.0308","4359956824"]],"bids":[]},"sequenceEnd":4359956824,"sequenceStart":4359956824,"symbol":"BCH-USDT","time":1767682674906}}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"topic":"/market/level2:BNB-USDT","type":"message","subject":"trade.l2update","data":{"changes":{"asks":[],"bids":[["908.809","1.2841","10489462323"]]},"sequenceEnd":10489462323,"sequenceStart":10489462323,"symbol":"BNB-USDT","time":1767682674906}}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"topic":"/market/level2:AAVE-USDT","type":"message","subject":"trade.l2update","data":{"changes":{"asks":[["173.877","0.8097","8387547760"]],"bids":[]},"sequenceEnd":8387547760,"sequenceStart":8387547760,"symbol":"AAVE-USDT","time":1767682674906}}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"id":"1767682674776642917","type":"ack"}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"id":"1767682674776656361","type":"ack"}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"id":"1767682674776667111","type":"ack"}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"id":"1767682674776677054","type":"ack"}
+2026/01/06 09:57:55 [KuCoin] raw msg: {"id":"695cb272a02344126eb870a6","type":"error","code":509,"data":"exceed max permits per second"}
+2026/01/06 09:57:55 [KuCoin] read error: websocket: close 1000 (normal): Bye
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:ETH-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:STORJ-ETH
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:BNB-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:EWT-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:WIN-TRX
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:VSYS-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:RUNE-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:IOTX-ETH
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:TEL-ETH
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:ANKR-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:IOTA-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:NEAR-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:AAVE-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:STX-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:FET-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:ALGO-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:VET-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:REQ-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:HBAR-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:KRL-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:CHZ-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:CHZ-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:KCS-ETH
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:ZIL-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:DAG-ETH
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:NEO-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:WBTC-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:KCS-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:CFX-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:ADA-KCS
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:ENJ-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:ONT-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:DYP-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:AVAX-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:KRL-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:DASH-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:XCN-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:ETC-ETH
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:ICP-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:AVAX-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:XLM-BTC
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:ELA-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:TRX-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:AVA-USDT
+2026/01/06 09:57:55 [KuCoin] subscribe error: websocket: close sent /market/level2:XYO-USDT
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:XLM-ETH
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:SNX-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:NEO-USDT
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:MOVR-ETH
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:ENJ-ETH
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:KLV-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:RUNE-USDT
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:IOST-ETH
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:DGB-ETH
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:SUPER-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:WAVES-USDT
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:ONT-USDT
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:KAS-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:TRVL-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:SOL-KCS
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:IOST-USDT
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:STORJ-USDT
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:ICP-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:BCH-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:XMR-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:ATOM-USDT
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:BCHSV-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:BAX-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:TEL-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:PERP-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:TEL-USDT
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:XMR-USDT
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:ANKR-USDT
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:IOTX-BTC
+2026/01/06 09:57:56 [KuCoin] subscribe error: websocket: close sent /market/level2:BTC-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:CKB-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:WBTC-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:DOGE-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:KCS-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:HYPE-KCS
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:XDC-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:ALGO-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:AVA-ETH
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:SUPER-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:SCRT-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:VRA-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:KNC-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:A-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:WAN-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:WIN-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:RLC-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:EWT-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:CRO-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:AR-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:RSR-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:COTI-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:DOT-KCS
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:ETH-DAI
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:ERG-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:GAS-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:TRAC-ETH
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:SNX-ETH
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:ETH-BRL
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:BDX-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:LYX-ETH
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:MANA-ETH
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:MANA-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:REQ-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:DAG-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:CFX-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:XTZ-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:TRAC-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:IOTA-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:BTC-BRL
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:COTI-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:SHIB-DOGE
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:ELA-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:XCN-BTC
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:MOVR-USDT
+2026/01/06 09:57:57 [KuCoin] subscribe error: websocket: close sent /market/level2:WIN-USDT
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:VSYS-BTC
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:CRO-USDT
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:ETH-USDT
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:SNX-USDT
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:SXP-USDT
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:ASTR-BTC
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:PEPE-KCS
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:NEAR-BTC
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:SHIB-USDT
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:BCHSV-ETH
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:SKL-USDT
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:OM-BTC
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:TRX-ETH
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:VRA-USDT
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:ETC-USDT
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:OGN-USDT
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:KNC-ETH
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:XRP-BTC
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:XRP-USDT
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:A-ETH
+2026/01/06 09:57:58 [KuCoin] subscribe error: websocket: close sent /market/level2:XYO-ETH
+
+
+
