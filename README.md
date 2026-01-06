@@ -63,149 +63,16 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-csv.go
 package collector
 
 import (
+	"context"
 	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
 	"os"
-	"strings"
-)
-
-// LoadSymbolsFromCSV читает треугольники и возвращает уникальные пары
-func LoadSymbolsFromCSV(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	rows, err := r.ReadAll()
-	if err != nil {
-		return nil, err
-	}
-
-	set := make(map[string]struct{})
-
-	// пропускаем header
-	for _, row := range rows[1:] {
-		// Leg1, Leg2, Leg3 = 3,4,5
-		for i := 3; i <= 5 && i < len(row); i++ {
-			symbol := parseLeg(row[i])
-			if symbol != "" {
-				set[symbol] = struct{}{}
-			}
-		}
-	}
-
-	var res []string
-	for s := range set {
-		res = append(res, s)
-	}
-	return res, nil
-}
-
-func parseLeg(s string) string {
-	parts := strings.Fields(strings.TrimSpace(s))
-	if len(parts) < 2 {
-		return ""
-	}
-
-	pair := strings.Split(parts[1], "/")
-	if len(pair) != 2 {
-		return ""
-	}
-
-	return strings.ToUpper(pair[0] + "-" + pair[1])
-}
-
-
-
-kucoin_pool.go
-
-package collector
-
-import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"log"
-	"net/http"
-	"time"
-
-	"crypt_proto/pkg/models"
-
-	"github.com/gorilla/websocket"
-)
-
-const (
-	maxSubsPerWS   = 50
-	subscribeDelay = 100 * time.Millisecond
-	pingInterval   = 20 * time.Second
-)
-
-/* ================= POOL ================= */
-
-type KuCoinCollector struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-
-	workers []*kucoinWS
-	out     chan<- *models.MarketData
-}
-
-func NewKuCoinCollector(symbols []string) *KuCoinCollector {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	var workers []*kucoinWS
-	chunks := chunk(symbols, maxSubsPerWS)
-
-	for i, c := range chunks {
-		workers = append(workers, newKucoinWS(ctx, i, c))
-	}
-
-	return &KuCoinCollector{
-		ctx:     ctx,
-		cancel:  cancel,
-		workers: workers,
-	}
-}
-
-func (c *KuCoinCollector) Name() string { return "KuCoin" }
-
-func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
-	c.out = out
-
-	for _, w := range c.workers {
-		w.out = out
-		go w.run()
-	}
-
-	log.Printf("[KuCoin] started (%d ws connections)", len(c.workers))
-	return nil
-}
-
-func (c *KuCoinCollector) Stop() error {
-	c.cancel()
-	return nil
-}
-
-
-
-
-
-
-kucoin_ws.go
-
-package collector
-
-import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"log"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -216,39 +83,100 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	maxSubsPerWS = 50
+	subRate      = 120 * time.Millisecond // ~8/sec
+	pingInterval = 20 * time.Second
+)
+
+/* ================= POOL ================= */
+
+type KuCoinCollector struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	wsList []*kucoinWS
+	out    chan<- *models.MarketData
+}
+
+/* ================= WS ================= */
+
 type kucoinWS struct {
-	ctx     context.Context
-	id      int
+	id     int
+	conn   *websocket.Conn
 	symbols []string
-	out     chan<- *models.MarketData
 
-	conn  *websocket.Conn
-	last  map[string][2]float64
-	mutex sync.Mutex
+	last map[string][2]float64
+	mu   sync.Mutex
 }
 
-func newKucoinWS(ctx context.Context, id int, symbols []string) *kucoinWS {
-	return &kucoinWS{
-		ctx:     ctx,
-		id:      id,
-		symbols: symbols,
-		last:    make(map[string][2]float64),
+/* ================= CONSTRUCTOR ================= */
+
+func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
+	symbols, err := readPairsFromCSV(path)
+	if err != nil {
+		return nil, err
 	}
-}
-
-func (w *kucoinWS) run() {
-	if err := w.connect(); err != nil {
-		log.Println("[KuCoin WS]", w.id, "connect error:", err)
-		return
+	if len(symbols) == 0 {
+		return nil, fmt.Errorf("no symbols")
 	}
 
-	go w.pingLoop()
-	go w.readLoop()
+	ctx, cancel := context.WithCancel(context.Background())
 
-	w.subscribe()
+	var wsList []*kucoinWS
+	for i := 0; i < len(symbols); i += maxSubsPerWS {
+		end := i + maxSubsPerWS
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+
+		wsList = append(wsList, &kucoinWS{
+			id:      len(wsList),
+			symbols: symbols[i:end],
+			last:    make(map[string][2]float64),
+		})
+	}
+
+	return &KuCoinCollector{
+		ctx:    ctx,
+		cancel: cancel,
+		wsList: wsList,
+	}, nil
 }
 
-func (w *kucoinWS) connect() error {
+/* ================= INTERFACE ================= */
+
+func (c *KuCoinCollector) Name() string { return "KuCoin" }
+
+func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
+	c.out = out
+
+	for _, ws := range c.wsList {
+		if err := ws.connect(); err != nil {
+			return err
+		}
+		go ws.readLoop(c)
+		go ws.pingLoop()
+		go ws.subscribeLoop()
+	}
+
+	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
+	return nil
+}
+
+func (c *KuCoinCollector) Stop() error {
+	c.cancel()
+	for _, ws := range c.wsList {
+		if ws.conn != nil {
+			ws.conn.Close()
+		}
+	}
+	return nil
+}
+
+/* ================= CONNECT ================= */
+
+func (ws *kucoinWS) connect() error {
 	req, _ := http.NewRequest(
 		"POST",
 		"https://api.kucoin.com/api/v1/bullet-public",
@@ -263,7 +191,7 @@ func (w *kucoinWS) connect() error {
 
 	var r struct {
 		Data struct {
-			Token string `json:"token"`
+			Token           string `json:"token"`
 			InstanceServers []struct {
 				Endpoint string `json:"endpoint"`
 			} `json:"instanceServers"`
@@ -274,83 +202,82 @@ func (w *kucoinWS) connect() error {
 		return err
 	}
 
-	wsURL := fmt.Sprintf(
+	url := fmt.Sprintf(
 		"%s?token=%s&connectId=%d",
 		r.Data.InstanceServers[0].Endpoint,
 		r.Data.Token,
 		time.Now().UnixNano(),
 	)
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		return err
 	}
 
-	w.conn = conn
-	log.Printf("[KuCoin WS %d] connected (%d symbols)", w.id, len(w.symbols))
+	ws.conn = conn
+	log.Printf("[KuCoin WS %d] connected\n", ws.id)
 	return nil
 }
 
-func (w *kucoinWS) subscribe() {
-	for _, s := range w.symbols {
-		select {
-		case <-w.ctx.Done():
-			return
-		default:
-		}
+/* ================= SUBSCRIBE ================= */
 
-		topic := "/market/level2Depth5:" + s
+func (ws *kucoinWS) subscribeLoop() {
+	time.Sleep(1 * time.Second) // ждём welcome
 
-		_ = w.conn.WriteJSON(map[string]any{
+	t := time.NewTicker(subRate)
+	defer t.Stop()
+
+	for _, s := range ws.symbols {
+		<-t.C
+
+		topic := "/market/ticker:" + s
+		err := ws.conn.WriteJSON(map[string]any{
 			"id":       time.Now().UnixNano(),
 			"type":     "subscribe",
 			"topic":    topic,
 			"response": true,
 		})
 
-		log.Printf("[KuCoin WS %d] subscribed %s", w.id, s)
-		time.Sleep(subscribeDelay)
-	}
-}
-
-func (w *kucoinWS) readLoop() {
-	for {
-		select {
-		case <-w.ctx.Done():
-			return
-		default:
-		}
-
-		_, msg, err := w.conn.ReadMessage()
 		if err != nil {
-			log.Printf("[KuCoin WS %d] read error: %v", w.id, err)
-			return
+			log.Printf("[KuCoin WS %d] subscribe error %s\n", ws.id, s)
+		} else {
+			log.Printf("[KuCoin WS %d] subscribed %s\n", ws.id, s)
 		}
-
-		w.handle(msg)
 	}
 }
 
-func (w *kucoinWS) pingLoop() {
+/* ================= PING ================= */
+
+func (ws *kucoinWS) pingLoop() {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
 
-	for {
-		select {
-		case <-w.ctx.Done():
-			return
-		case <-t.C:
-			_ = w.conn.WriteJSON(map[string]any{
-				"id":   time.Now().UnixNano(),
-				"type": "ping",
-			})
-		}
+	for range t.C {
+		_ = ws.conn.WriteJSON(map[string]any{
+			"id":   time.Now().UnixNano(),
+			"type": "ping",
+		})
 	}
 }
 
-func (w *kucoinWS) handle(msg []byte) {
+/* ================= READ ================= */
+
+func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
+	for {
+		_, msg, err := ws.conn.ReadMessage()
+		if err != nil {
+			log.Printf("[KuCoin WS %d] read error: %v\n", ws.id, err)
+			return
+		}
+		ws.handle(c, msg)
+	}
+}
+
+/* ================= HANDLE ================= */
+
+func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	var raw map[string]any
-	if err := json.Unmarshal(msg, &raw); err != nil {
+	if json.Unmarshal(msg, &raw) != nil {
 		return
 	}
 
@@ -358,31 +285,30 @@ func (w *kucoinWS) handle(msg []byte) {
 		return
 	}
 
-	data, ok := raw["data"].(map[string]any)
-	if !ok {
+	topic := raw["topic"].(string)
+	parts := strings.Split(topic, ":")
+	if len(parts) != 2 {
+		return
+	}
+	symbol := normalize(parts[1])
+
+	data := raw["data"].(map[string]any)
+	bid := parseFloat(data["bestBid"])
+	ask := parseFloat(data["bestAsk"])
+	if bid == 0 || ask == 0 {
 		return
 	}
 
-	bids := data["bids"].([]any)
-	asks := data["asks"].([]any)
-	if len(bids) == 0 || len(asks) == 0 {
-		return
-	}
-
-	bid := parseFloat(bids[0].([]any)[0])
-	ask := parseFloat(asks[0].([]any)[0])
-	symbol := normalize(data["symbol"].(string))
-
-	w.mutex.Lock()
-	last := w.last[symbol]
+	ws.mu.Lock()
+	last := ws.last[symbol]
 	if last[0] == bid && last[1] == ask {
-		w.mutex.Unlock()
+		ws.mu.Unlock()
 		return
 	}
-	w.last[symbol] = [2]float64{bid, ask}
-	w.mutex.Unlock()
+	ws.last[symbol] = [2]float64{bid, ask}
+	ws.mu.Unlock()
 
-	w.out <- &models.MarketData{
+	c.out <- &models.MarketData{
 		Exchange: "KuCoin",
 		Symbol:   symbol,
 		Bid:      bid,
@@ -390,7 +316,51 @@ func (w *kucoinWS) handle(msg []byte) {
 	}
 }
 
+/* ================= CSV ================= */
+
+func readPairsFromCSV(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	rows, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	set := make(map[string]struct{})
+	for _, row := range rows[1:] {
+		for i := 3; i <= 5 && i < len(row); i++ {
+			p := parseLeg(row[i])
+			if p != "" {
+				set[p] = struct{}{}
+			}
+		}
+	}
+
+	var res []string
+	for k := range set {
+		res = append(res, k)
+	}
+	return res, nil
+}
+
 /* ================= HELPERS ================= */
+
+func parseLeg(s string) string {
+	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
+	if len(parts) < 2 {
+		return ""
+	}
+	p := strings.Split(parts[1], "/")
+	if len(p) != 2 {
+		return ""
+	}
+	return p[0] + "-" + p[1]
+}
 
 func normalize(s string) string {
 	p := strings.Split(s, "-")
@@ -408,125 +378,6 @@ func parseFloat(v any) float64 {
 		return 0
 	}
 }
-
-
-
-
-chunk.go
-
-package collector
-
-func chunk[T any](arr []T, size int) [][]T {
-	var res [][]T
-	for size < len(arr) {
-		arr, res = arr[size:], append(res, arr[0:size:size])
-	}
-	res = append(res, arr)
-	return res
-}
-
-
-
-
-
-
-package main
-
-import (
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
-
-	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
-)
-
-func main() {
-
-	// 1️⃣ Загружаем символы из CSV
-	symbols, err := collector.LoadSymbolsFromCSV(
-		"../exchange/data/kucoin_triangles_usdt.csv",
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Printf("loaded %d symbols from csv", len(symbols))
-
-	// 2️⃣ Создаём коллектор (ОДНО значение!)
-	kc := collector.NewKuCoinCollector(symbols)
-
-	out := make(chan *models.MarketData, 1000)
-
-	// 3️⃣ Запуск
-	go func() {
-		if err := kc.Start(out); err != nil {
-			log.Fatal(err)
-		}
-	}()
-
-	// 4️⃣ Чтение котировок
-	go func() {
-		for md := range out {
-			log.Printf(
-				"[KUCOIN] %s bid=%.8f ask=%.8f",
-				md.Symbol, md.Bid, md.Ask,
-			)
-		}
-	}()
-
-	// 5️⃣ Graceful shutdown
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-
-	log.Println("shutdown...")
-	_ = kc.Stop()
-}
-
-
-
-026/01/06 11:26:49 [KuCoin WS 0] subscribed BDX-USDT
-2026/01/06 11:26:49 [KuCoin WS 4] subscribed DASH-BTC
-2026/01/06 11:26:49 [KuCoin WS 2] subscribed EGLD-BTC
-2026/01/06 11:26:49 [KuCoin WS 3] subscribed BTC-BRL
-2026/01/06 11:26:49 [KuCoin WS 1] subscribed CRO-BTC
-2026/01/06 11:26:49 [KuCoin WS 0] subscribed DOGE-KCS
-2026/01/06 11:26:49 [KuCoin WS 4] subscribed IOTX-USDT
-2026/01/06 11:26:49 [KuCoin WS 2] subscribed ETH-BRL
-2026/01/06 11:26:49 [KuCoin WS 3] subscribed ELA-BTC
-2026/01/06 11:26:49 [KuCoin WS 1] subscribed A-BTC
-2026/01/06 11:26:49 [KuCoin WS 0] subscribed DAG-USDT
-2026/01/06 11:26:49 [KuCoin WS 4] subscribed XDC-USDT
-2026/01/06 11:26:49 [KuCoin WS 2] subscribed FET-ETH
-2026/01/06 11:26:49 [KuCoin WS 3] subscribed KLV-USDT
-2026/01/06 11:26:49 [KuCoin WS 1] subscribed TEL-BTC
-2026/01/06 11:26:49 [KuCoin WS 0] subscribed STORJ-USDT
-2026/01/06 11:26:49 [KuCoin WS 4] subscribed PAXG-USDT
-2026/01/06 11:26:49 [KuCoin WS 2] subscribed IOTX-BTC
-2026/01/06 11:26:49 [KuCoin WS 3] subscribed AVA-BTC
-2026/01/06 11:26:49 [KuCoin WS 1] subscribed KLV-BTC
-2026/01/06 11:26:49 [KuCoin WS 0] subscribed KCS-ETH
-2026/01/06 11:26:49 [KuCoin WS 2] subscribed VRA-USDT
-2026/01/06 11:26:49 [KuCoin WS 3] subscribed RSR-USDT
-2026/01/06 11:26:49 [KuCoin WS 1] subscribed CKB-USDT
-2026/01/06 11:26:49 [KuCoin WS 0] subscribed KNC-ETH
-2026/01/06 11:26:49 [KuCoin WS 2] subscribed AAVE-USDT
-2026/01/06 11:26:49 [KuCoin WS 1] subscribed LTC-USDT
-2026/01/06 11:26:49 [KuCoin WS 3] subscribed TRX-USDT
-2026/01/06 11:26:50 [KuCoin WS 0] subscribed FET-USDT
-2026/01/06 11:26:50 [KuCoin WS 2] subscribed WBTC-BTC
-2026/01/06 11:26:50 [KuCoin WS 1] subscribed BNB-KCS
-2026/01/06 11:26:50 [KuCoin WS 3] subscribed DGB-BTC
-2026/01/06 11:26:50 [KuCoin WS 0] subscribed SOL-KCS
-2026/01/06 11:26:50 [KuCoin WS 2] subscribed ONE-USDT
-2026/01/06 11:26:50 [KuCoin WS 3] subscribed NKN-USDT
-2026/01/06 11:26:50 [KuCoin WS 1] subscribed COTI-BTC
-2026/01/06 11:26:50 [KuCoin WS 0] subscribed VSYS-USDT
-2026/01/06 11:26:50 [KuCoin WS 3] subscribed USDT-BRL
-2026/01/06 11:26:50 [KuCoin WS 1] subscribed DAG-ETH
-2026/01/06 11:26:50 [KuCoin WS 0] subscribed VSYS-BTC
 
 
 
