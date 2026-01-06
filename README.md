@@ -102,8 +102,8 @@ type KuCoinCollector struct {
 /* ================= WS ================= */
 
 type kucoinWS struct {
-	id     int
-	conn   *websocket.Conn
+	id      int
+	conn    *websocket.Conn
 	symbols []string
 
 	last map[string][2]float64
@@ -381,65 +381,6 @@ func parseFloat(v any) float64 {
 
 
 
-
-
-package main
-
-import (
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
-
-	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/models"
-)
-
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
-	// ===== CSV с треугольниками =====
-	csvPath := "../exchange/data/kucoin_triangles_usdt.csv"
-
-	// ===== создаём коллектор =====
-	kucoin, err := collector.NewKuCoinCollectorFromCSV(csvPath)
-	if err != nil {
-		log.Fatal("KuCoin init error:", err)
-	}
-
-	// ===== канал котировок =====
-	out := make(chan *models.MarketData, 10000)
-
-	// ===== старт =====
-	if err := kucoin.Start(out); err != nil {
-		log.Fatal("KuCoin start error:", err)
-	}
-
-	log.Println("[Main] KuCoin collector started")
-
-	// ===== consumer =====
-	go func() {
-		for md := range out {
-			log.Printf(
-				"[MD] %s %s bid=%.8f ask=%.8f\n",
-				md.Exchange,
-				md.Symbol,
-				md.Bid,
-				md.Ask,
-			)
-		}
-	}()
-
-	// ===== graceful shutdown =====
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-
-	<-sig
-	log.Println("[Main] stopping...")
-
-	_ = kucoin.Stop()
-	close(out)
-}
 
 
 
