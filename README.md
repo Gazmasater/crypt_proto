@@ -427,6 +427,54 @@ func chunk[T any](arr []T, size int) [][]T {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "WrongAssignCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongAssignCount"
+		}
+	},
+	"severity": 8,
+	"message": "assignment mismatch: 2 variables but collector.NewKuCoinCollector returns 1 value",
+	"source": "compiler",
+	"startLineNumber": 18,
+	"startColumn": 13,
+	"endLineNumber": 18,
+	"endColumn": 87,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use \"../exchange/data/kucoin_triangles_usdt.csv\" (untyped string constant) as []string value in argument to collector.NewKuCoinCollector",
+	"source": "compiler",
+	"startLineNumber": 18,
+	"startColumn": 42,
+	"endLineNumber": 18,
+	"endColumn": 86,
+	"origin": "extHost1"
+}]
+
+
+
 
 
 
