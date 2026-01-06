@@ -92,14 +92,12 @@ type KuCoinCollector struct {
 
 	conn   *websocket.Conn
 	wsURL  string
-	symbols []string
 
-	out chan<- *models.MarketData
+	symbols []string
+	out     chan<- *models.MarketData
 
 	last map[string][2]float64
 	mu   sync.Mutex
-
-	ready bool
 }
 
 /* ================= CONSTRUCTOR ================= */
@@ -136,7 +134,10 @@ func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 
 	go c.readLoop()
 	go c.pingLoop()
-	go c.subscribeLoop()
+
+	for _, s := range c.symbols {
+		c.subscribeTicker(s)
+	}
 
 	log.Println("[KuCoin] started")
 	return nil
@@ -170,7 +171,6 @@ func (c *KuCoinCollector) initWS() error {
 			Token           string `json:"token"`
 			InstanceServers []struct {
 				Endpoint string `json:"endpoint"`
-				PingInterval int `json:"pingInterval"`
 			} `json:"instanceServers"`
 		} `json:"data"`
 	}
@@ -198,54 +198,43 @@ func (c *KuCoinCollector) initWS() error {
 
 /* ================= SUBSCRIBE ================= */
 
-func (c *KuCoinCollector) subscribeLoop() {
-	// ждём welcome
-	for !c.ready {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-			time.Sleep(50 * time.Millisecond)
-		}
+func (c *KuCoinCollector) subscribeTicker(symbol string) {
+	topic := "/market/ticker:" + symbol
+
+	err := c.conn.WriteJSON(map[string]any{
+		"id":       time.Now().UnixNano(),
+		"type":     "subscribe",
+		"topic":    topic,
+		"response": true,
+	})
+
+	if err != nil {
+		log.Println("[KuCoin] subscribe error:", symbol, err)
+	} else {
+		log.Println("[KuCoin] subscribed:", topic)
 	}
+}
 
-	log.Println("[KuCoin] subscribing symbols...")
+/* ================= PING ================= */
 
-	ticker := time.NewTicker(1 * time.Second) // <= 5 subscribe / sec
+func (c *KuCoinCollector) pingLoop() {
+	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
 
-	batch := 0
-
-	for _, s := range c.symbols {
+	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			topic := "/market/level2Depth5:" + s
-
-			err := c.conn.WriteJSON(map[string]any{
-				"id":       time.Now().UnixNano(),
-				"type":     "subscribe",
-				"topic":    topic,
-				"response": true,
+			_ = c.conn.WriteJSON(map[string]any{
+				"id":   time.Now().UnixNano(),
+				"type": "ping",
 			})
-
-			if err != nil {
-				log.Println("[KuCoin] subscribe error:", err, s)
-			} else {
-				log.Println("[KuCoin] subscribed:", s)
-			}
-
-			batch++
-			if batch == 5 {
-				batch = 0
-				time.Sleep(1 * time.Second)
-			}
 		}
 	}
 }
 
-/* ================= READ LOOP ================= */
+/* ================= READ ================= */
 
 func (c *KuCoinCollector) readLoop() {
 	for {
@@ -263,25 +252,6 @@ func (c *KuCoinCollector) readLoop() {
 	}
 }
 
-/* ================= PING ================= */
-
-func (c *KuCoinCollector) pingLoop() {
-	t := time.NewTicker(20 * time.Second)
-	defer t.Stop()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-t.C:
-			_ = c.conn.WriteJSON(map[string]any{
-				"id":   time.Now().UnixNano(),
-				"type": "ping",
-			})
-		}
-	}
-}
-
 /* ================= HANDLE ================= */
 
 func (c *KuCoinCollector) handle(msg []byte) {
@@ -290,23 +260,7 @@ func (c *KuCoinCollector) handle(msg []byte) {
 		return
 	}
 
-	switch raw["type"] {
-
-	case "welcome":
-		c.ready = true
-		log.Println("[KuCoin] welcome")
-		return
-
-	case "ack":
-		return
-
-	case "pong":
-		return
-
-	case "message":
-		// continue
-
-	default:
+	if raw["type"] != "message" {
 		return
 	}
 
@@ -315,18 +269,15 @@ func (c *KuCoinCollector) handle(msg []byte) {
 		return
 	}
 
-	bids, _ := data["bids"].([]any)
-	asks, _ := data["asks"].([]any)
-
-	if len(bids) == 0 || len(asks) == 0 {
+	bid := parseFloat(data["bestBid"])
+	ask := parseFloat(data["bestAsk"])
+	if bid == 0 || ask == 0 {
 		return
 	}
 
-	bid := parseFloat(bids[0].([]any)[0])
-	ask := parseFloat(asks[0].([]any)[0])
-
-	sym := data["symbol"].(string)
-	symbol := normalize(sym)
+	topic := raw["topic"].(string)
+	symbol := strings.Split(topic, ":")[1]
+	symbol = normalize(symbol)
 
 	c.mu.Lock()
 	last := c.last[symbol]
@@ -407,28 +358,6 @@ func parseFloat(v any) float64 {
 		return 0
 	}
 }
-
-
-
-A,B,C,Leg1,Leg2,Leg3
-USDT,LINK,BTC,BUY LINK/USDT,SELL LINK/BTC,SELL BTC/USDT
-USDT,BAX,ETH,BUY BAX/USDT,SELL BAX/ETH,SELL ETH/USDT
-USDT,BAX,BTC,BUY BAX/USDT,SELL BAX/BTC,SELL BTC/USDT
-USDT,TWT,BTC,BUY TWT/USDT,SELL TWT/BTC,SELL BTC/USDT
-
-
-
-026/01/06 10:12:37 [KuCoin] welcome
-2026/01/06 10:12:37 [KuCoin] subscribing symbols...
-2026/01/06 10:12:38 [KuCoin] subscribed: LINK-BTC
-2026/01/06 10:12:39 [KuCoin] subscribed: BAX-USDT
-2026/01/06 10:12:40 [KuCoin] subscribed: BAX-BTC
-2026/01/06 10:12:41 [KuCoin] subscribed: TWT-USDT
-2026/01/06 10:12:42 [KuCoin] subscribed: TWT-BTC
-2026/01/06 10:12:43 [KuCoin] subscribed: LINK-USDT
-2026/01/06 10:12:44 [KuCoin] subscribed: BTC-USDT
-2026/01/06 10:12:45 [KuCoin] subscribed: BAX-ETH
-2026/01/06 10:12:46 [KuCoin] subscribed: ETH-USDT
 
 
 
