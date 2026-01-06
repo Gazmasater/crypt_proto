@@ -410,4 +410,27 @@ func parseFloat(v any) float64 {
 
 
 
+A,B,C,Leg1,Leg2,Leg3
+USDT,LINK,BTC,BUY LINK/USDT,SELL LINK/BTC,SELL BTC/USDT
+USDT,BAX,ETH,BUY BAX/USDT,SELL BAX/ETH,SELL ETH/USDT
+USDT,BAX,BTC,BUY BAX/USDT,SELL BAX/BTC,SELL BTC/USDT
+USDT,TWT,BTC,BUY TWT/USDT,SELL TWT/BTC,SELL BTC/USDT
+
+
+
+026/01/06 10:12:37 [KuCoin] welcome
+2026/01/06 10:12:37 [KuCoin] subscribing symbols...
+2026/01/06 10:12:38 [KuCoin] subscribed: LINK-BTC
+2026/01/06 10:12:39 [KuCoin] subscribed: BAX-USDT
+2026/01/06 10:12:40 [KuCoin] subscribed: BAX-BTC
+2026/01/06 10:12:41 [KuCoin] subscribed: TWT-USDT
+2026/01/06 10:12:42 [KuCoin] subscribed: TWT-BTC
+2026/01/06 10:12:43 [KuCoin] subscribed: LINK-USDT
+2026/01/06 10:12:44 [KuCoin] subscribed: BTC-USDT
+2026/01/06 10:12:45 [KuCoin] subscribed: BAX-ETH
+2026/01/06 10:12:46 [KuCoin] subscribed: ETH-USDT
+
+
+
+
 
