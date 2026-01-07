@@ -99,6 +99,52 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "ws.last.Get undefined (type map[string]lastData has no field or method Get)",
+	"source": "compiler",
+	"startLineNumber": 217,
+	"startColumn": 34,
+	"endLineNumber": 217,
+	"endColumn": 37,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "ws.last.Set undefined (type map[string]lastData has no field or method Set)",
+	"source": "compiler",
+	"startLineNumber": 221,
+	"startColumn": 10,
+	"endLineNumber": 221,
+	"endColumn": 13,
+	"origin": "extHost1"
+}]
+
 
 
 
