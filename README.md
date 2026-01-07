@@ -63,12 +63,29 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+import (
+	"strings"
+	"sync"
+
+	"github.com/tidwall/gjson"
+	"crypt_proto/pkg/models"
+)
+
+type kucoinWS struct {
+	id      int
+	conn    *websocket.Conn
+	symbols []string
+	last    map[string][2]float64
+	mu      sync.Mutex
+}
+
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	msgType := gjson.GetBytes(msg, "type")
-	if msgType.String() != "message" {
+	// Быстрая проверка type
+	if gjson.GetBytes(msg, "type").String() != "message" {
 		return
 	}
 
+	// Быстрая проверка topic
 	topic := gjson.GetBytes(msg, "topic").String()
 	parts := strings.Split(topic, ":")
 	if len(parts) != 2 {
@@ -76,6 +93,7 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 	symbol := normalize(parts[1])
 
+	// Извлечение цен через gjson
 	data := gjson.GetBytes(msg, "data")
 	bid := data.Get("bestBid").Float()
 	ask := data.Get("bestAsk").Float()
@@ -83,13 +101,17 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	// Проверяем изменения через методы lastData
-	lastBid, lastAsk, ok := ws.last.Get(symbol)
-	if ok && lastBid == bid && lastAsk == ask {
+	// Проверяем, изменилась ли цена
+	ws.mu.Lock()
+	last := ws.last[symbol]
+	if last[0] == bid && last[1] == ask {
+		ws.mu.Unlock()
 		return
 	}
-	ws.last.Set(symbol, bid, ask)
+	ws.last[symbol] = [2]float64{bid, ask}
+	ws.mu.Unlock()
 
+	// Отправка данных дальше
 	c.out <- &models.MarketData{
 		Exchange: "KuCoin",
 		Symbol:   symbol,
@@ -98,52 +120,11 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 }
 
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "ws.last.Get undefined (type map[string]lastData has no field or method Get)",
-	"source": "compiler",
-	"startLineNumber": 217,
-	"startColumn": 34,
-	"endLineNumber": 217,
-	"endColumn": 37,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "ws.last.Set undefined (type map[string]lastData has no field or method Set)",
-	"source": "compiler",
-	"startLineNumber": 221,
-	"startColumn": 10,
-	"endLineNumber": 221,
-	"endColumn": 13,
-	"origin": "extHost1"
-}]
+// normalize оставляем прежним
+func normalize(s string) string {
+	parts := strings.Split(s, "-")
+	return parts[0] + "/" + parts[1]
+}
 
 
 
