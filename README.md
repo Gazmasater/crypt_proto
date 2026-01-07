@@ -109,6 +109,53 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "NonIndexableOperand",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "NonIndexableOperand"
+		}
+	},
+	"severity": 8,
+	"message": "invalid operation: cannot index last (variable of struct type lastData)",
+	"source": "compiler",
+	"startLineNumber": 221,
+	"startColumn": 5,
+	"endLineNumber": 221,
+	"endColumn": 9,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use [2]float64{…} (value of type [2]float64) as lastData value in assignment",
+	"source": "compiler",
+	"startLineNumber": 225,
+	"startColumn": 20,
+	"endLineNumber": 225,
+	"endColumn": 40,
+	"origin": "extHost1"
+}]
+
+
 
 
 
