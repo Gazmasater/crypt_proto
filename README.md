@@ -403,6 +403,33 @@ func parseFloat(v any) float64 {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.024.pb.gz
+File: arb
+Build ID: 0527711348c3ccc54b0a20f31294eecda4811f8a
+Type: cpu
+Time: 2026-01-08 00:01:44 MSK
+Duration: 30s, Total samples = 2.77s ( 9.23%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 1540ms, 55.60% of 2770ms total
+Dropped 124 nodes (cum <= 13.85ms)
+Showing top 10 nodes out of 161
+      flat  flat%   sum%        cum   cum%
+    1090ms 39.35% 39.35%     1090ms 39.35%  internal/runtime/syscall.Syscall6
+     140ms  5.05% 44.40%      140ms  5.05%  runtime.futex
+      70ms  2.53% 46.93%       70ms  2.53%  runtime.nextFreeFast (inline)
+      40ms  1.44% 48.38%       40ms  1.44%  runtime.casgstatus
+      40ms  1.44% 49.82%      210ms  7.58%  runtime.mallocgcSmallScanNoHeader
+      40ms  1.44% 51.26%       40ms  1.44%  strconv.readFloat
+      30ms  1.08% 52.35%      980ms 35.38%  internal/poll.(*FD).Read
+      30ms  1.08% 53.43%       30ms  1.08%  internal/runtime/atomic.(*Bool).Load (inline)
+      30ms  1.08% 54.51%       30ms  1.08%  runtime.nanotime
+      30ms  1.08% 55.60%      200ms  7.22%  runtime.netpoll
+(pprof) 
+
+
 
 
 
