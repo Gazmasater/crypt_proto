@@ -89,6 +89,32 @@ Showing top 10 nodes out of 154
 (pprof) 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.028.pb.gz
+File: arb
+Build ID: 119e2d6e20f521b0a5339543d15161b36cc093bb
+Type: cpu
+Time: 2026-01-08 01:09:46 MSK
+Duration: 30s, Total samples = 1.72s ( 5.73%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 1170ms, 68.02% of 1720ms total
+Showing top 10 nodes out of 156
+      flat  flat%   sum%        cum   cum%
+     760ms 44.19% 44.19%      760ms 44.19%  internal/runtime/syscall.Syscall6
+     170ms  9.88% 54.07%      170ms  9.88%  runtime.futex
+      50ms  2.91% 56.98%       50ms  2.91%  runtime.nextFreeFast (inline)
+      40ms  2.33% 59.30%       40ms  2.33%  runtime.nanotime
+      30ms  1.74% 61.05%       80ms  4.65%  github.com/tidwall/gjson.parseObject
+      30ms  1.74% 62.79%       30ms  1.74%  github.com/tidwall/gjson.parseSquash
+      30ms  1.74% 64.53%       40ms  2.33%  runtime.stealWork
+      20ms  1.16% 65.70%      300ms 17.44%  crypt_proto/internal/collector.(*kucoinWS).handle
+      20ms  1.16% 66.86%       20ms  1.16%  crypto/internal/fips140/aes/gcm.gcmAesData
+      20ms  1.16% 68.02%       20ms  1.16%  crypto/internal/fips140/aes/gcm.gcmAesDec
+(pprof) 
+
+
 
 
 
