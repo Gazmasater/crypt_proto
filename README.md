@@ -382,6 +382,35 @@ func parseFloat(v any) float64 {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.023.pb.gz
+File: arb
+Build ID: 70cc2ece434c4784643adb726d7ef429b224b722
+Type: cpu
+Time: 2026-01-07 10:43:02 MSK
+Duration: 30.03s, Total samples = 2.32s ( 7.73%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 1420ms, 61.21% of 2320ms total
+Dropped 79 nodes (cum <= 11.60ms)
+Showing top 10 nodes out of 131
+      flat  flat%   sum%        cum   cum%
+     940ms 40.52% 40.52%      940ms 40.52%  internal/runtime/syscall.Syscall6
+     130ms  5.60% 46.12%      130ms  5.60%  runtime.futex
+      70ms  3.02% 49.14%      170ms  7.33%  encoding/json.checkValid
+      70ms  3.02% 52.16%       70ms  3.02%  runtime.nextFreeFast (inline)
+      40ms  1.72% 53.88%      860ms 37.07%  crypto/tls.(*Conn).readRecordOrCCS
+      40ms  1.72% 55.60%       40ms  1.72%  encoding/json.stateInString
+      40ms  1.72% 57.33%       40ms  1.72%  runtime.memmove
+      30ms  1.29% 58.62%      360ms 15.52%  encoding/json.(*decodeState).object
+      30ms  1.29% 59.91%       30ms  1.29%  encoding/json.unquoteBytes
+      30ms  1.29% 61.21%       40ms  1.72%  runtime.growslice
+(pprof) 
+
+
+
+
 
 
 
