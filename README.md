@@ -122,6 +122,76 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: normalize",
+	"source": "compiler",
+	"startLineNumber": 221,
+	"startColumn": 12,
+	"endLineNumber": 221,
+	"endColumn": 21,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: parseFloat",
+	"source": "compiler",
+	"startLineNumber": 235,
+	"startColumn": 9,
+	"endLineNumber": 235,
+	"endColumn": 19,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use [2]float64{…} (value of type [2]float64) as [4]float64 value in assignment",
+	"source": "compiler",
+	"startLineNumber": 247,
+	"startColumn": 20,
+	"endLineNumber": 247,
+	"endColumn": 40,
+	"origin": "extHost1"
+}]
+
+
 
 
 
