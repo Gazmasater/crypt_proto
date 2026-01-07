@@ -128,5 +128,29 @@ func normalize(s string) string {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use make(map[string]lastData) (value of type map[string]lastData) as map[string][2]float64 value in struct literal",
+	"source": "compiler",
+	"startLineNumber": 70,
+	"startColumn": 13,
+	"endLineNumber": 70,
+	"endColumn": 38,
+	"origin": "extHost1"
+}]
+
+
 
 
