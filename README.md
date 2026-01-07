@@ -73,7 +73,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,9 +84,8 @@ import (
 
 const (
 	maxSubsPerWS = 50
-	subRate      = 120 * time.Millisecond
+	subRate      = 120 * time.Millisecond // ~8/sec
 	pingInterval = 20 * time.Second
-	retryDelay   = 5 * time.Second
 )
 
 /* ================= POOL ================= */
@@ -98,14 +96,18 @@ type KuCoinCollector struct {
 	out    chan<- *models.MarketData
 }
 
+/* ================= WS ================= */
 type kucoinWS struct {
 	id      int
 	conn    *websocket.Conn
 	symbols []string
-	last    map[string][2]float64
+	last    map[string]lastData
 	mu      sync.Mutex
-	ctx     context.Context
-	cancel  context.CancelFunc
+}
+
+type lastData struct {
+	bidStr, askStr string
+	bid, ask       float64
 }
 
 /* ================= CONSTRUCTOR ================= */
@@ -120,20 +122,15 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wsList []*kucoinWS
-
 	for i := 0; i < len(symbols); i += maxSubsPerWS {
 		end := i + maxSubsPerWS
 		if end > len(symbols) {
 			end = len(symbols)
 		}
-
-		wsCtx, wsCancel := context.WithCancel(ctx)
 		wsList = append(wsList, &kucoinWS{
 			id:      len(wsList),
 			symbols: symbols[i:end],
-			last:    make(map[string][2]float64),
-			ctx:     wsCtx,
-			cancel:  wsCancel,
+			last:    make(map[string]lastData),
 		})
 	}
 
@@ -152,7 +149,12 @@ func (c *KuCoinCollector) Name() string {
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	c.out = out
 	for _, ws := range c.wsList {
-		go ws.run(c)
+		if err := ws.connect(); err != nil {
+			return err
+		}
+		go ws.readLoop(c)
+		go ws.pingLoop()
+		go ws.subscribeLoop()
 	}
 	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
 	return nil
@@ -161,42 +163,11 @@ func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 func (c *KuCoinCollector) Stop() error {
 	c.cancel()
 	for _, ws := range c.wsList {
-		ws.cancel()
 		if ws.conn != nil {
 			ws.conn.Close()
 		}
 	}
 	return nil
-}
-
-/* ================= WS RUN ================= */
-func (ws *kucoinWS) run(c *KuCoinCollector) {
-	for {
-		select {
-		case <-ws.ctx.Done():
-			return
-		default:
-			if err := ws.connect(); err != nil {
-				log.Printf("[KuCoin WS %d] connect failed: %v, retrying in %v", ws.id, err, retryDelay)
-				time.Sleep(retryDelay)
-				continue
-			}
-			log.Printf("[KuCoin WS %d] connected", ws.id)
-
-			wg := &sync.WaitGroup{}
-			wg.Add(3)
-			go ws.readLoop(c, wg)
-			go ws.pingLoop(wg)
-			go ws.subscribeLoop(wg)
-
-			wg.Wait() // все горутины закончили работу (обычно из-за ошибки)
-			log.Printf("[KuCoin WS %d] disconnected, reconnecting...", ws.id)
-			if ws.conn != nil {
-				ws.conn.Close()
-			}
-			time.Sleep(retryDelay)
-		}
-	}
 }
 
 /* ================= CONNECT ================= */
@@ -216,6 +187,7 @@ func (ws *kucoinWS) connect() error {
 			} `json:"instanceServers"`
 		} `json:"data"`
 	}
+
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return err
 	}
@@ -231,68 +203,54 @@ func (ws *kucoinWS) connect() error {
 		return err
 	}
 	ws.conn = conn
+	log.Printf("[KuCoin WS %d] connected\n", ws.id)
 	return nil
 }
 
 /* ================= SUBSCRIBE ================= */
-func (ws *kucoinWS) subscribeLoop(wg *sync.WaitGroup) {
-	defer wg.Done()
-	time.Sleep(1 * time.Second)
+func (ws *kucoinWS) subscribeLoop() {
+	time.Sleep(1 * time.Second) // ждём welcome
 	t := time.NewTicker(subRate)
 	defer t.Stop()
 
 	for _, s := range ws.symbols {
-		select {
-		case <-ws.ctx.Done():
-			return
-		case <-t.C:
-			topic := "/market/ticker:" + s
-			err := ws.conn.WriteJSON(map[string]any{
-				"id":      time.Now().UnixNano(),
-				"type":    "subscribe",
-				"topic":   topic,
-				"response": true,
-			})
-			if err != nil {
-				log.Printf("[KuCoin WS %d] subscribe error %s: %v", ws.id, s, err)
-			}
+		<-t.C
+		topic := "/market/ticker:" + s
+		err := ws.conn.WriteJSON(map[string]any{
+			"id":       time.Now().UnixNano(),
+			"type":     "subscribe",
+			"topic":    topic,
+			"response": true,
+		})
+		if err != nil {
+			log.Printf("[KuCoin WS %d] subscribe error %s\n", ws.id, s)
+		} else {
+			log.Printf("[KuCoin WS %d] subscribed %s\n", ws.id, s)
 		}
 	}
 }
 
 /* ================= PING ================= */
-func (ws *kucoinWS) pingLoop(wg *sync.WaitGroup) {
-	defer wg.Done()
+func (ws *kucoinWS) pingLoop() {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
-
-	for {
-		select {
-		case <-ws.ctx.Done():
-			return
-		case <-t.C:
-			_ = ws.conn.WriteJSON(map[string]any{
-				"id":   time.Now().UnixNano(),
-				"type": "ping",
-			})
-		}
+	for range t.C {
+		_ = ws.conn.WriteJSON(map[string]any{
+			"id":   time.Now().UnixNano(),
+			"type": "ping",
+		})
 	}
 }
 
 /* ================= READ ================= */
-func (ws *kucoinWS) readLoop(c *KuCoinCollector, wg *sync.WaitGroup) {
-	defer wg.Done()
+func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
 	for {
-		select {
-		case <-ws.ctx.Done():
+		_, msg, err := ws.conn.ReadMessage()
+		if err != nil {
+			log.Printf("[KuCoin WS %d] read error: %v\n", ws.id, err)
 			return
-		default:
-			_, msg, err := ws.conn.ReadMessage()
-			if err != nil {
-				return
-			}
-			ws.handle(c, msg)
 		}
+		ws.handle(c, msg)
 	}
 }
 
@@ -314,29 +272,31 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 
 	symbol := normalize(parts[1])
 	data := raw["data"].(map[string]any)
-	bid := parseFloat(data["bestBid"])
-	ask := parseFloat(data["bestAsk"])
-	if bid == 0 || ask == 0 {
-		return
-	}
+	bidStr := fmt.Sprint(data["bestBid"])
+	askStr := fmt.Sprint(data["bestAsk"])
 
 	ws.mu.Lock()
 	last := ws.last[symbol]
-	if last[0] == bid && last[1] == ask {
+	if last.bidStr == bidStr && last.askStr == askStr {
 		ws.mu.Unlock()
-		return
+		return // ничего не изменилось — не парсим
 	}
-	ws.last[symbol] = [2]float64{bid, ask}
+
+	bid := parseFloat(bidStr)
+	ask := parseFloat(askStr)
+	ws.last[symbol] = lastData{
+		bidStr: bidStr,
+		askStr: askStr,
+		bid:    bid,
+		ask:    ask,
+	}
 	ws.mu.Unlock()
 
-	select {
-	case c.out <- &models.MarketData{
+	c.out <- &models.MarketData{
 		Exchange: "KuCoin",
 		Symbol:   symbol,
 		Bid:      bid,
 		Ask:      ask,
-	}:
-	default:
 	}
 }
 
@@ -401,33 +361,6 @@ func parseFloat(v any) float64 {
 	}
 }
 
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.024.pb.gz
-File: arb
-Build ID: 0527711348c3ccc54b0a20f31294eecda4811f8a
-Type: cpu
-Time: 2026-01-08 00:01:44 MSK
-Duration: 30s, Total samples = 2.77s ( 9.23%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 1540ms, 55.60% of 2770ms total
-Dropped 124 nodes (cum <= 13.85ms)
-Showing top 10 nodes out of 161
-      flat  flat%   sum%        cum   cum%
-    1090ms 39.35% 39.35%     1090ms 39.35%  internal/runtime/syscall.Syscall6
-     140ms  5.05% 44.40%      140ms  5.05%  runtime.futex
-      70ms  2.53% 46.93%       70ms  2.53%  runtime.nextFreeFast (inline)
-      40ms  1.44% 48.38%       40ms  1.44%  runtime.casgstatus
-      40ms  1.44% 49.82%      210ms  7.58%  runtime.mallocgcSmallScanNoHeader
-      40ms  1.44% 51.26%       40ms  1.44%  strconv.readFloat
-      30ms  1.08% 52.35%      980ms 35.38%  internal/poll.(*FD).Read
-      30ms  1.08% 53.43%       30ms  1.08%  internal/runtime/atomic.(*Bool).Load (inline)
-      30ms  1.08% 54.51%       30ms  1.08%  runtime.nanotime
-      30ms  1.08% 55.60%      200ms  7.22%  runtime.netpoll
-(pprof) 
 
 
 
