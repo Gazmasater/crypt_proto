@@ -354,28 +354,69 @@ func parseLeg(s string) string {
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "WrongArgCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongArgCount"
+
+
+
+package main
+
+import (
+	"log"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+
+	"crypt_proto/collector"
+	"crypt_proto/pkg/models"
+)
+
+func main() {
+	// ------------------- Пул для MarketData -------------------
+	pool := &sync.Pool{
+		New: func() any {
+			return &models.MarketData{}
+		},
+	}
+
+	// ------------------- Канал для данных -------------------
+	out := make(chan *models.MarketData, 1000) // буфер для скорости
+
+	// ------------------- Создаём KuCoinCollector -------------------
+	kc, err := collector.NewKuCoinCollectorFromCSV("pairs.csv", pool)
+	if err != nil {
+		log.Fatal("KuCoinCollector init error:", err)
+	}
+
+	// ------------------- Старт коллектора -------------------
+	if err := kc.Start(out); err != nil {
+		log.Fatal("KuCoinCollector start error:", err)
+	}
+	log.Println("[Main] KuCoinCollector started")
+
+	// ------------------- Обработка данных -------------------
+	go func() {
+		for md := range out {
+			// Для теста просто выводим
+			log.Printf("[%s] %s | Bid: %f | Ask: %f\n",
+				md.Exchange, md.Symbol, md.Bid, md.Ask)
+
+			// Возвращаем объект в пул
+			pool.Put(md)
 		}
-	},
-	"severity": 8,
-	"message": "not enough arguments in call to collector.NewKuCoinCollectorFromCSV\n\thave (string)\n\twant (string, *\"sync\".Pool)",
-	"source": "compiler",
-	"startLineNumber": 31,
-	"startColumn": 60,
-	"endLineNumber": 31,
-	"endColumn": 60,
-	"origin": "extHost1"
-}]
+	}()
+
+	// ------------------- Ожидание завершения -------------------
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+
+	log.Println("[Main] stopping...")
+	if err := kc.Stop(); err != nil {
+		log.Println("KuCoinCollector stop error:", err)
+	}
+	close(out)
+	log.Println("[Main] stopped")
+}
 
 
 
