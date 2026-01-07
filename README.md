@@ -420,6 +420,16 @@ func main() {
 
 
 
+2026/01/07 23:19:32 [KuCoin WS 0] connected
+2026/01/07 23:19:33 [KuCoin WS 1] connected
+2026/01/07 23:19:34 [KuCoin WS 2] connected
+2026/01/07 23:19:36 [KuCoin WS 3] connected
+2026/01/07 23:19:37 [KuCoin WS 4] connected
+2026/01/07 23:19:37 [KuCoin] started with 5 WS
+2026/01/07 23:19:37 [Main] KuCoinCollector started
+
+
+
 
 
 
