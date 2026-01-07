@@ -69,7 +69,7 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	log.Println("[KuCoin WS DEBUG]", string(msg)) // <-- добавь для дебага
+	log.Println("[KuCoin WS DEBUG]", string(msg))
 
 	if raw["type"] != "message" {
 		return
@@ -87,7 +87,6 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 
 	data, ok := raw["data"].(map[string]any)
 	if !ok {
-		// Иногда data это массив
 		arr, ok := raw["data"].([]any)
 		if ok && len(arr) > 0 {
 			data, ok = arr[0].(map[string]any)
@@ -99,17 +98,20 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 
 	bid := parseFloat(data["bestBid"])
 	ask := parseFloat(data["bestAsk"])
+	bidSize := parseFloat(data["size"])       // если KuCoin возвращает отдельный размер
+	askSize := parseFloat(data["size"])       // для простоты пока одно поле, можно поправить
+
 	if bid == 0 || ask == 0 {
 		return
 	}
 
 	ws.mu.Lock()
 	last := ws.last[symbol]
-	if last[0] == bid && last[1] == ask {
+	if last[0] == bid && last[1] == ask && last[2] == bidSize && last[3] == askSize {
 		ws.mu.Unlock()
 		return
 	}
-	ws.last[symbol] = [2]float64{bid, ask}
+	ws.last[symbol] = [4]float64{bid, ask, bidSize, askSize}
 	ws.mu.Unlock()
 
 	c.out <- &models.MarketData{
@@ -117,79 +119,32 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		Symbol:   symbol,
 		Bid:      bid,
 		Ask:      ask,
+		BidSize:  bidSize,
+		AskSize:  askSize,
 	}
 }
 
 
+func normalize(s string) string {
+	p := strings.Split(s, "-")
+	if len(p) != 2 {
+		return s // возвращаем как есть
+	}
+	return p[0] + "/" + p[1]
+}
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: normalize",
-	"source": "compiler",
-	"startLineNumber": 221,
-	"startColumn": 12,
-	"endLineNumber": 221,
-	"endColumn": 21,
-	"origin": "extHost1"
-}]
+func parseFloat(v any) float64 {
+	switch t := v.(type) {
+	case string:
+		f, _ := strconv.ParseFloat(t, 64)
+		return f
+	case float64:
+		return t
+	default:
+		return 0
+	}
+}
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: parseFloat",
-	"source": "compiler",
-	"startLineNumber": 235,
-	"startColumn": 9,
-	"endLineNumber": 235,
-	"endColumn": 19,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "IncompatibleAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "IncompatibleAssign"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use [2]float64{…} (value of type [2]float64) as [4]float64 value in assignment",
-	"source": "compiler",
-	"startLineNumber": 247,
-	"startColumn": 20,
-	"endLineNumber": 247,
-	"endColumn": 40,
-	"origin": "extHost1"
-}]
 
 
 
