@@ -133,4 +133,30 @@ Showing top 10 nodes out of 151
 
 
 
+type MemoryStore struct {
+	m sync.Map // key -> Quote
+}
+
+func (s *MemoryStore) Run(in <-chan *models.MarketData) {
+	for md := range in {
+		s.m.Store(md.Exchange+"|"+md.Symbol, Quote{
+			Bid: md.Bid, Ask: md.Ask,
+			BidSize: md.BidSize, AskSize: md.AskSize,
+			Timestamp: md.Timestamp,
+		})
+	}
+}
+
+func (s *MemoryStore) Len() int {
+	n := 0
+	s.m.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
+
+
+
 
