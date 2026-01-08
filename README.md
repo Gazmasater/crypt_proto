@@ -63,21 +63,7 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-type MarketData struct {
-	Exchange string
-	Symbol   string
-
-	Bid float64
-	Ask float64
-
-	BidSize float64
-	AskSize float64
-}
-
-
-
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	// быстрый фильтр
 	if gjson.GetBytes(msg, "type").String() != "message" {
 		return
 	}
@@ -97,7 +83,6 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	// 🔥 ГЛАВНЫЙ CPU-ФИЛЬТР
 	ws.mu.Lock()
 	last := ws.last[symbol]
 	if last[0] == bid && last[1] == ask {
@@ -107,31 +92,18 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	ws.last[symbol] = [2]float64{bid, ask}
 	ws.mu.Unlock()
 
-	// объёмы парсим ТОЛЬКО если цена изменилась
 	c.out <- &models.MarketData{
-		Exchange: "KuCoin",
-		Symbol:   symbol,
-		Bid:      bid,
-		Ask:      ask,
-		BidSize:  data.Get("bestBidSize").Float(),
-		AskSize:  data.Get("bestAskSize").Float(),
+		Exchange:  "KuCoin",
+		Symbol:    symbol,
+		Bid:       bid,
+		Ask:       ask,
+		BidSize:   data.Get("bestBidSize").Float(),
+		AskSize:   data.Get("bestAskSize").Float(),
+		Timestamp: time.Now().UnixMilli(),
 	}
 }
 
 
-
-package models
-
-// MarketData хранит данные с биржи для одного инструмента
-type MarketData struct {
-	Exchange  string  `json:"exchange"`  // название биржи
-	Symbol    string  `json:"symbol"`    // торговая пара, например BTC-USDT
-	Bid       float64 `json:"bid"`       // лучшая цена покупки
-	Ask       float64 `json:"ask"`       // лучшая цена продажи
-	BidSize   float64 `json:"bid_size"`  // объём на лучшей цене покупки
-	AskSize   float64 `json:"ask_size"`  // объём на лучшей цене продажи
-	Timestamp int64   `json:"timestamp"` // метка времени в миллисекундах
-}
 
 
 
