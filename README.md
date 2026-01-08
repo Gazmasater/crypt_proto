@@ -184,5 +184,65 @@ Showing top 10 nodes out of 160
 
 
 
+type MemoryStore struct {
+	m     sync.Map           // key -> Quote
+	batch chan *models.MarketData
+}
+
+// NewMemoryStore создаёт MemoryStore с буфером для батчей
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{
+		batch: make(chan *models.MarketData, 10_000),
+	}
+}
+
+// Run обрабатывает входящие котировки пакетами
+func (s *MemoryStore) Run(in <-chan *models.MarketData) {
+	const batchSize = 100
+	buffer := make([]*models.MarketData, 0, batchSize)
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	flush := func() {
+		for _, md := range buffer {
+			key := md.Exchange + "|" + md.Symbol
+			s.m.Store(key, Quote{
+				Bid: md.Bid, Ask: md.Ask,
+				BidSize: md.BidSize, AskSize: md.AskSize,
+				Timestamp: md.Timestamp,
+			})
+		}
+		buffer = buffer[:0]
+	}
+
+	for {
+		select {
+		case md, ok := <-in:
+			if !ok {
+				flush()
+				return
+			}
+			buffer = append(buffer, md)
+			if len(buffer) >= batchSize {
+				flush()
+			}
+		case <-ticker.C:
+			if len(buffer) > 0 {
+				flush()
+			}
+		}
+	}
+}
+
+// Snapshot возвращает актуальные котировки
+func (s *MemoryStore) Snapshot() map[string]Quote {
+	snapshot := make(map[string]Quote)
+	s.m.Range(func(k, v any) bool {
+		snapshot[k.(string)] = v.(Quote)
+		return true
+	})
+	return snapshot
+}
 
 
