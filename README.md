@@ -63,16 +63,73 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+package collector
+
+import "crypt_proto/pkg/calculator"
+
+// ------------------ В KuCoinCollector ------------------
+
+// Добавляем поле для треугольников
+type KuCoinCollector struct {
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wsList    []*kucoinWS
+	out       chan<- *models.MarketData
+	triangles []calculator.Triangle // <- сюда сохраняем треугольники из CSV
+}
+
+// В конструкторе NewKuCoinCollectorFromCSV после чтения CSV:
+func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
+	symbols, err := readPairsFromCSV(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(symbols) == 0 {
+		return nil, fmt.Errorf("no symbols")
+	}
+
+	// --- формируем треугольники ---
+	triangles := calculator.ParseTrianglesFromCSV(path) // <- создаём функцию, которая вернёт []Triangle
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wsList []*kucoinWS
+	for i := 0; i < len(symbols); i += maxSubsPerWS {
+		end := i + maxSubsPerWS
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		wsList = append(wsList, &kucoinWS{
+			id:      len(wsList),
+			symbols: symbols[i:end],
+			last:    make(map[string][2]float64),
+		})
+	}
+
+	return &KuCoinCollector{
+		ctx:       ctx,
+		cancel:    cancel,
+		wsList:    wsList,
+		triangles: triangles,
+	}, nil
+}
+
+// ------------------ Метод для калькулятора ------------------
+func (kc *KuCoinCollector) Triangles() []calculator.Triangle {
+	return kc.triangles
+}
+
+
+
+
 package calculator
 
 import (
-	"log"
-
-	"crypt_proto/pkg/models"
-	"crypt_proto/pkg/store"
+	"encoding/csv"
+	"os"
+	"strings"
 )
 
-// Triangle описывает один треугольник для арбитража
+// Triangle — структура треугольника
 type Triangle struct {
 	A, B, C string
 	Leg1    string
@@ -80,153 +137,43 @@ type Triangle struct {
 	Leg3    string
 }
 
-// Calculator считает профит по треугольникам
-type Calculator struct {
-	triangles []Triangle
-	mem       *store.MemoryStore
-}
-
-// NewCalculator создаёт калькулятор
-func NewCalculator(triangles []Triangle, mem *store.MemoryStore) *Calculator {
-	return &Calculator{
-		triangles: triangles,
-		mem:       mem,
-	}
-}
-
-// Run запускает постоянный цикл вычислений
-func (c *Calculator) Run() {
-	for {
-		snapshot := c.mem.Snapshot()
-
-		for _, tri := range c.triangles {
-			// Берём цены с MemoryStore
-			leg1, ok1 := snapshot["KuCoin|"+tri.Leg1]
-			leg2, ok2 := snapshot["KuCoin|"+tri.Leg2]
-			leg3, ok3 := snapshot["KuCoin|"+tri.Leg3]
-
-			if !ok1 || !ok2 || !ok3 {
-				continue // ждём, пока будут все цены
-			}
-
-			// Простейший расчет "профита" (пример)
-			// Начинаем с 1 единицы A
-			amount := 1.0
-
-			// Leg1: BUY
-			amount /= leg1.Ask // тратим Ask для покупки B
-			// Leg2: SELL
-			amount *= leg2.Bid // продаём B за C
-			// Leg3: SELL
-			amount *= leg3.Bid // продаём C за A
-
-			profit := amount - 1.0
-			if profit > 0 {
-				log.Printf("[Arb] Triangle %s-%s-%s Profit=%.6f", tri.A, tri.B, tri.C, profit)
-			}
-		}
-		// Частота вычислений
-		// Можно добавить time.Sleep(100 * time.Millisecond) если много треугольников
-	}
-}
-
-
-
-
-
-package main
-
-import (
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-	"net/http"
-	_ "net/http/pprof"
-
-	"crypt_proto/internal/collector"
-	"crypt_proto/pkg/calculator"
-	"crypt_proto/pkg/models"
-	"crypt_proto/pkg/store"
-)
-
-func main() {
-	go func() {
-		log.Println("pprof on http://localhost:6060/debug/pprof/")
-		_ = http.ListenAndServe("localhost:6060", nil)
-	}()
-
-	// ------------------- Канал для данных -------------------
-	out := make(chan *models.MarketData, 100_000)
-
-	// ------------------- In-Memory Store -------------------
-	mem := store.NewMemoryStore()
-	go mem.Run(out)
-
-	// ------------------- Коллектор -------------------
-	kc, err := collector.NewKuCoinCollectorFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
+// ParseTrianglesFromCSV парсит CSV и возвращает треугольники
+func ParseTrianglesFromCSV(path string) []Triangle {
+	f, err := os.Open(path)
 	if err != nil {
-		log.Fatal(err)
+		return nil
 	}
+	defer f.Close()
 
-	if err := kc.Start(out); err != nil {
-		log.Fatal(err)
-	}
-	log.Println("[Main] KuCoinCollector started")
-
-	// ------------------- Загружаем треугольники из CSV -------------------
-	triangles, err := collector.LoadTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
+	r := csv.NewReader(f)
+	rows, err := r.ReadAll()
 	if err != nil {
-		log.Fatal(err)
+		return nil
 	}
 
-	// ------------------- Запуск калькулятора -------------------
-	calc := calculator.NewCalculator(triangles, mem)
-	go calc.Run()
-
-	// ------------------- Вывод snapshot для проверки -------------------
-	go func() {
-		for {
-			snap := mem.Snapshot()
-			log.Printf("[Store] quotes=%d", len(snap))
-			time.Sleep(5 * time.Second)
+	var triangles []Triangle
+	for _, row := range rows[1:] {
+		if len(row) < 6 {
+			continue
 		}
-	}()
-
-	// ------------------- Завершение при SIGINT / SIGTERM -------------------
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-
-	kc.Stop()
-	close(out)
-	log.Println("[Main] Exited.")
+		triangles = append(triangles, Triangle{
+			A:    row[0],
+			B:    row[1],
+			C:    row[2],
+			Leg1: row[3],
+			Leg2: row[4],
+			Leg3: row[5],
+		})
+	}
+	return triangles
 }
 
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredImportedName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredImportedName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: collector.LoadTrianglesFromCSV",
-	"source": "compiler",
-	"startLineNumber": 43,
-	"startColumn": 30,
-	"endLineNumber": 43,
-	"endColumn": 50,
-	"origin": "extHost1"
-}]
+
+triangles := kc.Triangles()
+calc := calculator.NewCalculator(triangles, mem)
+go calc.Run()
+
 
