@@ -205,3 +205,28 @@ func main() {
 }
 
 
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredImportedName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredImportedName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: collector.LoadTrianglesFromCSV",
+	"source": "compiler",
+	"startLineNumber": 43,
+	"startColumn": 30,
+	"endLineNumber": 43,
+	"endColumn": 50,
+	"origin": "extHost1"
+}]
+
