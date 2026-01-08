@@ -63,37 +63,6 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-type MemoryStore interface {
-	Get(key string) (Quote, bool)
-}
-
-func (s *MemoryStore) Get(key string) (Quote, bool) {
-	v, ok := s.m.Load(key)
-	if !ok {
-		return Quote{}, false
-	}
-	return v.(Quote), true
-}
-
-
-func NewCalculator(mem *store.MemoryStore, triangles []Triangle) *Calculator {
-	return &Calculator{
-		mem:       mem,
-		triangles: triangles,
-	}
-}
-
-
-func legSymbol(leg string) string {
-	// "BUY COTI/USDT" -> "COTI/USDT"
-	parts := strings.Fields(leg)
-	if len(parts) != 2 {
-		return ""
-	}
-	return strings.ToUpper(parts[1])
-}
-
-
 func (c *Calculator) Run() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -160,6 +129,23 @@ func (c *Calculator) Run() {
 		}
 	}
 }
+
+
+func legSymbol(leg string) string {
+	// "BUY COTI/USDT" -> "COTI/USDT"
+	parts := strings.Fields(leg)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.ToUpper(parts[1])
+}
+
+
+
+type MemoryStore interface {
+	Get(key string) (Quote, bool)
+}
+
 
 
 
