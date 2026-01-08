@@ -63,39 +63,96 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+package calculator
+
+import (
+	"log"
+	"strings"
+	"time"
+
+	"crypt_proto/pkg/models"
+)
+
+// Triangle описывает один треугольный арбитраж
+type Triangle struct {
+	A, B, C string // имена валют для логов
+	Leg1, Leg2, Leg3 string // "BUY COTI/USDT", "SELL COTI/BTC" и т.д.
+}
+
+// Calculator считает профит по треугольникам
+type Calculator struct {
+	mem       *MemoryStore
+	triangles []Triangle
+}
+
+// NewCalculator создаёт калькулятор
+func NewCalculator(mem *MemoryStore, triangles []Triangle) *Calculator {
+	return &Calculator{
+		mem:       mem,
+		triangles: triangles,
+	}
+}
+
+// Run запускает цикл расчёта
 func (c *Calculator) Run() {
 	for {
 		snapshot := c.mem.Snapshot()
+		count := 0
 
 		for _, tri := range c.triangles {
-			// Берём цены с MemoryStore
-			leg1, ok1 := snapshot["KuCoin|"+tri.Leg1]
-			leg2, ok2 := snapshot["KuCoin|"+tri.Leg2]
-			leg3, ok3 := snapshot["KuCoin|"+tri.Leg3]
+			leg1Key := "KuCoin|" + parseLegSymbol(tri.Leg1)
+			leg2Key := "KuCoin|" + parseLegSymbol(tri.Leg2)
+			leg3Key := "KuCoin|" + parseLegSymbol(tri.Leg3)
+
+			leg1, ok1 := snapshot[leg1Key]
+			leg2, ok2 := snapshot[leg2Key]
+			leg3, ok3 := snapshot[leg3Key]
 
 			if !ok1 || !ok2 || !ok3 {
-				continue // ждём, пока будут все цены
+				continue
 			}
 
-			// Простейший расчет "профита" (пример)
-			// Начинаем с 1 единицы A
+			// начинаем с 1 единицы валюты A
 			amount := 1.0
 
-			// Leg1: BUY
-			amount /= leg1.Ask // тратим Ask для покупки B
-			// Leg2: SELL
-			amount *= leg2.Bid // продаём B за C
-			// Leg3: SELL
-			amount *= leg3.Bid // продаём C за A
+			// Leg1
+			if strings.HasPrefix(tri.Leg1, "BUY") {
+				amount /= leg1.Ask // покупаем B за A
+			} else {
+				amount *= leg1.Bid // продаём A за B
+			}
+
+			// Leg2
+			if strings.HasPrefix(tri.Leg2, "BUY") {
+				amount /= leg2.Ask
+			} else {
+				amount *= leg2.Bid
+			}
+
+			// Leg3
+			if strings.HasPrefix(tri.Leg3, "BUY") {
+				amount /= leg3.Ask
+			} else {
+				amount *= leg3.Bid
+			}
 
 			profit := amount - 1.0
-			//	if profit > -0.5 {
+			count++
 			log.Printf("[Arb] Triangle %s-%s-%s Profit=%.6f", tri.A, tri.B, tri.C, profit)
-			//	}
 		}
-		// Частота вычислений
-		// Можно добавить time.Sleep(100 * time.Millisecond) если много треугольников
+
+		log.Printf("[Arb] Calculated %d triangles", count)
+		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// parseLegSymbol возвращает символ из строки Leg
+func parseLegSymbol(leg string) string {
+	parts := strings.Fields(leg)
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[1] // "COTI/USDT"
 }
 
 
