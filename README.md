@@ -63,81 +63,67 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package store
+package main
 
 import (
-	"sync/atomic"
-	"time"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
+	"net/http"
+	_ "net/http/pprof"
+
+	"crypt_proto/internal/collector"
 	"crypt_proto/pkg/models"
 )
 
-type Quote struct {
-	Bid       float64
-	Ask       float64
-	BidSize   float64
-	AskSize   float64
-	Timestamp int64
-}
+func main() {
 
-type MemoryStore struct {
-	data atomic.Value // map[string]Quote
-}
-
-func NewMemoryStore() *MemoryStore {
-	s := &MemoryStore{}
-	s.data.Store(make(map[string]Quote))
-	return s
-}
-
-
-func (s *MemoryStore) Run(in <-chan *models.MarketData) {
-	for md := range in {
-		old := s.data.Load().(map[string]Quote)
-
-		// copy-on-write (дёшево, т.к. map маленькая)
-		next := make(map[string]Quote, len(old)+1)
-		for k, v := range old {
-			next[k] = v
+	go func() {
+		log.Println("pprof on http://localhost:6060/debug/pprof/")
+		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+			log.Printf("pprof server error: %v", err)
 		}
+	}()
 
-		next[md.Exchange+"|"+md.Symbol] = Quote{
-			Bid:       md.Bid,
-			Ask:       md.Ask,
-			BidSize:   md.BidSize,
-			AskSize:   md.AskSize,
-			Timestamp: md.Timestamp,
-		}
+	// ------------------- Канал для данных -------------------
+	out := make(chan *models.MarketData, 100)
 
-		s.data.Store(next)
+	// ------------------- Создание коллектора -------------------
+	kc, err := collector.NewKuCoinCollectorFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
+	if err != nil {
+		log.Fatal("Failed to create KuCoinCollector:", err)
 	}
+
+	// ------------------- Запуск коллектора -------------------
+	if err := kc.Start(out); err != nil {
+		log.Fatal("Failed to start KuCoinCollector:", err)
+	}
+
+	log.Println("[Main] KuCoinCollector started. Listening for data...")
+
+	// ------------------- Обработка данных -------------------
+	//go func() {
+	//	for data := range out {
+	//		log.Printf("[MarketData] %s %s bid=%.6f bidsize=%.6f ask=%.6f  asksize=%.6f",
+	//			data.Exchange, data.Symbol, data.Bid, data.BidSize, data.Ask, data.AskSize)
+	//	}
+	//}()
+
+	// ------------------- Завершение при SIGINT / SIGTERM -------------------
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	log.Println("[Main] Stopping KuCoinCollector...")
+	if err := kc.Stop(); err != nil {
+		log.Println("Error stopping collector:", err)
+	}
+	close(out)
+	log.Println("[Main] Exited.")
 }
 
-
-func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
-	m := s.data.Load().(map[string]Quote)
-	q, ok := m[exchange+"|"+symbol]
-	return q, ok
-}
-
-func (s *MemoryStore) Snapshot() map[string]Quote {
-	return s.data.Load().(map[string]Quote)
-}
-
-
-
-
-В handle():
-
-c.out <- &models.MarketData{
-	Exchange:  "KuCoin",
-	Symbol:    symbol,
-	Bid:       bid,
-	Ask:       ask,
-	BidSize:   bidSize,
-	AskSize:   askSize,
-	Timestamp: time.Now().UnixMilli(),
-}
 
 
 
