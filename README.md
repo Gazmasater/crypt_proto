@@ -63,62 +63,81 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	if gjson.GetBytes(msg, "type").String() != "message" {
-		return
-	}
+package store
 
-	topic := gjson.GetBytes(msg, "topic").String()
-	if !strings.HasPrefix(topic, "/market/ticker:") {
-		return
-	}
+import (
+	"sync/atomic"
+	"time"
 
-	symbol := normalize(strings.TrimPrefix(topic, "/market/ticker:"))
+	"crypt_proto/pkg/models"
+)
 
-	data := gjson.GetBytes(msg, "data")
+type Quote struct {
+	Bid       float64
+	Ask       float64
+	BidSize   float64
+	AskSize   float64
+	Timestamp int64
+}
 
-	bid := data.Get("bestBid").Float()
-	ask := data.Get("bestAsk").Float()
-	if bid == 0 || ask == 0 {
-		return
-	}
+type MemoryStore struct {
+	data atomic.Value // map[string]Quote
+}
 
-	ws.mu.Lock()
-	last := ws.last[symbol]
-	if last[0] == bid && last[1] == ask {
-		ws.mu.Unlock()
-		return
-	}
-	ws.last[symbol] = [2]float64{bid, ask}
-	ws.mu.Unlock()
+func NewMemoryStore() *MemoryStore {
+	s := &MemoryStore{}
+	s.data.Store(make(map[string]Quote))
+	return s
+}
 
-	c.out <- &models.MarketData{
-		Exchange:  "KuCoin",
-		Symbol:    symbol,
-		Bid:       bid,
-		Ask:       ask,
-		BidSize:   data.Get("bestBidSize").Float(),
-		AskSize:   data.Get("bestAskSize").Float(),
-		Timestamp: time.Now().UnixMilli(),
+
+func (s *MemoryStore) Run(in <-chan *models.MarketData) {
+	for md := range in {
+		old := s.data.Load().(map[string]Quote)
+
+		// copy-on-write (дёшево, т.к. map маленькая)
+		next := make(map[string]Quote, len(old)+1)
+		for k, v := range old {
+			next[k] = v
+		}
+
+		next[md.Exchange+"|"+md.Symbol] = Quote{
+			Bid:       md.Bid,
+			Ask:       md.Ask,
+			BidSize:   md.BidSize,
+			AskSize:   md.AskSize,
+			Timestamp: md.Timestamp,
+		}
+
+		s.data.Store(next)
 	}
 }
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.034.pb.gz
-File: arb
-Build ID: 12de8afd697c42502299d5ac8f4278278a678702
-Type: cpu
-Time: 2026-01-08 09:54:54 MSK
-Duration: 30.02s, Total samples = 0 
-No samples were found with the default sample value type.
-Try "sample_index" command to analyze different sample values.
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 0, 0% of 0 total
-      flat  flat%   sum%        cum   cum%
-(pprof) 
+func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
+	m := s.data.Load().(map[string]Quote)
+	q, ok := m[exchange+"|"+symbol]
+	return q, ok
+}
+
+func (s *MemoryStore) Snapshot() map[string]Quote {
+	return s.data.Load().(map[string]Quote)
+}
+
+
+
+
+В handle():
+
+c.out <- &models.MarketData{
+	Exchange:  "KuCoin",
+	Symbol:    symbol,
+	Bid:       bid,
+	Ask:       ask,
+	BidSize:   bidSize,
+	AskSize:   askSize,
+	Timestamp: time.Now().UnixMilli(),
+}
 
 
 
