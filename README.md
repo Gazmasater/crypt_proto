@@ -63,118 +63,40 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package collector
+func (c *Calculator) Run() {
+	for {
+		snapshot := c.mem.Snapshot()
 
-import "crypt_proto/pkg/calculator"
+		for _, tri := range c.triangles {
+			// Берём цены с MemoryStore
+			leg1, ok1 := snapshot["KuCoin|"+tri.Leg1]
+			leg2, ok2 := snapshot["KuCoin|"+tri.Leg2]
+			leg3, ok3 := snapshot["KuCoin|"+tri.Leg3]
 
-// ------------------ В KuCoinCollector ------------------
+			if !ok1 || !ok2 || !ok3 {
+				continue // ждём, пока будут все цены
+			}
 
-// Добавляем поле для треугольников
-type KuCoinCollector struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wsList    []*kucoinWS
-	out       chan<- *models.MarketData
-	triangles []calculator.Triangle // <- сюда сохраняем треугольники из CSV
-}
+			// Простейший расчет "профита" (пример)
+			// Начинаем с 1 единицы A
+			amount := 1.0
 
-// В конструкторе NewKuCoinCollectorFromCSV после чтения CSV:
-func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
-	symbols, err := readPairsFromCSV(path)
-	if err != nil {
-		return nil, err
-	}
-	if len(symbols) == 0 {
-		return nil, fmt.Errorf("no symbols")
-	}
+			// Leg1: BUY
+			amount /= leg1.Ask // тратим Ask для покупки B
+			// Leg2: SELL
+			amount *= leg2.Bid // продаём B за C
+			// Leg3: SELL
+			amount *= leg3.Bid // продаём C за A
 
-	// --- формируем треугольники ---
-	triangles := calculator.ParseTrianglesFromCSV(path) // <- создаём функцию, которая вернёт []Triangle
-
-	ctx, cancel := context.WithCancel(context.Background())
-	var wsList []*kucoinWS
-	for i := 0; i < len(symbols); i += maxSubsPerWS {
-		end := i + maxSubsPerWS
-		if end > len(symbols) {
-			end = len(symbols)
+			profit := amount - 1.0
+			//	if profit > -0.5 {
+			log.Printf("[Arb] Triangle %s-%s-%s Profit=%.6f", tri.A, tri.B, tri.C, profit)
+			//	}
 		}
-		wsList = append(wsList, &kucoinWS{
-			id:      len(wsList),
-			symbols: symbols[i:end],
-			last:    make(map[string][2]float64),
-		})
+		// Частота вычислений
+		// Можно добавить time.Sleep(100 * time.Millisecond) если много треугольников
 	}
-
-	return &KuCoinCollector{
-		ctx:       ctx,
-		cancel:    cancel,
-		wsList:    wsList,
-		triangles: triangles,
-	}, nil
 }
 
-// ------------------ Метод для калькулятора ------------------
-func (kc *KuCoinCollector) Triangles() []calculator.Triangle {
-	return kc.triangles
-}
-
-
-
-
-
-package calculator
-
-import (
-	"encoding/csv"
-	"os"
-	"strings"
-)
-
-// Triangle — структура треугольника
-type Triangle struct {
-	A, B, C string
-	Leg1    string
-	Leg2    string
-	Leg3    string
-}
-
-// ParseTrianglesFromCSV парсит CSV и возвращает треугольники
-func ParseTrianglesFromCSV(path string) []Triangle {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	rows, err := r.ReadAll()
-	if err != nil {
-		return nil
-	}
-
-	var triangles []Triangle
-	for _, row := range rows[1:] {
-		if len(row) < 6 {
-			continue
-		}
-		triangles = append(triangles, Triangle{
-			A:    row[0],
-			B:    row[1],
-			C:    row[2],
-			Leg1: row[3],
-			Leg2: row[4],
-			Leg3: row[5],
-		})
-	}
-	return triangles
-}
-
-
-
-
-
-triangles := kc.Triangles()
-calc := calculator.NewCalculator(triangles, mem)
-go calc.Run()
 
 
