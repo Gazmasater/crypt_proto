@@ -14,6 +14,7 @@ import (
 
 	"github.com/tidwall/gjson"
 
+	"crypt_proto/internal/calculator"
 	"crypt_proto/pkg/models"
 
 	"github.com/gorilla/websocket"
@@ -27,10 +28,11 @@ const (
 
 /* ================= POOL ================= */
 type KuCoinCollector struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	wsList []*kucoinWS
-	out    chan<- *models.MarketData
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wsList    []*kucoinWS
+	out       chan<- *models.MarketData
+	triangles []calculator.Triangle
 }
 
 /* ================= WS ================= */
@@ -52,6 +54,9 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 		return nil, fmt.Errorf("no symbols")
 	}
 
+	// --- формируем треугольники ---
+	triangles, _ := calculator.ParseTrianglesFromCSV(path) // <- создаём функцию, которая вернёт []Triangle
+
 	ctx, cancel := context.WithCancel(context.Background())
 	var wsList []*kucoinWS
 	for i := 0; i < len(symbols); i += maxSubsPerWS {
@@ -67,10 +72,15 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 	}
 
 	return &KuCoinCollector{
-		ctx:    ctx,
-		cancel: cancel,
-		wsList: wsList,
+		ctx:       ctx,
+		cancel:    cancel,
+		wsList:    wsList,
+		triangles: triangles,
 	}, nil
+}
+
+func (kc *KuCoinCollector) Triangles() []calculator.Triangle {
+	return kc.triangles
 }
 
 /* ================= INTERFACE ================= */
