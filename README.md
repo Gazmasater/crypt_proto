@@ -157,6 +157,32 @@ func (s *MemoryStore) Len() int {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.037.pb.gz
+File: arb
+Build ID: ead79ba5653d9e1b3747c2881faec25f99f173b5
+Type: cpu
+Time: 2026-01-08 10:45:12 MSK
+Duration: 30s, Total samples = 1.56s ( 5.20%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 1010ms, 64.74% of 1560ms total
+Showing top 10 nodes out of 160
+      flat  flat%   sum%        cum   cum%
+     680ms 43.59% 43.59%      680ms 43.59%  internal/runtime/syscall.Syscall6
+     150ms  9.62% 53.21%      150ms  9.62%  runtime.futex
+      30ms  1.92% 55.13%       30ms  1.92%  runtime.nextFreeFast
+      30ms  1.92% 57.05%      120ms  7.69%  runtime.reentersyscall
+      20ms  1.28% 58.33%       20ms  1.28%  github.com/gorilla/websocket.(*messageReader).Read
+      20ms  1.28% 59.62%       20ms  1.28%  github.com/tidwall/gjson.parseSquash
+      20ms  1.28% 60.90%       20ms  1.28%  internal/runtime/maps.ctrlGroup.matchH2
+      20ms  1.28% 62.18%       20ms  1.28%  memeqbody
+      20ms  1.28% 63.46%       20ms  1.28%  runtime.(*spanSet).push
+      20ms  1.28% 64.74%       20ms  1.28%  runtime.(*timers).check
+(pprof) 
+
+
 
 
 
