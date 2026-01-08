@@ -63,57 +63,284 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.026.pb.gz
-File: arb
-Build ID: 1f1f95b8e0ca67922f6912d7eb16f8b22a5639b1
-Type: cpu
-Time: 2026-01-08 00:46:11 MSK
-Duration: 30.11s, Total samples = 1.90s ( 6.31%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 1330ms, 70.00% of 1900ms total
-Showing top 10 nodes out of 154
-      flat  flat%   sum%        cum   cum%
-     950ms 50.00% 50.00%      950ms 50.00%  internal/runtime/syscall.Syscall6
-     180ms  9.47% 59.47%      180ms  9.47%  runtime.futex
-      30ms  1.58% 61.05%       30ms  1.58%  crypto/internal/fips140/aes/gcm.gcmAesDec
-      30ms  1.58% 62.63%       70ms  3.68%  github.com/tidwall/gjson.parseObject
-      30ms  1.58% 64.21%      440ms 23.16%  runtime.findRunnable
-      30ms  1.58% 65.79%       70ms  3.68%  runtime.mallocgc
-      20ms  1.05% 66.84%       20ms  1.05%  crypto/internal/fips140/aes.encryptBlockAsm
-      20ms  1.05% 67.89%       20ms  1.05%  github.com/tidwall/gjson.parseString
-      20ms  1.05% 68.95%       20ms  1.05%  internal/poll.convertErr
-      20ms  1.05% 70.00%       20ms  1.05%  runtime.(*randomEnum).next (inline)
-(pprof) 
+package collector
 
+import (
+	"context"
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.028.pb.gz
-File: arb
-Build ID: 119e2d6e20f521b0a5339543d15161b36cc093bb
-Type: cpu
-Time: 2026-01-08 01:09:46 MSK
-Duration: 30s, Total samples = 1.72s ( 5.73%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 1170ms, 68.02% of 1720ms total
-Showing top 10 nodes out of 156
-      flat  flat%   sum%        cum   cum%
-     760ms 44.19% 44.19%      760ms 44.19%  internal/runtime/syscall.Syscall6
-     170ms  9.88% 54.07%      170ms  9.88%  runtime.futex
-      50ms  2.91% 56.98%       50ms  2.91%  runtime.nextFreeFast (inline)
-      40ms  2.33% 59.30%       40ms  2.33%  runtime.nanotime
-      30ms  1.74% 61.05%       80ms  4.65%  github.com/tidwall/gjson.parseObject
-      30ms  1.74% 62.79%       30ms  1.74%  github.com/tidwall/gjson.parseSquash
-      30ms  1.74% 64.53%       40ms  2.33%  runtime.stealWork
-      20ms  1.16% 65.70%      300ms 17.44%  crypt_proto/internal/collector.(*kucoinWS).handle
-      20ms  1.16% 66.86%       20ms  1.16%  crypto/internal/fips140/aes/gcm.gcmAesData
-      20ms  1.16% 68.02%       20ms  1.16%  crypto/internal/fips140/aes/gcm.gcmAesDec
-(pprof) 
+	"github.com/tidwall/gjson"
 
+	"crypt_proto/pkg/models"
+
+	"github.com/gorilla/websocket"
+)
+
+const (
+	maxSubsPerWS = 90
+	subRate      = 120 * time.Millisecond // ~8/sec
+	pingInterval = 20 * time.Second
+)
+
+/* ================= POOL ================= */
+type KuCoinCollector struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	wsList []*kucoinWS
+	out    chan<- *models.MarketData
+}
+
+/* ================= WS ================= */
+type kucoinWS struct {
+	id      int
+	conn    *websocket.Conn
+	symbols []string
+	last    map[string][2]float64
+	mu      sync.Mutex
+}
+
+/* ================= CONSTRUCTOR ================= */
+func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
+	symbols, err := readPairsFromCSV(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(symbols) == 0 {
+		return nil, fmt.Errorf("no symbols")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wsList []*kucoinWS
+	for i := 0; i < len(symbols); i += maxSubsPerWS {
+		end := i + maxSubsPerWS
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		wsList = append(wsList, &kucoinWS{
+			id:      len(wsList),
+			symbols: symbols[i:end],
+			last:    make(map[string][2]float64),
+		})
+	}
+
+	return &KuCoinCollector{
+		ctx:    ctx,
+		cancel: cancel,
+		wsList: wsList,
+	}, nil
+}
+
+/* ================= INTERFACE ================= */
+func (c *KuCoinCollector) Name() string {
+	return "KuCoin"
+}
+
+func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
+	c.out = out
+	for _, ws := range c.wsList {
+		if err := ws.connect(); err != nil {
+			return err
+		}
+		go ws.readLoop(c)
+		go ws.pingLoop()
+		go ws.subscribeLoop()
+	}
+	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
+	return nil
+}
+
+func (c *KuCoinCollector) Stop() error {
+	c.cancel()
+	for _, ws := range c.wsList {
+		if ws.conn != nil {
+			ws.conn.Close()
+		}
+	}
+	return nil
+}
+
+/* ================= CONNECT ================= */
+func (ws *kucoinWS) connect() error {
+	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Data struct {
+			Token           string `json:"token"`
+			InstanceServers []struct {
+				Endpoint string `json:"endpoint"`
+			} `json:"instanceServers"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("%s?token=%s&connectId=%d",
+		r.Data.InstanceServers[0].Endpoint,
+		r.Data.Token,
+		time.Now().UnixNano(),
+	)
+
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		return err
+	}
+	ws.conn = conn
+	log.Printf("[KuCoin WS %d] connected\n", ws.id)
+	return nil
+}
+
+/* ================= SUBSCRIBE ================= */
+func (ws *kucoinWS) subscribeLoop() {
+	time.Sleep(1 * time.Second) // ждём welcome
+	t := time.NewTicker(subRate)
+	defer t.Stop()
+
+	for _, s := range ws.symbols {
+		<-t.C
+		topic := "/market/ticker:" + s
+		err := ws.conn.WriteJSON(map[string]any{
+			"id":       time.Now().UnixNano(),
+			"type":     "subscribe",
+			"topic":    topic,
+			"response": true,
+		})
+		if err != nil {
+			log.Printf("[KuCoin WS %d] subscribe error %s\n", ws.id, s)
+		} else {
+			log.Printf("[KuCoin WS %d] subscribed %s\n", ws.id, s)
+		}
+	}
+}
+
+/* ================= PING ================= */
+func (ws *kucoinWS) pingLoop() {
+	t := time.NewTicker(pingInterval)
+	defer t.Stop()
+	for range t.C {
+		_ = ws.conn.WriteJSON(map[string]any{
+			"id":   time.Now().UnixNano(),
+			"type": "ping",
+		})
+	}
+}
+
+/* ================= READ ================= */
+func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
+	for {
+		_, msg, err := ws.conn.ReadMessage()
+		if err != nil {
+			log.Printf("[KuCoin WS %d] read error: %v\n", ws.id, err)
+			return
+		}
+		ws.handle(c, msg)
+	}
+}
+
+/* ================= HANDLE ================= */
+func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+	// Быстрая проверка type
+	if gjson.GetBytes(msg, "type").String() != "message" {
+		return
+	}
+
+	// Быстрая проверка topic
+	topic := gjson.GetBytes(msg, "topic").String()
+	parts := strings.Split(topic, ":")
+	if len(parts) != 2 {
+		return
+	}
+	symbol := normalize(parts[1])
+
+	// Извлечение цен через gjson
+	data := gjson.GetBytes(msg, "data")
+	bid := data.Get("bestBid").Float()
+	ask := data.Get("bestAsk").Float()
+	if bid == 0 || ask == 0 {
+		return
+	}
+
+	// Проверяем, изменилась ли цена
+	ws.mu.Lock()
+	last := ws.last[symbol]
+	if last[0] == bid && last[1] == ask {
+		ws.mu.Unlock()
+		return
+	}
+	ws.last[symbol] = [2]float64{bid, ask}
+	ws.mu.Unlock()
+
+	// Отправка данных дальше
+	c.out <- &models.MarketData{
+		Exchange: "KuCoin",
+		Symbol:   symbol,
+		Bid:      bid,
+		Ask:      ask,
+	}
+}
+
+/* ================= CSV ================= */
+func readPairsFromCSV(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	rows, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	set := make(map[string]struct{})
+	for _, row := range rows[1:] {
+		for i := 3; i <= 5 && i < len(row); i++ {
+			p := parseLeg(row[i])
+			if p != "" {
+				set[p] = struct{}{}
+			}
+		}
+	}
+
+	var res []string
+	for k := range set {
+		res = append(res, k)
+	}
+	return res, nil
+}
+
+/* ================= HELPERS ================= */
+func parseLeg(s string) string {
+	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
+	if len(parts) < 2 {
+		return ""
+	}
+	p := strings.Split(parts[1], "/")
+	if len(p) != 2 {
+		return ""
+	}
+	return p[0] + "-" + p[1]
+}
+
+func normalize(s string) string {
+	parts := strings.Split(s, "-")
+	return parts[0] + "/" + parts[1]
+}
 
 
 
