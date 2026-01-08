@@ -104,6 +104,23 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.034.pb.gz
+File: arb
+Build ID: 12de8afd697c42502299d5ac8f4278278a678702
+Type: cpu
+Time: 2026-01-08 09:54:54 MSK
+Duration: 30.02s, Total samples = 0 
+No samples were found with the default sample value type.
+Try "sample_index" command to analyze different sample values.
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+(pprof) 
+
+
 
 
 
