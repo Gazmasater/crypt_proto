@@ -71,65 +71,71 @@ func (c *Calculator) Run() {
 
 		for _, tri := range c.triangles {
 
-			// ключи MemoryStore
-			k1 := "KuCoin|" + legSymbol(tri.Leg1)
-			k2 := "KuCoin|" + legSymbol(tri.Leg2)
-			k3 := "KuCoin|" + legSymbol(tri.Leg3)
+			s1 := legSymbol(tri.Leg1)
+			s2 := legSymbol(tri.Leg2)
+			s3 := legSymbol(tri.Leg3)
 
-			q1, ok1 := c.mem.Get("Kucoin", k1)
-			q2, ok2 := c.mem.Get("Kucoin", k2)
-			q3, ok3 := c.mem.Get("Kucoin", k3)
+			q1, ok1 := c.mem.Get("KuCoin", s1)
+			q2, ok2 := c.mem.Get("KuCoin", s2)
+			q3, ok3 := c.mem.Get("KuCoin", s3)
+
 			if !ok1 || !ok2 || !ok3 {
 				continue
 			}
 
 			amount := 1.0
 
-			// Leg1
+			// --- leg 1 ---
 			if strings.HasPrefix(tri.Leg1, "BUY") {
-				if q1.Ask == 0 {
+				if q1.Ask <= 0 {
 					continue
 				}
 				amount /= q1.Ask
 			} else {
+				if q1.Bid <= 0 {
+					continue
+				}
 				amount *= q1.Bid
 			}
 
-			// Leg2
+			// --- leg 2 ---
 			if strings.HasPrefix(tri.Leg2, "BUY") {
-				if q2.Ask == 0 {
+				if q2.Ask <= 0 {
 					continue
 				}
 				amount /= q2.Ask
 			} else {
+				if q2.Bid <= 0 {
+					continue
+				}
 				amount *= q2.Bid
 			}
 
-			// Leg3
+			// --- leg 3 ---
 			if strings.HasPrefix(tri.Leg3, "BUY") {
-				if q3.Ask == 0 {
+				if q3.Ask <= 0 {
 					continue
 				}
 				amount /= q3.Ask
 			} else {
+				if q3.Bid <= 0 {
+					continue
+				}
 				amount *= q3.Bid
 			}
 
 			profit := amount - 1.0
 
-			// РЕАЛЬНЫЙ порог
-			//	if profit > 0.001 {
-			log.Printf(
-				"[ARB] %s → %s → %s | profit=%.4f%%",
-				tri.A, tri.B, tri.C,
-				profit*100,
-			)
+			if profit > 0 {
+				log.Printf(
+					"[ARB] %s → %s → %s | profit=%.4f%%",
+					tri.A, tri.B, tri.C,
+					profit*100,
+				)
+			}
 		}
-		//}
 	}
 }
-
-
 
 
 
