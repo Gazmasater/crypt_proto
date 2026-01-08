@@ -63,142 +63,101 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package calculator
-
-import (
-	"log"
-	"strings"
-	"time"
-
-	"crypt_proto/pkg/models"
-)
-
-// Triangle описывает один треугольный арбитраж
-type Triangle struct {
-	A, B, C string // имена валют для логов
-	Leg1, Leg2, Leg3 string // "BUY COTI/USDT", "SELL COTI/BTC" и т.д.
-}
-
-// Calculator считает профит по треугольникам
 type Calculator struct {
-	mem       *MemoryStore
+	mem       *store.MemoryStore
 	triangles []Triangle
 }
 
-// NewCalculator создаёт калькулятор
-func NewCalculator(mem *MemoryStore, triangles []Triangle) *Calculator {
+
+func NewCalculator(
+	mem *store.MemoryStore,
+	triangles []Triangle,
+) *Calculator {
 	return &Calculator{
 		mem:       mem,
 		triangles: triangles,
 	}
 }
 
-// Run запускает цикл расчёта
-func (c *Calculator) Run() {
-	for {
-		snapshot := c.mem.Snapshot()
-		count := 0
 
-		for _, tri := range c.triangles {
-			leg1Key := "KuCoin|" + parseLegSymbol(tri.Leg1)
-			leg2Key := "KuCoin|" + parseLegSymbol(tri.Leg2)
-			leg3Key := "KuCoin|" + parseLegSymbol(tri.Leg3)
+package calculator
 
-			leg1, ok1 := snapshot[leg1Key]
-			leg2, ok2 := snapshot[leg2Key]
-			leg3, ok3 := snapshot[leg3Key]
+import (
+	"encoding/csv"
+	"os"
+	"strings"
+)
 
-			if !ok1 || !ok2 || !ok3 {
-				continue
-			}
-
-			// начинаем с 1 единицы валюты A
-			amount := 1.0
-
-			// Leg1
-			if strings.HasPrefix(tri.Leg1, "BUY") {
-				amount /= leg1.Ask // покупаем B за A
-			} else {
-				amount *= leg1.Bid // продаём A за B
-			}
-
-			// Leg2
-			if strings.HasPrefix(tri.Leg2, "BUY") {
-				amount /= leg2.Ask
-			} else {
-				amount *= leg2.Bid
-			}
-
-			// Leg3
-			if strings.HasPrefix(tri.Leg3, "BUY") {
-				amount /= leg3.Ask
-			} else {
-				amount *= leg3.Bid
-			}
-
-			profit := amount - 1.0
-			count++
-			log.Printf("[Arb] Triangle %s-%s-%s Profit=%.6f", tri.A, tri.B, tri.C, profit)
-		}
-
-		log.Printf("[Arb] Calculated %d triangles", count)
-		time.Sleep(100 * time.Millisecond)
-	}
+type Triangle struct {
+	A, B, C       string
+	Leg1, Leg2, Leg3 string
 }
 
-// parseLegSymbol возвращает символ из строки Leg
-func parseLegSymbol(leg string) string {
-	parts := strings.Fields(leg)
-	if len(parts) < 2 {
-		return ""
+func ParseTrianglesFromCSV(path string) ([]Triangle, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
-	return parts[1] // "COTI/USDT"
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	rows, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	var res []Triangle
+	for _, row := range rows[1:] {
+		if len(row) < 6 {
+			continue
+		}
+
+		res = append(res, Triangle{
+			A:    strings.TrimSpace(row[0]),
+			B:    strings.TrimSpace(row[1]),
+			C:    strings.TrimSpace(row[2]),
+			Leg1: strings.TrimSpace(row[3]),
+			Leg2: strings.TrimSpace(row[4]),
+			Leg3: strings.TrimSpace(row[5]),
+		})
+	}
+
+	return res, nil
 }
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "IncompatibleAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "IncompatibleAssign"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use triangles (variable of type []calculator.Triangle) as *queue.MemoryStore value in argument to calculator.NewCalculator",
-	"source": "compiler",
-	"startLineNumber": 42,
-	"startColumn": 35,
-	"endLineNumber": 42,
-	"endColumn": 44,
-	"origin": "extHost1"
-}]
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredImportedName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredImportedName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: calculator.ParseTrianglesFromCSV",
-	"source": "compiler",
-	"startLineNumber": 58,
-	"startColumn": 26,
-	"endLineNumber": 58,
-	"endColumn": 47,
-	"origin": "extHost1"
-}]
+func main() {
+	out := make(chan *models.MarketData, 100_000)
+
+	mem := store.NewMemoryStore()
+	go mem.Run(out)
+
+	kc, err := collector.NewKuCoinCollectorFromCSV(
+		"../exchange/data/kucoin_triangles_usdt.csv",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := kc.Start(out); err != nil {
+		log.Fatal(err)
+	}
+
+	triangles, err := calculator.ParseTrianglesFromCSV(
+		"../exchange/data/kucoin_triangles_usdt.csv",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	calc := calculator.NewCalculator(mem, triangles)
+	go calc.Run()
+
+	select {}
+}
+
+
+
+
