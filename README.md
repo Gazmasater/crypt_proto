@@ -156,4 +156,3 @@ func parseLegSymbol(leg string) string {
 }
 
 
-
