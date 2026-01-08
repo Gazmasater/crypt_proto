@@ -63,88 +63,28 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (c *Calculator) Run() {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for range ticker.C {
-
-		for _, tri := range c.triangles {
-
-			// ключи MemoryStore
-			k1 := "KuCoin|" + legSymbol(tri.Leg1)
-			k2 := "KuCoin|" + legSymbol(tri.Leg2)
-			k3 := "KuCoin|" + legSymbol(tri.Leg3)
-
-			q1, ok1 := c.mem.Get(k1)
-			q2, ok2 := c.mem.Get(k2)
-			q3, ok3 := c.mem.Get(k3)
-
-			if !ok1 || !ok2 || !ok3 {
-				continue
-			}
-
-			amount := 1.0
-
-			// Leg1
-			if strings.HasPrefix(tri.Leg1, "BUY") {
-				if q1.Ask == 0 {
-					continue
-				}
-				amount /= q1.Ask
-			} else {
-				amount *= q1.Bid
-			}
-
-			// Leg2
-			if strings.HasPrefix(tri.Leg2, "BUY") {
-				if q2.Ask == 0 {
-					continue
-				}
-				amount /= q2.Ask
-			} else {
-				amount *= q2.Bid
-			}
-
-			// Leg3
-			if strings.HasPrefix(tri.Leg3, "BUY") {
-				if q3.Ask == 0 {
-					continue
-				}
-				amount /= q3.Ask
-			} else {
-				amount *= q3.Bid
-			}
-
-			profit := amount - 1.0
-
-			// РЕАЛЬНЫЙ порог
-			if profit > 0.001 {
-				log.Printf(
-					"[ARB] %s → %s → %s | profit=%.4f%%",
-					tri.A, tri.B, tri.C,
-					profit*100,
-				)
-			}
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
 		}
-	}
-}
-
-
-func legSymbol(leg string) string {
-	// "BUY COTI/USDT" -> "COTI/USDT"
-	parts := strings.Fields(leg)
-	if len(parts) != 2 {
-		return ""
-	}
-	return strings.ToUpper(parts[1])
-}
-
-
-
-type MemoryStore interface {
-	Get(key string) (Quote, bool)
-}
+	},
+	"severity": 8,
+	"message": "mem.Run undefined (type *queue.MemoryStore has no field or method Run)",
+	"source": "compiler",
+	"startLineNumber": 28,
+	"startColumn": 9,
+	"endLineNumber": 28,
+	"endColumn": 12,
+	"origin": "extHost1"
+}]
 
 
 
