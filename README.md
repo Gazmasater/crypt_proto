@@ -63,57 +63,104 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+type MemoryStore interface {
+	Get(key string) (Quote, bool)
+}
+
+func (s *MemoryStore) Get(key string) (Quote, bool) {
+	v, ok := s.m.Load(key)
+	if !ok {
+		return Quote{}, false
+	}
+	return v.(Quote), true
+}
+
+
+func NewCalculator(mem *store.MemoryStore, triangles []Triangle) *Calculator {
+	return &Calculator{
+		mem:       mem,
+		triangles: triangles,
+	}
+}
+
+
+func legSymbol(leg string) string {
+	// "BUY COTI/USDT" -> "COTI/USDT"
+	parts := strings.Fields(leg)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.ToUpper(parts[1])
+}
+
+
 func (c *Calculator) Run() {
-	for {
-		snapshot := c.mem.Snapshot()
-		count := 0
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
 
 		for _, tri := range c.triangles {
-			leg1Key := "KuCoin|" + parseLegSymbol(tri.Leg1)
-			leg2Key := "KuCoin|" + parseLegSymbol(tri.Leg2)
-			leg3Key := "KuCoin|" + parseLegSymbol(tri.Leg3)
 
-			leg1, ok1 := snapshot[leg1Key]
-			leg2, ok2 := snapshot[leg2Key]
-			leg3, ok3 := snapshot[leg3Key]
+			// ключи MemoryStore
+			k1 := "KuCoin|" + legSymbol(tri.Leg1)
+			k2 := "KuCoin|" + legSymbol(tri.Leg2)
+			k3 := "KuCoin|" + legSymbol(tri.Leg3)
+
+			q1, ok1 := c.mem.Get(k1)
+			q2, ok2 := c.mem.Get(k2)
+			q3, ok3 := c.mem.Get(k3)
 
 			if !ok1 || !ok2 || !ok3 {
 				continue
 			}
 
-			// начинаем с 1 единицы валюты A
 			amount := 1.0
 
 			// Leg1
 			if strings.HasPrefix(tri.Leg1, "BUY") {
-				amount /= leg1.Ask // покупаем B за A
+				if q1.Ask == 0 {
+					continue
+				}
+				amount /= q1.Ask
 			} else {
-				amount *= leg1.Bid // продаём A за B
+				amount *= q1.Bid
 			}
 
 			// Leg2
 			if strings.HasPrefix(tri.Leg2, "BUY") {
-				amount /= leg2.Ask
+				if q2.Ask == 0 {
+					continue
+				}
+				amount /= q2.Ask
 			} else {
-				amount *= leg2.Bid
+				amount *= q2.Bid
 			}
 
 			// Leg3
 			if strings.HasPrefix(tri.Leg3, "BUY") {
-				amount /= leg3.Ask
+				if q3.Ask == 0 {
+					continue
+				}
+				amount /= q3.Ask
 			} else {
-				amount *= leg3.Bid
+				amount *= q3.Bid
 			}
 
 			profit := amount - 1.0
-			if profit > 0.1 {
-				count++
-				log.Printf("[Arb] Triangle %s-%s-%s Profit=%.6f", tri.A, tri.B, tri.C, profit)
+
+			// РЕАЛЬНЫЙ порог
+			if profit > 0.001 {
+				log.Printf(
+					"[ARB] %s → %s → %s | profit=%.4f%%",
+					tri.A, tri.B, tri.C,
+					profit*100,
+				)
 			}
 		}
-
 	}
 }
+
 
 
 
