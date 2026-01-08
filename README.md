@@ -63,6 +63,9 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+const fee = 0.001 // 0.1%
+
+
 func (c *Calculator) Run() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -83,63 +86,99 @@ func (c *Calculator) Run() {
 				continue
 			}
 
-			amount := 1.0
+			amount := 1.0 // стартуем с 1 A
 
-			// --- leg 1 ---
+			// ---------- LEG 1 ----------
 			if strings.HasPrefix(tri.Leg1, "BUY") {
-				if q1.Ask <= 0 {
+				if q1.Ask <= 0 || q1.AskSize <= 0 {
 					continue
 				}
-				amount /= q1.Ask
+
+				maxBuy := q1.AskSize          // сколько B можно купить
+				amount = amount / q1.Ask      // A -> B
+				if amount > maxBuy {
+					amount = maxBuy
+				}
+				amount *= (1 - fee)
+
 			} else {
-				if q1.Bid <= 0 {
+				if q1.Bid <= 0 || q1.BidSize <= 0 {
 					continue
 				}
-				amount *= q1.Bid
+
+				maxSell := q1.BidSize         // сколько A можно продать
+				if amount > maxSell {
+					amount = maxSell
+				}
+				amount = amount * q1.Bid      // A -> B
+				amount *= (1 - fee)
 			}
 
-			// --- leg 2 ---
+			// ---------- LEG 2 ----------
 			if strings.HasPrefix(tri.Leg2, "BUY") {
-				if q2.Ask <= 0 {
+				if q2.Ask <= 0 || q2.AskSize <= 0 {
 					continue
 				}
-				amount /= q2.Ask
+
+				maxBuy := q2.AskSize
+				amount = amount / q2.Ask
+				if amount > maxBuy {
+					amount = maxBuy
+				}
+				amount *= (1 - fee)
+
 			} else {
-				if q2.Bid <= 0 {
+				if q2.Bid <= 0 || q2.BidSize <= 0 {
 					continue
 				}
-				amount *= q2.Bid
+
+				maxSell := q2.BidSize
+				if amount > maxSell {
+					amount = maxSell
+				}
+				amount = amount * q2.Bid
+				amount *= (1 - fee)
 			}
 
-			// --- leg 3 ---
+			// ---------- LEG 3 ----------
 			if strings.HasPrefix(tri.Leg3, "BUY") {
-				if q3.Ask <= 0 {
+				if q3.Ask <= 0 || q3.AskSize <= 0 {
 					continue
 				}
-				amount /= q3.Ask
+
+				maxBuy := q3.AskSize
+				amount = amount / q3.Ask
+				if amount > maxBuy {
+					amount = maxBuy
+				}
+				amount *= (1 - fee)
+
 			} else {
-				if q3.Bid <= 0 {
+				if q3.Bid <= 0 || q3.BidSize <= 0 {
 					continue
 				}
-				amount *= q3.Bid
+
+				maxSell := q3.BidSize
+				if amount > maxSell {
+					amount = maxSell
+				}
+				amount = amount * q3.Bid
+				amount *= (1 - fee)
 			}
 
 			profit := amount - 1.0
 
-			if profit > 0.001 {
+			if profit > 0 {
 				log.Printf(
-					"[ARB] %s → %s → %s | profit=%.4f%%",
+					"[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.2f / %.2f / %.2f]",
 					tri.A, tri.B, tri.C,
 					profit*100,
+					q1.BidSize, q2.BidSize, q3.BidSize,
 				)
 			}
 		}
 	}
 }
-
-
-
-
 
 
 
