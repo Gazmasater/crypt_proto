@@ -246,3 +246,29 @@ func (s *MemoryStore) Snapshot() map[string]Quote {
 }
 
 
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.038.pb.gz
+File: arb
+Build ID: 09701e3fc5420d0e8106e905dc4464eded5ddb15
+Type: cpu
+Time: 2026-01-08 11:07:13 MSK
+Duration: 30s, Total samples = 1.73s ( 5.77%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 990ms, 57.23% of 1730ms total
+Showing top 10 nodes out of 155
+      flat  flat%   sum%        cum   cum%
+     530ms 30.64% 30.64%      530ms 30.64%  internal/runtime/syscall.Syscall6
+     250ms 14.45% 45.09%      250ms 14.45%  runtime.futex
+      50ms  2.89% 47.98%      110ms  6.36%  runtime.stealWork
+      30ms  1.73% 49.71%       30ms  1.73%  github.com/tidwall/gjson.parseSquash
+      30ms  1.73% 51.45%       30ms  1.73%  runtime.write1
+      20ms  1.16% 52.60%       50ms  2.89%  crypto/tls.(*Conn).handshakeContext
+      20ms  1.16% 53.76%       20ms  1.16%  crypto/tls.(*halfConn).explicitNonceLen
+      20ms  1.16% 54.91%       70ms  4.05%  github.com/tidwall/gjson.parseObject
+      20ms  1.16% 56.07%       20ms  1.16%  github.com/tidwall/gjson.parseObjectPath
+      20ms  1.16% 57.23%      640ms 36.99%  internal/poll.(*FD).Read
+(pprof) 
+
