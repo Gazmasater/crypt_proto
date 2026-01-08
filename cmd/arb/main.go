@@ -2,36 +2,58 @@ package main
 
 import (
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"crypt_proto/internal/collector"
+	"crypt_proto/internal/queue"
 	"crypt_proto/pkg/models"
 )
 
 func main() {
-	// ------------------- Канал для данных -------------------
-	out := make(chan *models.MarketData, 100)
+	go func() {
+		log.Println("pprof on http://localhost:6060/debug/pprof/")
+		_ = http.ListenAndServe("localhost:6060", nil)
+	}()
 
-	// ------------------- Создание коллектора -------------------
+	// ------------------- Канал для данных -------------------
+	out := make(chan *models.MarketData, 100_000)
+
+	// ------------------- In-Memory Store -------------------
+	mem := queue.NewMemoryStore()
+	go mem.Run(out)
+
+	// ------------------- Коллектор -------------------
 	kc, err := collector.NewKuCoinCollectorFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
 	if err != nil {
-		log.Fatal("Failed to create KuCoinCollector:", err)
+		log.Fatal(err)
 	}
 
-	// ------------------- Запуск коллектора -------------------
 	if err := kc.Start(out); err != nil {
-		log.Fatal("Failed to start KuCoinCollector:", err)
+		log.Fatal(err)
 	}
+	log.Println("[Main] KuCoinCollector started")
 
-	log.Println("[Main] KuCoinCollector started. Listening for data...")
+	// ------------------- Загружаем треугольники из CSV -------------------
+	//triangles, err := collector.LoadTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
 
-	// ------------------- Обработка данных -------------------
+	// ------------------- Запуск калькулятора -------------------
+	//calc := calculator.NewCalculator(triangles, mem)
+	//go calc.Run()
+
+	// ------------------- Вывод snapshot для проверки -------------------
 	go func() {
-		for data := range out {
-			log.Printf("[MarketData] %s %s bid=%.6f ask=%.6f",
-				data.Exchange, data.Symbol, data.Bid, data.Ask)
+		for {
+			snap := mem.Snapshot()
+			log.Printf("[Store] quotes=%d", len(snap))
+			time.Sleep(5 * time.Second)
 		}
 	}()
 
@@ -40,10 +62,7 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 
-	log.Println("[Main] Stopping KuCoinCollector...")
-	if err := kc.Stop(); err != nil {
-		log.Println("Error stopping collector:", err)
-	}
+	kc.Stop()
 	close(out)
 	log.Println("[Main] Exited.")
 }

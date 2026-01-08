@@ -8,10 +8,11 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tidwall/gjson"
 
 	"crypt_proto/pkg/models"
 
@@ -19,7 +20,7 @@ import (
 )
 
 const (
-	maxSubsPerWS = 50
+	maxSubsPerWS = 90
 	subRate      = 120 * time.Millisecond // ~8/sec
 	pingInterval = 20 * time.Second
 )
@@ -187,24 +188,21 @@ func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
 
 /* ================= HANDLE ================= */
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	var raw map[string]any
-	if json.Unmarshal(msg, &raw) != nil {
-		return
-	}
-	if raw["type"] != "message" {
+	if gjson.GetBytes(msg, "type").String() != "message" {
 		return
 	}
 
-	topic := raw["topic"].(string)
-	parts := strings.Split(topic, ":")
-	if len(parts) != 2 {
+	topic := gjson.GetBytes(msg, "topic").String()
+	if !strings.HasPrefix(topic, "/market/ticker:") {
 		return
 	}
 
-	symbol := normalize(parts[1])
-	data := raw["data"].(map[string]any)
-	bid := parseFloat(data["bestBid"])
-	ask := parseFloat(data["bestAsk"])
+	symbol := normalize(strings.TrimPrefix(topic, "/market/ticker:"))
+
+	data := gjson.GetBytes(msg, "data")
+
+	bid := data.Get("bestBid").Float()
+	ask := data.Get("bestAsk").Float()
 	if bid == 0 || ask == 0 {
 		return
 	}
@@ -219,10 +217,13 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	ws.mu.Unlock()
 
 	c.out <- &models.MarketData{
-		Exchange: "KuCoin",
-		Symbol:   symbol,
-		Bid:      bid,
-		Ask:      ask,
+		Exchange:  "KuCoin",
+		Symbol:    symbol,
+		Bid:       bid,
+		Ask:       ask,
+		BidSize:   data.Get("bestBidSize").Float(),
+		AskSize:   data.Get("bestAskSize").Float(),
+		Timestamp: time.Now().UnixMilli(),
 	}
 }
 
@@ -271,18 +272,6 @@ func parseLeg(s string) string {
 }
 
 func normalize(s string) string {
-	p := strings.Split(s, "-")
-	return p[0] + "/" + p[1]
-}
-
-func parseFloat(v any) float64 {
-	switch t := v.(type) {
-	case string:
-		f, _ := strconv.ParseFloat(t, 64)
-		return f
-	case float64:
-		return t
-	default:
-		return 0
-	}
+	parts := strings.Split(s, "-")
+	return parts[0] + "/" + parts[1]
 }
