@@ -63,175 +63,76 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package queue
+func (c *Calculator) Run() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
-import (
-	"sync"
-	"sync/atomic"
-	"time"
+	for range ticker.C {
 
-	"crypt_proto/pkg/models"
-)
+		for _, tri := range c.triangles {
 
-type Quote struct {
-	Bid       float64
-	Ask       float64
-	BidSize   float64
-	AskSize   float64
-	Timestamp int64
-}
+			// ключи MemoryStore
+			k1 := "KuCoin|" + legSymbol(tri.Leg1)
+			k2 := "KuCoin|" + legSymbol(tri.Leg2)
+			k3 := "KuCoin|" + legSymbol(tri.Leg3)
 
-type MemoryStore struct {
-	data  atomic.Value // map[string]Quote
-	m     sync.Map
-	batch chan *models.MarketData
-}
+			q1, ok1 := c.mem.Get("Kucoin", k1)
+			q2, ok2 := c.mem.Get("Kucoin", k2)
+			q3, ok3 := c.mem.Get("Kucoin", k3)
+			if !ok1 || !ok2 || !ok3 {
+				continue
+			}
 
-func NewMemoryStore() *MemoryStore {
-	s := &MemoryStore{
-		batch: make(chan *models.MarketData, 10_000),
-	}
+			amount := 1.0
 
-	// Инициализация atomic.Value ОБЯЗАТЕЛЬНА
-	s.data.Store(make(map[string]Quote))
+			// Leg1
+			if strings.HasPrefix(tri.Leg1, "BUY") {
+				if q1.Ask == 0 {
+					continue
+				}
+				amount /= q1.Ask
+			} else {
+				amount *= q1.Bid
+			}
 
-	return s
-}
+			// Leg2
+			if strings.HasPrefix(tri.Leg2, "BUY") {
+				if q2.Ask == 0 {
+					continue
+				}
+				amount /= q2.Ask
+			} else {
+				amount *= q2.Bid
+			}
 
-//
-// ===== Публичный API =====
-//
+			// Leg3
+			if strings.HasPrefix(tri.Leg3, "BUY") {
+				if q3.Ask == 0 {
+					continue
+				}
+				amount /= q3.Ask
+			} else {
+				amount *= q3.Bid
+			}
 
-// Run — основной цикл стора
-func (s *MemoryStore) Run() {
-	for md := range s.batch {
-		s.apply(md)
-	}
-}
+			profit := amount - 1.0
 
-// Push — приём данных от коллекторов
-func (s *MemoryStore) Push(md *models.MarketData) {
-	select {
-	case s.batch <- md:
-	default:
-		// защита от переполнения
-	}
-}
-
-// Get — snapshot-чтение
-func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
-	m := s.data.Load().(map[string]Quote)
-	q, ok := m[exchange+"|"+symbol]
-	return q, ok
-}
-
-//
-// ===== Внутренняя логика =====
-//
-
-func (s *MemoryStore) apply(md *models.MarketData) {
-	key := md.Exchange + "|" + md.Symbol
-
-	quote := Quote{
-		Bid:       md.Bid,
-		Ask:       md.Ask,
-		BidSize:   md.BidSize,
-		AskSize:   md.AskSize,
-		Timestamp: time.Now().UnixMilli(),
-	}
-
-	// читаем старую map
-	oldMap := s.data.Load().(map[string]Quote)
-
-	// делаем copy-on-write
-	newMap := make(map[string]Quote, len(oldMap)+1)
-	for k, v := range oldMap {
-		newMap[k] = v
-	}
-	newMap[key] = quote
-
-	// атомарно подменяем snapshot
-	s.data.Store(newMap)
-}
-
-
-
-
-
-package main
-
-import (
-	"log"
-	"net/http"
-	_ "net/http/pprof"
-	"os"
-	"os/signal"
-	"syscall"
-
-	"crypt_proto/internal/calculator"
-	"crypt_proto/internal/collector"
-	"crypt_proto/internal/queue"
-	"crypt_proto/pkg/models"
-)
-
-func main() {
-	// ------------------- pprof -------------------
-	go func() {
-		log.Println("pprof on http://localhost:6060/debug/pprof/")
-		_ = http.ListenAndServe("localhost:6060", nil)
-	}()
-
-	// ------------------- Канал данных от коллекторов -------------------
-	out := make(chan *models.MarketData, 100_000)
-
-	// ------------------- In-Memory Store -------------------
-	mem := queue.NewMemoryStore()
-	go mem.Run()
-
-	// прокачка данных: out → mem
-	go func() {
-		for md := range out {
-			mem.Push(md)
+			// РЕАЛЬНЫЙ порог
+			//	if profit > 0.001 {
+			log.Printf(
+				"[ARB] %s → %s → %s | profit=%.4f%%",
+				tri.A, tri.B, tri.C,
+				profit*100,
+			)
 		}
-	}()
-
-	// ------------------- Коллектор -------------------
-	kc, err := collector.NewKuCoinCollectorFromCSV(
-		"../exchange/data/kucoin_triangles_usdt.csv",
-	)
-	if err != nil {
-		log.Fatal(err)
+		//}
 	}
-
-	if err := kc.Start(out); err != nil {
-		log.Fatal(err)
-	}
-	log.Println("[Main] KuCoinCollector started")
-
-	// ------------------- Треугольники -------------------
-	triangles, err := calculator.ParseTrianglesFromCSV(
-		"../exchange/data/kucoin_triangles_usdt.csv",
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// ------------------- Калькулятор -------------------
-	calc := calculator.NewCalculator(mem, triangles)
-	go calc.Run()
-
-	// ------------------- Graceful shutdown -------------------
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-
-	log.Println("[Main] shutting down...")
-
-	kc.Stop()
-	close(out)
-
-	log.Println("[Main] exited")
 }
+
+
+
+
+
 
 
 
