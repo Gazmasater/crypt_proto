@@ -64,9 +64,13 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 go func() {
-		for {
-			_ = mem.Snapshot()
-			//	log.Printf("[Store] quotes=%d", len(snap))
-			time.Sleep(5 * time.Second)
+	for {
+		snap := mem.Snapshot() // получаем актуальные котировки
+		for key, q := range snap {
+			log.Printf("[Store] %s bid=%.6f bidsize=%.6f ask=%.6f asksize=%.6f timestamp=%d",
+				key, q.Bid, q.BidSize, q.Ask, q.AskSize, q.Timestamp)
 		}
-	}()
+		time.Sleep(5 * time.Second)
+	}
+}()
+
