@@ -7,8 +7,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
+	"crypt_proto/internal/calculator"
 	"crypt_proto/internal/collector"
 	"crypt_proto/internal/queue"
 	"crypt_proto/pkg/models"
@@ -38,24 +38,24 @@ func main() {
 	}
 	log.Println("[Main] KuCoinCollector started")
 
-	// ------------------- Загружаем треугольники из CSV -------------------
-	//triangles, err := collector.LoadTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
+	triangles, err := calculator.ParseTrianglesFromCSV(
+		"../exchange/data/kucoin_triangles_usdt.csv",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	// ------------------- Запуск калькулятора -------------------
-	//calc := calculator.NewCalculator(triangles, mem)
-	//go calc.Run()
+	calc := calculator.NewCalculator(mem, triangles)
+	go calc.Run()
 
 	// ------------------- Вывод snapshot для проверки -------------------
-	go func() {
-		for {
-			snap := mem.Snapshot()
-			log.Printf("[Store] quotes=%d", len(snap))
-			time.Sleep(5 * time.Second)
-		}
-	}()
+	//go func() {
+	//	for {
+	//		snap := mem.Snapshot()
+	//		log.Printf("[Store] quotes=%d", len(snap))
+	//		time.Sleep(5 * time.Second)
+	//	}
+	//}()
 
 	// ------------------- Завершение при SIGINT / SIGTERM -------------------
 	stop := make(chan os.Signal, 1)
