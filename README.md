@@ -126,7 +126,7 @@ func (c *Calculator) Run() {
 
 			profit := amount - 1.0
 
-			if profit > 0 {
+			if profit > 0.001 {
 				log.Printf(
 					"[ARB] %s → %s → %s | profit=%.4f%%",
 					tri.A, tri.B, tri.C,
@@ -136,6 +136,7 @@ func (c *Calculator) Run() {
 		}
 	}
 }
+
 
 
 
