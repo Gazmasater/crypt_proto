@@ -63,35 +63,19 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "mem.Set undefined (type *queue.MemoryStore has no field or method Set)",
-	"source": "compiler",
-	"startLineNumber": 46,
-	"startColumn": 7,
-	"endLineNumber": 46,
-	"endColumn": 10,
-	"origin": "extHost1"
-}]
-
-// Get — snapshot-чтение
-func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
-	m := s.data.Load().(map[string]Quote)
-	q, ok := m[exchange+"|"+symbol]
-	return q, ok
+func (s *MemoryStore) Put(exchange, symbol string, q Quote) {
+    old := s.data.Load().(map[string]Quote)
+    newMap := make(map[string]Quote, len(old)+1)
+    for k, v := range old {
+        newMap[k] = v
+    }
+    newMap[exchange+"|"+symbol] = q
+    s.data.Store(newMap)
 }
+
+
+mem.Put(md.Exchange, md.Symbol, md)
+
 
 
 
