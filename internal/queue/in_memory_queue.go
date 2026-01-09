@@ -60,6 +60,16 @@ func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
 	return q, ok
 }
 
+func (s *MemoryStore) Put(exchange, symbol string, q Quote) {
+	old := s.data.Load().(map[string]Quote)
+	newMap := make(map[string]Quote, len(old)+1)
+	for k, v := range old {
+		newMap[k] = v
+	}
+	newMap[exchange+"|"+symbol] = q
+	s.data.Store(newMap)
+}
+
 //
 // ===== Внутренняя логика =====
 //
