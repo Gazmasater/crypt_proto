@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const fee = 0.001 // 0.1%
+
 // Triangle описывает один треугольный арбитраж
 type Triangle struct {
 	A, B, C          string // имена валют для логов
@@ -38,58 +40,106 @@ func (c *Calculator) Run() {
 
 		for _, tri := range c.triangles {
 
-			// ключи MemoryStore
-			k1 := "KuCoin|" + legSymbol(tri.Leg1)
-			k2 := "KuCoin|" + legSymbol(tri.Leg2)
-			k3 := "KuCoin|" + legSymbol(tri.Leg3)
+			s1 := legSymbol(tri.Leg1)
+			s2 := legSymbol(tri.Leg2)
+			s3 := legSymbol(tri.Leg3)
 
-			q1, ok1 := c.mem.Get("Kucoin", k1)
-			q2, ok2 := c.mem.Get("Kucoin", k2)
-			q3, ok3 := c.mem.Get("Kucoin", k3)
+			q1, ok1 := c.mem.Get("KuCoin", s1)
+			q2, ok2 := c.mem.Get("KuCoin", s2)
+			q3, ok3 := c.mem.Get("KuCoin", s3)
+
 			if !ok1 || !ok2 || !ok3 {
 				continue
 			}
 
-			amount := 1.0
+			amount := 1.0 // стартуем с 1 A
 
-			// Leg1
+			// ---------- LEG 1 ----------
 			if strings.HasPrefix(tri.Leg1, "BUY") {
-				if q1.Ask == 0 {
+				if q1.Ask <= 0 || q1.AskSize <= 0 {
 					continue
 				}
-				amount /= q1.Ask
+
+				maxBuy := q1.AskSize     // сколько B можно купить
+				amount = amount / q1.Ask // A -> B
+				if amount > maxBuy {
+					amount = maxBuy
+				}
+				amount *= (1 - fee)
+
 			} else {
-				amount *= q1.Bid
+				if q1.Bid <= 0 || q1.BidSize <= 0 {
+					continue
+				}
+
+				maxSell := q1.BidSize // сколько A можно продать
+				if amount > maxSell {
+					amount = maxSell
+				}
+				amount = amount * q1.Bid // A -> B
+				amount *= (1 - fee)
 			}
 
-			// Leg2
+			// ---------- LEG 2 ----------
 			if strings.HasPrefix(tri.Leg2, "BUY") {
-				if q2.Ask == 0 {
+				if q2.Ask <= 0 || q2.AskSize <= 0 {
 					continue
 				}
-				amount /= q2.Ask
+
+				maxBuy := q2.AskSize
+				amount = amount / q2.Ask
+				if amount > maxBuy {
+					amount = maxBuy
+				}
+				amount *= (1 - fee)
+
 			} else {
-				amount *= q2.Bid
+				if q2.Bid <= 0 || q2.BidSize <= 0 {
+					continue
+				}
+
+				maxSell := q2.BidSize
+				if amount > maxSell {
+					amount = maxSell
+				}
+				amount = amount * q2.Bid
+				amount *= (1 - fee)
 			}
 
-			// Leg3
+			// ---------- LEG 3 ----------
 			if strings.HasPrefix(tri.Leg3, "BUY") {
-				if q3.Ask == 0 {
+				if q3.Ask <= 0 || q3.AskSize <= 0 {
 					continue
 				}
-				amount /= q3.Ask
+
+				maxBuy := q3.AskSize
+				amount = amount / q3.Ask
+				if amount > maxBuy {
+					amount = maxBuy
+				}
+				amount *= (1 - fee)
+
 			} else {
-				amount *= q3.Bid
+				if q3.Bid <= 0 || q3.BidSize <= 0 {
+					continue
+				}
+
+				maxSell := q3.BidSize
+				if amount > maxSell {
+					amount = maxSell
+				}
+				amount = amount * q3.Bid
+				amount *= (1 - fee)
 			}
 
 			profit := amount - 1.0
 
-			// РЕАЛЬНЫЙ порог
-			if profit > 0.001 {
+			if profit > 0 {
 				log.Printf(
-					"[ARB] %s → %s → %s | profit=%.4f%%",
+					"[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.2f / %.2f / %.2f]",
 					tri.A, tri.B, tri.C,
 					profit*100,
+					q1.BidSize, q2.BidSize, q3.BidSize,
 				)
 			}
 		}
