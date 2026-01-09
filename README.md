@@ -63,123 +63,30 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-const fee = 0.001 // 0.1%
-
-
-func (c *Calculator) Run() {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for range ticker.C {
-
-		for _, tri := range c.triangles {
-
-			s1 := legSymbol(tri.Leg1)
-			s2 := legSymbol(tri.Leg2)
-			s3 := legSymbol(tri.Leg3)
-
-			q1, ok1 := c.mem.Get("KuCoin", s1)
-			q2, ok2 := c.mem.Get("KuCoin", s2)
-			q3, ok3 := c.mem.Get("KuCoin", s3)
-
-			if !ok1 || !ok2 || !ok3 {
-				continue
-			}
-
-			amount := 1.0 // стартуем с 1 A
-
-			// ---------- LEG 1 ----------
-			if strings.HasPrefix(tri.Leg1, "BUY") {
-				if q1.Ask <= 0 || q1.AskSize <= 0 {
-					continue
-				}
-
-				maxBuy := q1.AskSize          // сколько B можно купить
-				amount = amount / q1.Ask      // A -> B
-				if amount > maxBuy {
-					amount = maxBuy
-				}
-				amount *= (1 - fee)
-
-			} else {
-				if q1.Bid <= 0 || q1.BidSize <= 0 {
-					continue
-				}
-
-				maxSell := q1.BidSize         // сколько A можно продать
-				if amount > maxSell {
-					amount = maxSell
-				}
-				amount = amount * q1.Bid      // A -> B
-				amount *= (1 - fee)
-			}
-
-			// ---------- LEG 2 ----------
-			if strings.HasPrefix(tri.Leg2, "BUY") {
-				if q2.Ask <= 0 || q2.AskSize <= 0 {
-					continue
-				}
-
-				maxBuy := q2.AskSize
-				amount = amount / q2.Ask
-				if amount > maxBuy {
-					amount = maxBuy
-				}
-				amount *= (1 - fee)
-
-			} else {
-				if q2.Bid <= 0 || q2.BidSize <= 0 {
-					continue
-				}
-
-				maxSell := q2.BidSize
-				if amount > maxSell {
-					amount = maxSell
-				}
-				amount = amount * q2.Bid
-				amount *= (1 - fee)
-			}
-
-			// ---------- LEG 3 ----------
-			if strings.HasPrefix(tri.Leg3, "BUY") {
-				if q3.Ask <= 0 || q3.AskSize <= 0 {
-					continue
-				}
-
-				maxBuy := q3.AskSize
-				amount = amount / q3.Ask
-				if amount > maxBuy {
-					amount = maxBuy
-				}
-				amount *= (1 - fee)
-
-			} else {
-				if q3.Bid <= 0 || q3.BidSize <= 0 {
-					continue
-				}
-
-				maxSell := q3.BidSize
-				if amount > maxSell {
-					amount = maxSell
-				}
-				amount = amount * q3.Bid
-				amount *= (1 - fee)
-			}
-
-			profit := amount - 1.0
-
-			if profit > 0 {
-				log.Printf(
-					"[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.2f / %.2f / %.2f]",
-					tri.A, tri.B, tri.C,
-					profit*100,
-					q1.BidSize, q2.BidSize, q3.BidSize,
-				)
-			}
-		}
-	}
-}
-
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.044.pb.gz
+File: arb
+Build ID: 661cf4e16f8eb544a152de46fc45312b5200894b
+Type: cpu
+Time: 2026-01-09 13:28:49 MSK
+Duration: 30s, Total samples = 110ms ( 0.37%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 110ms, 100% of 110ms total
+Showing top 10 nodes out of 52
+      flat  flat%   sum%        cum   cum%
+      20ms 18.18% 18.18%       20ms 18.18%  internal/runtime/syscall.Syscall6
+      10ms  9.09% 27.27%       20ms 18.18%  github.com/tidwall/gjson.parseObject
+      10ms  9.09% 36.36%       10ms  9.09%  github.com/tidwall/gjson.parseSquash
+      10ms  9.09% 45.45%       10ms  9.09%  runtime.acquirem (inline)
+      10ms  9.09% 54.55%       10ms  9.09%  runtime.duffcopy
+      10ms  9.09% 63.64%       10ms  9.09%  runtime.findRunnable
+      10ms  9.09% 72.73%       10ms  9.09%  runtime.getitab
+      10ms  9.09% 81.82%       10ms  9.09%  runtime.mapaccess2_faststr
+      10ms  9.09% 90.91%       10ms  9.09%  runtime.nanotime1
+      10ms  9.09%   100%       20ms 18.18%  strings.Fields
+(pprof) 
 
 
 
