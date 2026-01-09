@@ -63,202 +63,53 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package calculator
-
-import (
-	"log"
-	"strings"
-
-	"crypt_proto/internal/queue"
-)
-
-const fee = 0.001 // 0.1%
-
-type Triangle struct {
-	A, B, C          string
-	Leg1, Leg2, Leg3 string
-}
-
-type Calculator struct {
-	mem       *queue.MemoryStore
-	triangles []Triangle
-	index     map[string][]int // символ → индексы треугольников
-}
-
-// NewCalculator создаёт калькулятор и индекс треугольников
-func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
-	c := &Calculator{
-		mem:       mem,
-		triangles: triangles,
-		index:     make(map[string][]int),
-	}
-
-	// строим индекс: какая пара участвует в каких треугольниках
-	for i, tri := range triangles {
-		for _, leg := range []string{tri.Leg1, tri.Leg2, tri.Leg3} {
-			s := legSymbol(leg)
-			c.index[s] = append(c.index[s], i)
-		}
-	}
-
-	return c
-}
-
-// OnMarketData пересчитывает только треугольники с этой парой
-func (c *Calculator) OnMarketData(symbol string) {
-	triIndexes, ok := c.index[symbol]
-	if !ok {
-		return
-	}
-
-	for _, i := range triIndexes {
-		tri := c.triangles[i]
-
-		s1 := legSymbol(tri.Leg1)
-		s2 := legSymbol(tri.Leg2)
-		s3 := legSymbol(tri.Leg3)
-
-		q1, ok1 := c.mem.Get("KuCoin", s1)
-		q2, ok2 := c.mem.Get("KuCoin", s2)
-		q3, ok3 := c.mem.Get("KuCoin", s3)
-
-		if !ok1 || !ok2 || !ok3 {
-			continue
-		}
-
-		amount := 1.0
-
-		legs := []struct {
-			leg  string
-			quote queue.Quote
-		}{
-			{tri.Leg1, q1},
-			{tri.Leg2, q2},
-			{tri.Leg3, q3},
-		}
-
-		for _, l := range legs {
-			if strings.HasPrefix(l.leg, "BUY") {
-				if l.quote.Ask <= 0 || l.quote.AskSize <= 0 {
-					amount = 0
-					break
-				}
-				maxBuy := l.quote.AskSize
-				amount = amount / l.quote.Ask
-				if amount > maxBuy {
-					amount = maxBuy
-				}
-				amount *= (1 - fee)
-			} else {
-				if l.quote.Bid <= 0 || l.quote.BidSize <= 0 {
-					amount = 0
-					break
-				}
-				maxSell := l.quote.BidSize
-				if amount > maxSell {
-					amount = maxSell
-				}
-				amount = amount * l.quote.Bid
-				amount *= (1 - fee)
-			}
-		}
-
-		profit := amount - 1.0
-		if profit > 0 {
-			log.Printf("[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.2f / %.2f / %.2f]",
-				tri.A, tri.B, tri.C, profit*100, q1.BidSize, q2.BidSize, q3.BidSize)
-		}
-	}
-}
-
-// legSymbol: "BUY COTI/USDT" -> "COTI/USDT"
-func legSymbol(leg string) string {
-	parts := strings.Fields(leg)
-	if len(parts) != 2 {
-		return ""
-	}
-	return strings.ToUpper(parts[1])
-}
+File: arb
+Build ID: f667473fd8b6ec748bc74083d2b9bad95785f06e
+Type: cpu
+Time: 2026-01-09 16:33:43 MSK
+Duration: 30.14s, Total samples = 3.48s (11.55%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 1960ms, 56.32% of 3480ms total
+Dropped 80 nodes (cum <= 17.40ms)
+Showing top 10 nodes out of 171
+      flat  flat%   sum%        cum   cum%
+    1010ms 29.02% 29.02%     1010ms 29.02%  internal/runtime/syscall.Syscall6
+     300ms  8.62% 37.64%      300ms  8.62%  runtime.futex
+     140ms  4.02% 41.67%      430ms 12.36%  runtime.scanobject
+     110ms  3.16% 44.83%      110ms  3.16%  aeshashbody
+      90ms  2.59% 47.41%      110ms  3.16%  runtime.typePointers.next
+      80ms  2.30% 49.71%      120ms  3.45%  runtime.findObject
+      70ms  2.01% 51.72%      130ms  3.74%  github.com/tidwall/gjson.parseObject
+      60ms  1.72% 53.45%       60ms  1.72%  runtime.(*mspan).base (inline)
+      50ms  1.44% 54.89%      510ms 14.66%  crypt_proto/internal/queue.(*MemoryStore).apply
+      50ms  1.44% 56.32%      190ms  5.46%  github.com/tidwall/gjson.Get
+(pprof) 
 
 
 
-
-package main
-
-import (
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
-
-	"crypt_proto/internal/calculator"
-	"crypt_proto/internal/collector"
-	"crypt_proto/internal/queue"
-	"crypt_proto/pkg/models"
-
-	"github.com/joho/godotenv"
-)
-
-func main() {
-	// --- env ---
-	_ = godotenv.Load(".env")
-
-	// --- память ---
-	mem := queue.NewMemoryStore()
-
-	// --- создаём коллектор из CSV ---
-	kc, err := collector.NewKuCoinCollectorFromCSV("triangles.csv")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// --- парсим треугольники ---
-	triangles := kc.Triangles()
-
-	// --- калькулятор ---
-	calc := calculator.NewCalculator(mem, triangles)
-
-	// --- канал данных с коллектора ---
-	out := make(chan *models.MarketData, 1000)
-
-	// --- запуск коллектора ---
-	if err := kc.Start(out); err != nil {
-		log.Fatal(err)
-	}
-	defer kc.Stop()
-
-	// --- ловим Ctrl+C ---
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
-	// --- основной цикл ---
-	go func() {
-		for md := range out {
-			// конвертируем MarketData в queue.Quote
-			q := queue.Quote{
-				Bid:     md.Bid,
-				Ask:     md.Ask,
-				BidSize: md.BidSize,
-				AskSize: md.AskSize,
-			}
-
-			// обновляем память
-			mem.Put(md.Exchange, md.Symbol, q)
-
-			// пересчёт только треугольников с этой парой
-			calc.OnMarketData(md.Symbol)
-		}
-	}()
-
-	// --- ждём сигнал на выход ---
-	<-sigs
-	log.Println("Exiting...")
-}
-
-
-
-
-
-
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
+Saved profile in /home/gaz358/pprof/pprof.arb.alloc_objects.alloc_space.inuse_objects.inuse_space.003.pb.gz
+File: arb
+Build ID: f667473fd8b6ec748bc74083d2b9bad95785f06e
+Type: inuse_space
+Time: 2026-01-09 16:35:51 MSK
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 3565.46kB, 100% of 3565.46kB total
+Showing top 10 nodes out of 27
+      flat  flat%   sum%        cum   cum%
+    2052kB 57.55% 57.55%     2052kB 57.55%  runtime.allocm
+ 1000.34kB 28.06% 85.61%  1000.34kB 28.06%  main.main
+  513.12kB 14.39%   100%   513.12kB 14.39%  vendor/golang.org/x/net/http2/hpack.newInternalNode (inline)
+         0     0%   100%   513.12kB 14.39%  net/http.(*http2ClientConn).readLoop
+         0     0%   100%   513.12kB 14.39%  net/http.(*http2Framer).ReadFrame
+         0     0%   100%   513.12kB 14.39%  net/http.(*http2Framer).readMetaFrame
+         0     0%   100%   513.12kB 14.39%  net/http.(*http2clientConnReadLoop).run
+         0     0%   100%  1000.34kB 28.06%  runtime.main
+         0     0%   100%      513kB 14.39%  runtime.mcall
+         0     0%   100%     1539kB 43.16%  runtime.mstart
+(pprof) 
 
 
