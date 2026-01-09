@@ -354,6 +354,34 @@ func normalize(s string) string {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.059.pb.gz
+File: arb
+Build ID: 6d5dc42bb980392a310b389541706e62e62f2615
+Type: cpu
+Time: 2026-01-09 18:18:50 MSK
+Duration: 30.14s, Total samples = 3.76s (12.47%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 1840ms, 48.94% of 3760ms total
+Dropped 118 nodes (cum <= 18.80ms)
+Showing top 10 nodes out of 186
+      flat  flat%   sum%        cum   cum%
+     810ms 21.54% 21.54%      810ms 21.54%  internal/runtime/syscall.Syscall6
+     290ms  7.71% 29.26%      290ms  7.71%  runtime.futex
+     210ms  5.59% 34.84%      460ms 12.23%  strings.Fields
+     130ms  3.46% 38.30%      460ms 12.23%  runtime.scanobject
+      80ms  2.13% 40.43%       80ms  2.13%  strings.ToUpper
+      70ms  1.86% 42.29%       70ms  1.86%  aeshashbody
+      70ms  1.86% 44.15%       70ms  1.86%  runtime.(*mspan).base (inline)
+      60ms  1.60% 45.74%       60ms  1.60%  runtime.nextFreeFast (inline)
+      60ms  1.60% 47.34%       80ms  2.13%  runtime.stealWork
+      60ms  1.60% 48.94%       90ms  2.39%  runtime.typePointers.next
+(pprof) 
+
+
+
 
 
 
