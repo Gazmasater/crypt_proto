@@ -63,39 +63,74 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-for md := range out {
-		// обновляем память
-		mem.Put(md.Exchange, md.Symbol, md)
+package main
 
-		// считаем только треугольники, где участвует эта пара
-		calc.OnMarketData(md.Symbol)
+import (
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"crypt_proto/internal/calculator"
+	"crypt_proto/internal/collector"
+	"crypt_proto/internal/queue"
+	"crypt_proto/pkg/models"
+
+	"github.com/joho/godotenv"
+)
+
+func main() {
+	_ = godotenv.Load(".env")
+
+	// --- память для котировок ---
+	mem := queue.NewMemoryStore()
+
+	// --- читаем треугольники из CSV ---
+	triangles, err := calculator.ParseTrianglesFromCSV("triangles.csv")
+	if err != nil {
+		log.Fatal(err)
 	}
-}
 
+	// --- калькулятор ---
+	calc := calculator.NewCalculator(mem, triangles)
+	go calc.RunAsync() // запускаем асинхронный расчёт
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "IncompatibleAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "IncompatibleAssign"
+	// --- коллектор ---
+	kc, err := collector.NewKuCoinCollectorFromCSV("triangles.csv")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	out := make(chan *models.MarketData, 1000)
+	go func() {
+		for md := range out {
+			// --- конвертация в Quote и запись в память ---
+			q := queue.Quote{
+				Bid:     md.Bid,
+				Ask:     md.Ask,
+				BidSize: md.BidSize,
+				AskSize: md.AskSize,
+			}
+			mem.Put(md.Exchange, md.Symbol, q)
+
+			// --- считаем только треугольники с этой парой ---
+			calc.OnMarketData(md.Symbol)
 		}
-	},
-	"severity": 8,
-	"message": "cannot use md (variable of type *models.MarketData) as queue.Quote value in argument to mem.Put",
-	"source": "compiler",
-	"startLineNumber": 46,
-	"startColumn": 35,
-	"endLineNumber": 46,
-	"endColumn": 37,
-	"origin": "extHost1"
-}]
+	}()
 
+	if err := kc.Start(out); err != nil {
+		log.Fatal(err)
+	}
+
+	// --- graceful shutdown ---
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	log.Println("stopping...")
+	_ = kc.Stop()
+	close(out)
+}
 
 
 
