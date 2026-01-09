@@ -261,6 +261,55 @@ func main() {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "UndeclaredImportedName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredImportedName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: collector.MarketData",
+	"source": "compiler",
+	"startLineNumber": 31,
+	"startColumn": 30,
+	"endLineNumber": 31,
+	"endColumn": 40,
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "mem.Set undefined (type *queue.MemoryStore has no field or method Set)",
+	"source": "compiler",
+	"startLineNumber": 45,
+	"startColumn": 7,
+	"endLineNumber": 45,
+	"endColumn": 10,
+	"origin": "extHost1"
+}]
+
+
+
 
 
 
