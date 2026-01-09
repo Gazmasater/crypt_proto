@@ -91,28 +91,28 @@ const (
 	pingInterval = 20 * time.Second
 )
 
-/* ================= KUCOIN COLLECTOR ================= */
+// ================= POOL =================
 type KuCoinCollector struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wsList    []*kucoinWS
-	triangles []calculator.Triangle
-	mem       *queue.MemoryStore
-
-	OnUpdate func(symbol string) // callback на апдейт котировки
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wsList     []*kucoinWS
+	mem        *queue.MemoryStore
+	triangles  []calculator.Triangle
+	symbolMap  map[string]string // map csvSymbol -> normalizedSymbol
 }
 
-/* ================= WS ================= */
+// ================= WS =================
 type kucoinWS struct {
 	id      int
 	conn    *websocket.Conn
-	symbols []string // уже нормализованные
-	last    sync.Map
+	symbols []string
+	last    map[string][2]float64
+	mu      sync.Mutex
 }
 
-/* ================= CONSTRUCTOR ================= */
+// ================= CONSTRUCTOR =================
 func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
-	symbols, err := readPairsFromCSV(path)
+	symbols, symbolMap, err := readPairsFromCSV(path)
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +132,7 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 		wsList = append(wsList, &kucoinWS{
 			id:      len(wsList),
 			symbols: symbols[i:end],
+			last:    make(map[string][2]float64),
 		})
 	}
 
@@ -140,6 +141,7 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 		cancel:    cancel,
 		wsList:    wsList,
 		triangles: triangles,
+		symbolMap: symbolMap,
 	}, nil
 }
 
@@ -147,14 +149,9 @@ func (kc *KuCoinCollector) Name() string {
 	return "KuCoin"
 }
 
-func (kc *KuCoinCollector) Triangles() []calculator.Triangle {
-	return kc.triangles
-}
-
-/* ================= START / STOP ================= */
+// Start принимает MemoryStore
 func (kc *KuCoinCollector) Start(mem *queue.MemoryStore) error {
 	kc.mem = mem
-
 	for _, ws := range kc.wsList {
 		if err := ws.connect(); err != nil {
 			return err
@@ -163,7 +160,6 @@ func (kc *KuCoinCollector) Start(mem *queue.MemoryStore) error {
 		go ws.pingLoop()
 		go ws.subscribeLoop()
 	}
-
 	log.Printf("[KuCoin] started with %d WS\n", len(kc.wsList))
 	return nil
 }
@@ -178,7 +174,7 @@ func (kc *KuCoinCollector) Stop() error {
 	return nil
 }
 
-/* ================= WS CONNECT ================= */
+// ================= CONNECT =================
 func (ws *kucoinWS) connect() error {
 	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
 	resp, err := http.DefaultClient.Do(req)
@@ -215,7 +211,7 @@ func (ws *kucoinWS) connect() error {
 	return nil
 }
 
-/* ================= SUBSCRIBE ================= */
+// ================= SUBSCRIBE =================
 func (ws *kucoinWS) subscribeLoop() {
 	time.Sleep(1 * time.Second) // ждём welcome
 	t := time.NewTicker(subRate)
@@ -231,14 +227,12 @@ func (ws *kucoinWS) subscribeLoop() {
 			"response": true,
 		})
 		if err != nil {
-			log.Printf("[KuCoin WS %d] subscribe error %s: %v\n", ws.id, s, err)
-		} else {
-			log.Printf("[KuCoin WS %d] subscribed %s\n", ws.id, s)
+			log.Printf("[KuCoin WS %d] subscribe error %s\n", ws.id, s)
 		}
 	}
 }
 
-/* ================= PING ================= */
+// ================= PING =================
 func (ws *kucoinWS) pingLoop() {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
@@ -250,7 +244,7 @@ func (ws *kucoinWS) pingLoop() {
 	}
 }
 
-/* ================= READ ================= */
+// ================= READ =================
 func (ws *kucoinWS) readLoop(kc *KuCoinCollector) {
 	for {
 		_, msg, err := ws.conn.ReadMessage()
@@ -262,7 +256,7 @@ func (ws *kucoinWS) readLoop(kc *KuCoinCollector) {
 	}
 }
 
-/* ================= HANDLE ================= */
+// ================= HANDLE =================
 func (ws *kucoinWS) handle(kc *KuCoinCollector, msg []byte) {
 	if gjson.GetBytes(msg, "type").String() != "message" {
 		return
@@ -273,7 +267,11 @@ func (ws *kucoinWS) handle(kc *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	symbol := strings.TrimPrefix(topic, "/market/ticker:") // уже нормализовано
+	csvSymbol := strings.TrimPrefix(topic, "/market/ticker:")
+	symbol, ok := kc.symbolMap[csvSymbol]
+	if !ok {
+		return
+	}
 
 	data := gjson.GetBytes(msg, "data")
 	bid := data.Get("bestBid").Float()
@@ -282,14 +280,15 @@ func (ws *kucoinWS) handle(kc *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	lastIface, _ := ws.last.LoadOrStore(symbol, [2]float64{0, 0})
-	last := lastIface.([2]float64)
+	ws.mu.Lock()
+	last := ws.last[symbol]
 	if last[0] == bid && last[1] == ask {
+		ws.mu.Unlock()
 		return
 	}
-	ws.last.Store(symbol, [2]float64{bid, ask})
+	ws.last[symbol] = [2]float64{bid, ask}
+	ws.mu.Unlock()
 
-	// ---- Push в MemoryStore ----
 	kc.mem.Push(&models.MarketData{
 		Exchange:  "KuCoin",
 		Symbol:    symbol,
@@ -299,33 +298,30 @@ func (ws *kucoinWS) handle(kc *KuCoinCollector, msg []byte) {
 		AskSize:   data.Get("bestAskSize").Float(),
 		Timestamp: time.Now().UnixMilli(),
 	})
-
-	// ---- Callback на апдейт ----
-	if kc.OnUpdate != nil {
-		kc.OnUpdate(symbol)
-	}
 }
 
-/* ================= CSV ================= */
-func readPairsFromCSV(path string) ([]string, error) {
+// ================= CSV =================
+func readPairsFromCSV(path string) ([]string, map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
 
 	r := csv.NewReader(f)
 	rows, err := r.ReadAll()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	set := make(map[string]struct{})
+	symbolMap := make(map[string]string)
 	for _, row := range rows[1:] {
 		for i := 3; i <= 5 && i < len(row); i++ {
-			p := parseLeg(row[i])
-			if p != "" {
-				set[p] = struct{}{}
+			csvSym := parseLeg(row[i])
+			if csvSym != "" {
+				set[csvSym] = struct{}{}
+				symbolMap[csvSym] = normalize(csvSym)
 			}
 		}
 	}
@@ -334,51 +330,26 @@ func readPairsFromCSV(path string) ([]string, error) {
 	for k := range set {
 		res = append(res, k)
 	}
-	return res, nil
+	return res, symbolMap, nil
 }
 
-/* ================= HELPERS ================= */
+// ================= HELPERS =================
 func parseLeg(s string) string {
-	// формат гарантирован, просто сплит
-	parts := strings.Split(strings.TrimSpace(s), " ")
-	if len(parts) != 2 {
+	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
+	if len(parts) < 2 {
 		return ""
 	}
-	return strings.ReplaceAll(parts[1], "/", "-") // кэшируем как BTC-USDT
+	p := strings.Split(parts[1], "/")
+	if len(p) != 2 {
+		return ""
+	}
+	return p[0] + "-" + p[1]
 }
 
 func normalize(s string) string {
 	parts := strings.Split(s, "-")
 	return parts[0] + "/" + parts[1]
 }
-
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.059.pb.gz
-File: arb
-Build ID: 6d5dc42bb980392a310b389541706e62e62f2615
-Type: cpu
-Time: 2026-01-09 18:18:50 MSK
-Duration: 30.14s, Total samples = 3.76s (12.47%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 1840ms, 48.94% of 3760ms total
-Dropped 118 nodes (cum <= 18.80ms)
-Showing top 10 nodes out of 186
-      flat  flat%   sum%        cum   cum%
-     810ms 21.54% 21.54%      810ms 21.54%  internal/runtime/syscall.Syscall6
-     290ms  7.71% 29.26%      290ms  7.71%  runtime.futex
-     210ms  5.59% 34.84%      460ms 12.23%  strings.Fields
-     130ms  3.46% 38.30%      460ms 12.23%  runtime.scanobject
-      80ms  2.13% 40.43%       80ms  2.13%  strings.ToUpper
-      70ms  1.86% 42.29%       70ms  1.86%  aeshashbody
-      70ms  1.86% 44.15%       70ms  1.86%  runtime.(*mspan).base (inline)
-      60ms  1.60% 45.74%       60ms  1.60%  runtime.nextFreeFast (inline)
-      60ms  1.60% 47.34%       80ms  2.13%  runtime.stealWork
-      60ms  1.60% 48.94%       90ms  2.39%  runtime.typePointers.next
-(pprof) 
 
 
 
