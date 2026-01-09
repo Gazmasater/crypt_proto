@@ -66,11 +66,10 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 package calculator
 
 import (
-	"crypt_proto/internal/queue"
-	"encoding/csv"
 	"log"
-	"os"
 	"strings"
+
+	"crypt_proto/internal/queue"
 )
 
 const fee = 0.001 // 0.1%
@@ -121,11 +120,11 @@ func (c *Calculator) calculateTriangle(tri Triangle, s1, s2, s3 string) {
 		return
 	}
 
-	amount := 1.0 // стартуем с 1 A
+	amount := 1.0 // стартуем с 1 единицы валюты A
 
 	legs := []struct {
 		leg string
-		q   *queue.MarketData
+		q   queue.Quote
 	}{
 		{tri.Leg1, q1},
 		{tri.Leg2, q2},
@@ -143,7 +142,7 @@ func (c *Calculator) calculateTriangle(tri Triangle, s1, s2, s3 string) {
 				amount = maxBuy
 			}
 			amount *= (1 - fee)
-		} else {
+		} else { // SELL
 			if l.q.Bid <= 0 || l.q.BidSize <= 0 {
 				return
 			}
@@ -167,37 +166,6 @@ func (c *Calculator) calculateTriangle(tri Triangle, s1, s2, s3 string) {
 	}
 }
 
-// ParseTrianglesFromCSV парсит треугольники из CSV
-func ParseTrianglesFromCSV(path string) ([]Triangle, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	rows, err := r.ReadAll()
-	if err != nil {
-		return nil, err
-	}
-
-	var res []Triangle
-	for _, row := range rows[1:] {
-		if len(row) < 6 {
-			continue
-		}
-		res = append(res, Triangle{
-			A:    strings.TrimSpace(row[0]),
-			B:    strings.TrimSpace(row[1]),
-			C:    strings.TrimSpace(row[2]),
-			Leg1: strings.TrimSpace(row[3]),
-			Leg2: strings.TrimSpace(row[4]),
-			Leg3: strings.TrimSpace(row[5]),
-		})
-	}
-	return res, nil
-}
-
 // legSymbol извлекает символ из Leg, например "BUY COTI/USDT" -> "COTI/USDT"
 func legSymbol(leg string) string {
 	parts := strings.Fields(leg)
@@ -206,8 +174,6 @@ func legSymbol(leg string) string {
 	}
 	return strings.ToUpper(parts[1])
 }
-
-
 
 
 
@@ -227,6 +193,7 @@ import (
 func main() {
 	// -------------------- Создаем память --------------------
 	mem := queue.NewMemoryStore()
+	go mem.Run() // запускаем основной цикл MemoryStore
 
 	// -------------------- Загружаем треугольники --------------------
 	triangles, err := calculator.ParseTrianglesFromCSV("triangles.csv")
@@ -238,15 +205,18 @@ func main() {
 	calc := calculator.NewCalculator(mem, triangles)
 
 	// -------------------- Создаем коллектор KuCoin --------------------
-	ku := collector.NewKuCoinCollector(mem)
+	ku, err := collector.NewKuCoinCollectorFromCSV("triangles.csv")
+	if err != nil {
+		log.Fatalf("failed to create KuCoin collector: %v", err)
+	}
 
-	// -------------------- Запуск коллектора --------------------
-	// Передаем функцию обратного вызова на апдейт котировки
+	// -------------------- Передаем функцию обратного вызова на апдейт котировки --------------------
 	ku.OnUpdate = func(symbol string) {
 		calc.OnUpdate(symbol)
 	}
 
-	if err := ku.Start(); err != nil {
+	// -------------------- Запуск коллектора --------------------
+	if err := ku.Start(mem); err != nil {
 		log.Fatalf("failed to start KuCoin collector: %v", err)
 	}
 
@@ -262,443 +232,6 @@ func main() {
 	if err := ku.Stop(); err != nil {
 		log.Printf("Error stopping collector: %v", err)
 	}
-}
-
-
-
-
-
-
-package collector
-
-import (
-	"context"
-	"encoding/csv"
-	"encoding/json"
-	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"strings"
-	"sync"
-	"time"
-
-	"github.com/tidwall/gjson"
-	"github.com/gorilla/websocket"
-
-	"crypt_proto/internal/calculator"
-	"crypt_proto/internal/queue"
-	"crypt_proto/pkg/models"
-)
-
-const (
-	maxSubsPerWS = 90
-	subRate      = 120 * time.Millisecond // ~8/sec
-	pingInterval = 20 * time.Second
-)
-
-/* ================= POOL ================= */
-type KuCoinCollector struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wsList    []*kucoinWS
-	triangles []calculator.Triangle
-	mem       *queue.MemoryStore // <- теперь работаем напрямую с MemoryStore
-}
-
-/* ================= WS ================= */
-type kucoinWS struct {
-	id      int
-	conn    *websocket.Conn
-	symbols []string
-	last    map[string][2]float64
-	mu      sync.Mutex
-}
-
-/* ================= CONSTRUCTOR ================= */
-func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
-	symbols, err := readPairsFromCSV(path)
-	if err != nil {
-		return nil, err
-	}
-	if len(symbols) == 0 {
-		return nil, fmt.Errorf("no symbols")
-	}
-
-	// формируем треугольники
-	triangles, _ := calculator.ParseTrianglesFromCSV(path)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	var wsList []*kucoinWS
-	for i := 0; i < len(symbols); i += maxSubsPerWS {
-		end := i + maxSubsPerWS
-		if end > len(symbols) {
-			end = len(symbols)
-		}
-		wsList = append(wsList, &kucoinWS{
-			id:      len(wsList),
-			symbols: symbols[i:end],
-			last:    make(map[string][2]float64),
-		})
-	}
-
-	return &KuCoinCollector{
-		ctx:       ctx,
-		cancel:    cancel,
-		wsList:    wsList,
-		triangles: triangles,
-	}, nil
-}
-
-func (kc *KuCoinCollector) Triangles() []calculator.Triangle {
-	return kc.triangles
-}
-
-/* ================= INTERFACE ================= */
-func (c *KuCoinCollector) Name() string {
-	return "KuCoin"
-}
-
-// Start принимает MemoryStore вместо канала
-func (c *KuCoinCollector) Start(mem *queue.MemoryStore) error {
-	c.mem = mem
-	for _, ws := range c.wsList {
-		if err := ws.connect(); err != nil {
-			return err
-		}
-		go ws.readLoop(c)
-		go ws.pingLoop()
-		go ws.subscribeLoop()
-	}
-	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
-	return nil
-}
-
-func (c *KuCoinCollector) Stop() error {
-	c.cancel()
-	for _, ws := range c.wsList {
-		if ws.conn != nil {
-			ws.conn.Close()
-		}
-	}
-	return nil
-}
-
-/* ================= CONNECT ================= */
-func (ws *kucoinWS) connect() error {
-	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return err
-	}
-
-	url := fmt.Sprintf("%s?token=%s&connectId=%d",
-		r.Data.InstanceServers[0].Endpoint,
-		r.Data.Token,
-		time.Now().UnixNano(),
-	)
-
-	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-		return err
-	}
-	ws.conn = conn
-	log.Printf("[KuCoin WS %d] connected\n", ws.id)
-	return nil
-}
-
-/* ================= SUBSCRIBE ================= */
-func (ws *kucoinWS) subscribeLoop() {
-	time.Sleep(1 * time.Second) // ждём welcome
-	t := time.NewTicker(subRate)
-	defer t.Stop()
-
-	for _, s := range ws.symbols {
-		<-t.C
-		topic := "/market/ticker:" + s
-		err := ws.conn.WriteJSON(map[string]any{
-			"id":       time.Now().UnixNano(),
-			"type":     "subscribe",
-			"topic":    topic,
-			"response": true,
-		})
-		if err != nil {
-			log.Printf("[KuCoin WS %d] subscribe error %s\n", ws.id, s)
-		} else {
-			log.Printf("[KuCoin WS %d] subscribed %s\n", ws.id, s)
-		}
-	}
-}
-
-/* ================= PING ================= */
-func (ws *kucoinWS) pingLoop() {
-	t := time.NewTicker(pingInterval)
-	defer t.Stop()
-	for range t.C {
-		_ = ws.conn.WriteJSON(map[string]any{
-			"id":   time.Now().UnixNano(),
-			"type": "ping",
-		})
-	}
-}
-
-/* ================= READ ================= */
-func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
-	for {
-		_, msg, err := ws.conn.ReadMessage()
-		if err != nil {
-			log.Printf("[KuCoin WS %d] read error: %v\n", ws.id, err)
-			return
-		}
-		ws.handle(c, msg)
-	}
-}
-
-/* ================= HANDLE ================= */
-func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	if gjson.GetBytes(msg, "type").String() != "message" {
-		return
-	}
-
-	topic := gjson.GetBytes(msg, "topic").String()
-	if !strings.HasPrefix(topic, "/market/ticker:") {
-		return
-	}
-
-	symbol := normalize(strings.TrimPrefix(topic, "/market/ticker:"))
-
-	data := gjson.GetBytes(msg, "data")
-
-	bid := data.Get("bestBid").Float()
-	ask := data.Get("bestAsk").Float()
-	if bid == 0 || ask == 0 {
-		return
-	}
-
-	ws.mu.Lock()
-	last := ws.last[symbol]
-	if last[0] == bid && last[1] == ask {
-		ws.mu.Unlock()
-		return
-	}
-	ws.last[symbol] = [2]float64{bid, ask}
-	ws.mu.Unlock()
-
-	// ---- Push в MemoryStore ----
-	c.mem.Push(&models.MarketData{
-		Exchange:  "KuCoin",
-		Symbol:    symbol,
-		Bid:       bid,
-		Ask:       ask,
-		BidSize:   data.Get("bestBidSize").Float(),
-		AskSize:   data.Get("bestAskSize").Float(),
-		Timestamp: time.Now().UnixMilli(),
-	})
-}
-
-/* ================= CSV ================= */
-func readPairsFromCSV(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	rows, err := r.ReadAll()
-	if err != nil {
-		return nil, err
-	}
-
-	set := make(map[string]struct{})
-	for _, row := range rows[1:] {
-		for i := 3; i <= 5 && i < len(row); i++ {
-			p := parseLeg(row[i])
-			if p != "" {
-				set[p] = struct{}{}
-			}
-		}
-	}
-
-	var res []string
-	for k := range set {
-		res = append(res, k)
-	}
-	return res, nil
-}
-
-/* ================= HELPERS ================= */
-func parseLeg(s string) string {
-	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
-	if len(parts) < 2 {
-		return ""
-	}
-	p := strings.Split(parts[1], "/")
-	if len(p) != 2 {
-		return ""
-	}
-	return p[0] + "-" + p[1]
-}
-
-func normalize(s string) string {
-	parts := strings.Split(s, "-")
-	return parts[0] + "/" + parts[1]
-}
-
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredImportedName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredImportedName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: collector.NewKuCoinCollector",
-	"source": "compiler",
-	"startLineNumber": 28,
-	"startColumn": 18,
-	"endLineNumber": 28,
-	"endColumn": 36,
-	"origin": "extHost1"
-}]
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/arb.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredImportedName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredImportedName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: queue.MarketData",
-	"source": "compiler",
-	"startLineNumber": 63,
-	"startColumn": 14,
-	"endLineNumber": 63,
-	"endColumn": 24,
-	"origin": "extHost1"
-}]
-
-
-
-package queue
-
-import (
-	"sync"
-	"sync/atomic"
-	"time"
-
-	"crypt_proto/pkg/models"
-)
-
-type Quote struct {
-	Bid       float64
-	Ask       float64
-	BidSize   float64
-	AskSize   float64
-	Timestamp int64
-}
-
-type MemoryStore struct {
-	data  atomic.Value // map[string]Quote
-	m     sync.Map
-	batch chan *models.MarketData
-}
-
-func NewMemoryStore() *MemoryStore {
-	s := &MemoryStore{
-		batch: make(chan *models.MarketData, 10_000),
-	}
-
-	// Инициализация atomic.Value ОБЯЗАТЕЛЬНА
-	s.data.Store(make(map[string]Quote))
-
-	return s
-}
-
-//
-// ===== Публичный API =====
-//
-
-// Run — основной цикл стора
-func (s *MemoryStore) Run() {
-	for md := range s.batch {
-		s.apply(md)
-	}
-}
-
-// Push — приём данных от коллекторов
-func (s *MemoryStore) Push(md *models.MarketData) {
-	select {
-	case s.batch <- md:
-	default:
-		// защита от переполнения
-	}
-}
-
-// Get — snapshot-чтение
-func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
-	m := s.data.Load().(map[string]Quote)
-	q, ok := m[exchange+"|"+symbol]
-	return q, ok
-}
-
-//
-// ===== Внутренняя логика =====
-//
-
-func (s *MemoryStore) apply(md *models.MarketData) {
-	key := md.Exchange + "|" + md.Symbol
-
-	quote := Quote{
-		Bid:       md.Bid,
-		Ask:       md.Ask,
-		BidSize:   md.BidSize,
-		AskSize:   md.AskSize,
-		Timestamp: time.Now().UnixMilli(),
-	}
-
-	// читаем старую map
-	oldMap := s.data.Load().(map[string]Quote)
-
-	// делаем copy-on-write
-	newMap := make(map[string]Quote, len(oldMap)+1)
-	for k, v := range oldMap {
-		newMap[k] = v
-	}
-	newMap[key] = quote
-
-	// атомарно подменяем snapshot
-	s.data.Store(newMap)
 }
 
 
