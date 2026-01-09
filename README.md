@@ -63,31 +63,201 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.044.pb.gz
-File: arb
-Build ID: 661cf4e16f8eb544a152de46fc45312b5200894b
-Type: cpu
-Time: 2026-01-09 13:28:49 MSK
-Duration: 30s, Total samples = 110ms ( 0.37%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 110ms, 100% of 110ms total
-Showing top 10 nodes out of 52
-      flat  flat%   sum%        cum   cum%
-      20ms 18.18% 18.18%       20ms 18.18%  internal/runtime/syscall.Syscall6
-      10ms  9.09% 27.27%       20ms 18.18%  github.com/tidwall/gjson.parseObject
-      10ms  9.09% 36.36%       10ms  9.09%  github.com/tidwall/gjson.parseSquash
-      10ms  9.09% 45.45%       10ms  9.09%  runtime.acquirem (inline)
-      10ms  9.09% 54.55%       10ms  9.09%  runtime.duffcopy
-      10ms  9.09% 63.64%       10ms  9.09%  runtime.findRunnable
-      10ms  9.09% 72.73%       10ms  9.09%  runtime.getitab
-      10ms  9.09% 81.82%       10ms  9.09%  runtime.mapaccess2_faststr
-      10ms  9.09% 90.91%       10ms  9.09%  runtime.nanotime1
-      10ms  9.09%   100%       20ms 18.18%  strings.Fields
-(pprof) 
+package calculator
 
+import (
+	"crypt_proto/internal/queue"
+	"log"
+	"strings"
+)
+
+// Triangle описывает один треугольный арбитраж
+type Triangle struct {
+	A, B, C          string // имена валют для логов
+	Leg1, Leg2, Leg3 string // "BUY COTI/USDT", "SELL COTI/BTC" и т.д.
+}
+
+// Calculator считает профит по треугольникам
+type Calculator struct {
+	mem       *queue.MemoryStore
+	triangles []Triangle
+	index     map[string][]int // symbol -> индексы треугольников
+}
+
+// NewCalculator создаёт калькулятор с индексом
+func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
+	c := &Calculator{
+		mem:       mem,
+		triangles: triangles,
+		index:     make(map[string][]int),
+	}
+
+	// формируем индекс: какая пара участвует в каких треугольниках
+	for i, tri := range triangles {
+		for _, leg := range []string{tri.Leg1, tri.Leg2, tri.Leg3} {
+			sym := legSymbol(leg)
+			if sym != "" {
+				c.index[sym] = append(c.index[sym], i)
+			}
+		}
+	}
+	return c
+}
+
+// OnMarketData вызываем, когда приходит обновление котировки
+func (c *Calculator) OnMarketData(symbol string) {
+	triIndexes, ok := c.index[symbol]
+	if !ok {
+		return // эта пара не участвует в треугольниках
+	}
+
+	for _, i := range triIndexes {
+		tri := c.triangles[i]
+
+		s1, s2, s3 := legSymbol(tri.Leg1), legSymbol(tri.Leg2), legSymbol(tri.Leg3)
+
+		q1, ok1 := c.mem.Get("KuCoin", s1)
+		q2, ok2 := c.mem.Get("KuCoin", s2)
+		q3, ok3 := c.mem.Get("KuCoin", s3)
+		if !ok1 || !ok2 || !ok3 {
+			continue
+		}
+
+		amount := 1.0 // стартуем с 1 A
+
+		// LEG 1
+		if strings.HasPrefix(tri.Leg1, "BUY") {
+			if q1.Ask <= 0 || q1.AskSize <= 0 {
+				continue
+			}
+			amount = amount / q1.Ask
+			if amount > q1.AskSize {
+				amount = q1.AskSize
+			}
+			amount *= (1 - fee)
+		} else {
+			if q1.Bid <= 0 || q1.BidSize <= 0 {
+				continue
+			}
+			if amount > q1.BidSize {
+				amount = q1.BidSize
+			}
+			amount = amount * q1.Bid * (1 - fee)
+		}
+
+		// LEG 2
+		if strings.HasPrefix(tri.Leg2, "BUY") {
+			if q2.Ask <= 0 || q2.AskSize <= 0 {
+				continue
+			}
+			amount = amount / q2.Ask
+			if amount > q2.AskSize {
+				amount = q2.AskSize
+			}
+			amount *= (1 - fee)
+		} else {
+			if q2.Bid <= 0 || q2.BidSize <= 0 {
+				continue
+			}
+			if amount > q2.BidSize {
+				amount = q2.BidSize
+			}
+			amount = amount * q2.Bid * (1 - fee)
+		}
+
+		// LEG 3
+		if strings.HasPrefix(tri.Leg3, "BUY") {
+			if q3.Ask <= 0 || q3.AskSize <= 0 {
+				continue
+			}
+			amount = amount / q3.Ask
+			if amount > q3.AskSize {
+				amount = q3.AskSize
+			}
+			amount *= (1 - fee)
+		} else {
+			if q3.Bid <= 0 || q3.BidSize <= 0 {
+				continue
+			}
+			if amount > q3.BidSize {
+				amount = q3.BidSize
+			}
+			amount = amount * q3.Bid * (1 - fee)
+		}
+
+		profit := amount - 1.0
+		if profit > 0 {
+			log.Printf("[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.2f / %.2f / %.2f]",
+				tri.A, tri.B, tri.C,
+				profit*100,
+				q1.BidSize, q2.BidSize, q3.BidSize,
+			)
+		}
+	}
+}
+
+func legSymbol(leg string) string {
+	parts := strings.Fields(leg)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.ToUpper(parts[1])
+}
+
+
+
+
+
+package main
+
+import (
+	"log"
+
+	"crypt_proto/internal/calculator"
+	"crypt_proto/internal/collector"
+	"crypt_proto/internal/queue"
+)
+
+func main() {
+	// --- память для котировок ---
+	mem := queue.NewMemoryStore()
+
+	// --- читаем треугольники из CSV ---
+	triangles, err := calculator.ParseTrianglesFromCSV("triangles.csv")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// --- создаём калькулятор с индексом по символам ---
+	calc := calculator.NewCalculator(mem, triangles)
+
+	// --- создаём коллектор ---
+	kc, err := collector.NewKuCoinCollectorFromCSV("triangles.csv")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// --- канал для получения MarketData ---
+	out := make(chan *collector.MarketData, 1000)
+
+	// --- старт коллектора ---
+	err = kc.Start(out)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer kc.Stop()
+
+	log.Println("Collector started, waiting for market data...")
+
+	// --- основной цикл обработки данных ---
+	for md := range out {
+		// обновляем память
+		mem.Set(md.Exchange, md.Symbol, md)
+
+		// считаем только треугольники, где участвует эта пара
+		calc.OnMarketData(md.Symbol)
+	}
+}
 
 
 
