@@ -352,6 +352,28 @@ func normalize(s string) string {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "ku.OnUpdate undefined (type *collector.KuCoinCollector has no field or method OnUpdate)",
+	"source": "compiler",
+	"startLineNumber": 46,
+	"startColumn": 5,
+	"endLineNumber": 46,
+	"endColumn": 13,
+	"origin": "extHost1"
+}]
 
 
 
