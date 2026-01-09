@@ -352,28 +352,42 @@ func normalize(s string) string {
 }
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "ku.OnUpdate undefined (type *collector.KuCoinCollector has no field or method OnUpdate)",
-	"source": "compiler",
-	"startLineNumber": 46,
-	"startColumn": 5,
-	"endLineNumber": 46,
-	"endColumn": 13,
-	"origin": "extHost1"
-}]
+
+func main() {
+    mem := queue.NewMemoryStore()
+
+    triangles, err := calculator.ParseTrianglesFromCSV("triangles.csv")
+    if err != nil {
+        log.Fatalf("failed to load triangles: %v", err)
+    }
+
+    calc := calculator.NewCalculator(mem, triangles)
+
+    ku, err := collector.NewKuCoinCollectorFromCSV("triangles.csv")
+    if err != nil {
+        log.Fatalf("failed to create KuCoin collector: %v", err)
+    }
+
+    if err := ku.Start(mem); err != nil {
+        log.Fatalf("failed to start KuCoin collector: %v", err)
+    }
+
+    log.Println("Calculator and KuCoin collector started")
+
+    // запускаем калькулятор в отдельной горутине
+    go calc.Run()
+
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+    <-quit
+
+    log.Println("Shutting down...")
+    if err := ku.Stop(); err != nil {
+        log.Printf("Error stopping collector: %v", err)
+    }
+}
+
+
 
 
 
