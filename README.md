@@ -87,7 +87,7 @@ import (
 
 const (
 	maxSubsPerWS = 90
-	subRate      = 120 * time.Millisecond // ~8 подписок/сек
+	subRate      = 120 * time.Millisecond
 	pingInterval = 20 * time.Second
 )
 
@@ -106,9 +106,8 @@ type KuCoinCollector struct {
 type kucoinWS struct {
 	id      int
 	conn    *websocket.Conn
-	symbols []string
-	last    map[string][2]float64
-	mu      sync.Mutex
+	symbols []string // уже нормализованные
+	last    sync.Map
 }
 
 /* ================= CONSTRUCTOR ================= */
@@ -133,7 +132,6 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 		wsList = append(wsList, &kucoinWS{
 			id:      len(wsList),
 			symbols: symbols[i:end],
-			last:    make(map[string][2]float64),
 		})
 	}
 
@@ -275,7 +273,7 @@ func (ws *kucoinWS) handle(kc *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	symbol := normalize(strings.TrimPrefix(topic, "/market/ticker:"))
+	symbol := strings.TrimPrefix(topic, "/market/ticker:") // уже нормализовано
 
 	data := gjson.GetBytes(msg, "data")
 	bid := data.Get("bestBid").Float()
@@ -284,14 +282,12 @@ func (ws *kucoinWS) handle(kc *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	ws.mu.Lock()
-	last := ws.last[symbol]
+	lastIface, _ := ws.last.LoadOrStore(symbol, [2]float64{0, 0})
+	last := lastIface.([2]float64)
 	if last[0] == bid && last[1] == ask {
-		ws.mu.Unlock()
 		return
 	}
-	ws.last[symbol] = [2]float64{bid, ask}
-	ws.mu.Unlock()
+	ws.last.Store(symbol, [2]float64{bid, ask})
 
 	// ---- Push в MemoryStore ----
 	kc.mem.Push(&models.MarketData{
@@ -343,15 +339,12 @@ func readPairsFromCSV(path string) ([]string, error) {
 
 /* ================= HELPERS ================= */
 func parseLeg(s string) string {
-	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
-	if len(parts) < 2 {
+	// формат гарантирован, просто сплит
+	parts := strings.Split(strings.TrimSpace(s), " ")
+	if len(parts) != 2 {
 		return ""
 	}
-	p := strings.Split(parts[1], "/")
-	if len(p) != 2 {
-		return ""
-	}
-	return p[0] + "-" + p[1]
+	return strings.ReplaceAll(parts[1], "/", "-") // кэшируем как BTC-USDT
 }
 
 func normalize(s string) string {
@@ -359,33 +352,6 @@ func normalize(s string) string {
 	return parts[0] + "/" + parts[1]
 }
 
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.058.pb.gz
-File: arb
-Build ID: 93785d6bc3dd1aee89cd9819484725d29d217b9e
-Type: cpu
-Time: 2026-01-09 18:09:31 MSK
-Duration: 30.15s, Total samples = 4.09s (13.56%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 2060ms, 50.37% of 4090ms total
-Dropped 133 nodes (cum <= 20.45ms)
-Showing top 10 nodes out of 137
-      flat  flat%   sum%        cum   cum%
-     920ms 22.49% 22.49%      920ms 22.49%  internal/runtime/syscall.Syscall6
-     230ms  5.62% 28.12%      620ms 15.16%  strings.Fields
-     210ms  5.13% 33.25%      210ms  5.13%  runtime.futex
-     130ms  3.18% 36.43%      130ms  3.18%  strings.ToUpper
-     120ms  2.93% 39.36%      480ms 11.74%  runtime.scanobject
-     100ms  2.44% 41.81%      120ms  2.93%  runtime.findObject
-      90ms  2.20% 44.01%       90ms  2.20%  aeshashbody
-      90ms  2.20% 46.21%       90ms  2.20%  runtime.memclrNoHeapPointers
-      90ms  2.20% 48.41%       90ms  2.20%  runtime.nextFreeFast (inline)
-      80ms  1.96% 50.37%       80ms  1.96%  runtime.(*mspan).base (inline)
-(pprof) 
 
 
 
