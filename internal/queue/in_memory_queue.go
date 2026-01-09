@@ -3,6 +3,7 @@ package queue
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"crypt_proto/pkg/models"
 )
@@ -22,15 +23,68 @@ type MemoryStore struct {
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{
+	s := &MemoryStore{
 		batch: make(chan *models.MarketData, 10_000),
+	}
+
+	// Инициализация atomic.Value ОБЯЗАТЕЛЬНА
+	s.data.Store(make(map[string]Quote))
+
+	return s
+}
+
+//
+// ===== Публичный API =====
+//
+
+// Run — основной цикл стора
+func (s *MemoryStore) Run() {
+	for md := range s.batch {
+		s.apply(md)
 	}
 }
 
-// Snapshot возвращает актуальные котировки
+// Push — приём данных от коллекторов
+func (s *MemoryStore) Push(md *models.MarketData) {
+	select {
+	case s.batch <- md:
+	default:
+		// защита от переполнения
+	}
+}
 
+// Get — snapshot-чтение
 func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
 	m := s.data.Load().(map[string]Quote)
 	q, ok := m[exchange+"|"+symbol]
 	return q, ok
+}
+
+//
+// ===== Внутренняя логика =====
+//
+
+func (s *MemoryStore) apply(md *models.MarketData) {
+	key := md.Exchange + "|" + md.Symbol
+
+	quote := Quote{
+		Bid:       md.Bid,
+		Ask:       md.Ask,
+		BidSize:   md.BidSize,
+		AskSize:   md.AskSize,
+		Timestamp: time.Now().UnixMilli(),
+	}
+
+	// читаем старую map
+	oldMap := s.data.Load().(map[string]Quote)
+
+	// делаем copy-on-write
+	newMap := make(map[string]Quote, len(oldMap)+1)
+	for k, v := range oldMap {
+		newMap[k] = v
+	}
+	newMap[key] = quote
+
+	// атомарно подменяем snapshot
+	s.data.Store(newMap)
 }
