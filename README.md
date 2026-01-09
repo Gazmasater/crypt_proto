@@ -63,53 +63,206 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-File: arb
-Build ID: f667473fd8b6ec748bc74083d2b9bad95785f06e
-Type: cpu
-Time: 2026-01-09 16:33:43 MSK
-Duration: 30.14s, Total samples = 3.48s (11.55%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 1960ms, 56.32% of 3480ms total
-Dropped 80 nodes (cum <= 17.40ms)
-Showing top 10 nodes out of 171
-      flat  flat%   sum%        cum   cum%
-    1010ms 29.02% 29.02%     1010ms 29.02%  internal/runtime/syscall.Syscall6
-     300ms  8.62% 37.64%      300ms  8.62%  runtime.futex
-     140ms  4.02% 41.67%      430ms 12.36%  runtime.scanobject
-     110ms  3.16% 44.83%      110ms  3.16%  aeshashbody
-      90ms  2.59% 47.41%      110ms  3.16%  runtime.typePointers.next
-      80ms  2.30% 49.71%      120ms  3.45%  runtime.findObject
-      70ms  2.01% 51.72%      130ms  3.74%  github.com/tidwall/gjson.parseObject
-      60ms  1.72% 53.45%       60ms  1.72%  runtime.(*mspan).base (inline)
-      50ms  1.44% 54.89%      510ms 14.66%  crypt_proto/internal/queue.(*MemoryStore).apply
-      50ms  1.44% 56.32%      190ms  5.46%  github.com/tidwall/gjson.Get
-(pprof) 
+package calculator
+
+import (
+	"crypt_proto/internal/queue"
+	"encoding/csv"
+	"log"
+	"os"
+	"strings"
+)
+
+const fee = 0.001 // 0.1%
+
+// Triangle описывает один треугольный арбитраж
+type Triangle struct {
+	A, B, C          string // имена валют для логов
+	Leg1, Leg2, Leg3 string // "BUY COTI/USDT", "SELL COTI/BTC" и т.д.
+}
+
+// Calculator считает профит по треугольникам
+type Calculator struct {
+	mem       *queue.MemoryStore
+	triangles []Triangle
+}
+
+// NewCalculator создаёт калькулятор
+func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
+	return &Calculator{
+		mem:       mem,
+		triangles: triangles,
+	}
+}
+
+// OnUpdate вызывается на каждый апдейт котировки
+func (c *Calculator) OnUpdate(symbol string) {
+	for _, tri := range c.triangles {
+		s1 := legSymbol(tri.Leg1)
+		s2 := legSymbol(tri.Leg2)
+		s3 := legSymbol(tri.Leg3)
+
+		// пересчитываем только если обновился один из символов треугольника
+		if symbol != s1 && symbol != s2 && symbol != s3 {
+			continue
+		}
+
+		c.calculateTriangle(tri, s1, s2, s3)
+	}
+}
+
+// calculateTriangle рассчитывает прибыль одного треугольника
+func (c *Calculator) calculateTriangle(tri Triangle, s1, s2, s3 string) {
+	q1, ok1 := c.mem.Get("KuCoin", s1)
+	q2, ok2 := c.mem.Get("KuCoin", s2)
+	q3, ok3 := c.mem.Get("KuCoin", s3)
+
+	if !ok1 || !ok2 || !ok3 {
+		return
+	}
+
+	amount := 1.0 // стартуем с 1 A
+
+	legs := []struct {
+		leg string
+		q   *queue.MarketData
+	}{
+		{tri.Leg1, q1},
+		{tri.Leg2, q2},
+		{tri.Leg3, q3},
+	}
+
+	for _, l := range legs {
+		if strings.HasPrefix(l.leg, "BUY") {
+			if l.q.Ask <= 0 || l.q.AskSize <= 0 {
+				return
+			}
+			maxBuy := l.q.AskSize
+			amount = amount / l.q.Ask
+			if amount > maxBuy {
+				amount = maxBuy
+			}
+			amount *= (1 - fee)
+		} else {
+			if l.q.Bid <= 0 || l.q.BidSize <= 0 {
+				return
+			}
+			maxSell := l.q.BidSize
+			if amount > maxSell {
+				amount = maxSell
+			}
+			amount = amount * l.q.Bid
+			amount *= (1 - fee)
+		}
+	}
+
+	profit := amount - 1.0
+	if profit > 0 {
+		log.Printf(
+			"[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.2f / %.2f / %.2f]",
+			tri.A, tri.B, tri.C,
+			profit*100,
+			q1.BidSize, q2.BidSize, q3.BidSize,
+		)
+	}
+}
+
+// ParseTrianglesFromCSV парсит треугольники из CSV
+func ParseTrianglesFromCSV(path string) ([]Triangle, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	rows, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	var res []Triangle
+	for _, row := range rows[1:] {
+		if len(row) < 6 {
+			continue
+		}
+		res = append(res, Triangle{
+			A:    strings.TrimSpace(row[0]),
+			B:    strings.TrimSpace(row[1]),
+			C:    strings.TrimSpace(row[2]),
+			Leg1: strings.TrimSpace(row[3]),
+			Leg2: strings.TrimSpace(row[4]),
+			Leg3: strings.TrimSpace(row[5]),
+		})
+	}
+	return res, nil
+}
+
+// legSymbol извлекает символ из Leg, например "BUY COTI/USDT" -> "COTI/USDT"
+func legSymbol(leg string) string {
+	parts := strings.Fields(leg)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.ToUpper(parts[1])
+}
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
-Saved profile in /home/gaz358/pprof/pprof.arb.alloc_objects.alloc_space.inuse_objects.inuse_space.003.pb.gz
-File: arb
-Build ID: f667473fd8b6ec748bc74083d2b9bad95785f06e
-Type: inuse_space
-Time: 2026-01-09 16:35:51 MSK
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 3565.46kB, 100% of 3565.46kB total
-Showing top 10 nodes out of 27
-      flat  flat%   sum%        cum   cum%
-    2052kB 57.55% 57.55%     2052kB 57.55%  runtime.allocm
- 1000.34kB 28.06% 85.61%  1000.34kB 28.06%  main.main
-  513.12kB 14.39%   100%   513.12kB 14.39%  vendor/golang.org/x/net/http2/hpack.newInternalNode (inline)
-         0     0%   100%   513.12kB 14.39%  net/http.(*http2ClientConn).readLoop
-         0     0%   100%   513.12kB 14.39%  net/http.(*http2Framer).ReadFrame
-         0     0%   100%   513.12kB 14.39%  net/http.(*http2Framer).readMetaFrame
-         0     0%   100%   513.12kB 14.39%  net/http.(*http2clientConnReadLoop).run
-         0     0%   100%  1000.34kB 28.06%  runtime.main
-         0     0%   100%      513kB 14.39%  runtime.mcall
-         0     0%   100%     1539kB 43.16%  runtime.mstart
-(pprof) 
+
+
+package main
+
+import (
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"crypt_proto/internal/calculator"
+	"crypt_proto/internal/collector"
+	"crypt_proto/internal/queue"
+)
+
+func main() {
+	// -------------------- Создаем память --------------------
+	mem := queue.NewMemoryStore()
+
+	// -------------------- Загружаем треугольники --------------------
+	triangles, err := calculator.ParseTrianglesFromCSV("triangles.csv")
+	if err != nil {
+		log.Fatalf("failed to load triangles: %v", err)
+	}
+
+	// -------------------- Создаем калькулятор --------------------
+	calc := calculator.NewCalculator(mem, triangles)
+
+	// -------------------- Создаем коллектор KuCoin --------------------
+	ku := collector.NewKuCoinCollector(mem)
+
+	// -------------------- Запуск коллектора --------------------
+	// Передаем функцию обратного вызова на апдейт котировки
+	ku.OnUpdate = func(symbol string) {
+		calc.OnUpdate(symbol)
+	}
+
+	if err := ku.Start(); err != nil {
+		log.Fatalf("failed to start KuCoin collector: %v", err)
+	}
+
+	log.Println("Calculator and KuCoin collector started")
+
+	// -------------------- Ждем завершения --------------------
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+
+	log.Println("Shutting down...")
+
+	if err := ku.Stop(); err != nil {
+		log.Printf("Error stopping collector: %v", err)
+	}
+}
+
 
 
