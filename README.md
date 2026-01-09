@@ -134,6 +134,30 @@ func main() {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "calc.RunAsync undefined (type *calculator.Calculator has no field or method RunAsync)",
+	"source": "compiler",
+	"startLineNumber": 31,
+	"startColumn": 10,
+	"endLineNumber": 31,
+	"endColumn": 18,
+	"origin": "extHost1"
+}]
+
+
 
 
 
