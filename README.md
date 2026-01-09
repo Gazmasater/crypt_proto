@@ -63,18 +63,38 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (s *MemoryStore) Put(exchange, symbol string, q Quote) {
-    old := s.data.Load().(map[string]Quote)
-    newMap := make(map[string]Quote, len(old)+1)
-    for k, v := range old {
-        newMap[k] = v
-    }
-    newMap[exchange+"|"+symbol] = q
-    s.data.Store(newMap)
+for md := range out {
+		// обновляем память
+		mem.Put(md.Exchange, md.Symbol, md)
+
+		// считаем только треугольники, где участвует эта пара
+		calc.OnMarketData(md.Symbol)
+	}
 }
 
 
-mem.Put(md.Exchange, md.Symbol, md)
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use md (variable of type *models.MarketData) as queue.Quote value in argument to mem.Put",
+	"source": "compiler",
+	"startLineNumber": 46,
+	"startColumn": 35,
+	"endLineNumber": 46,
+	"endColumn": 37,
+	"origin": "extHost1"
+}]
 
 
 
