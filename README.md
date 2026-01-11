@@ -83,7 +83,7 @@ func (c *Calculator) Run() {
 				continue
 			}
 
-			amount := 1.0 // стартуем с 1 A
+			amount := 1.0 // стартуем с 1 USDT
 
 			// ---------- LEG 1 ----------
 			if strings.HasPrefix(tri.Leg1, "BUY") {
@@ -91,10 +91,9 @@ func (c *Calculator) Run() {
 					continue
 				}
 
-				maxBuy := q1.AskSize     // сколько B можно купить
-				amount = amount / q1.Ask // A -> B
-				if amount > maxBuy {
-					amount = maxBuy
+				amount = amount / q1.Ask
+				if amount > q1.AskSize {
+					amount = q1.AskSize
 				}
 				amount *= (1 - fee)
 
@@ -103,11 +102,10 @@ func (c *Calculator) Run() {
 					continue
 				}
 
-				maxSell := q1.BidSize // сколько A можно продать
-				if amount > maxSell {
-					amount = maxSell
+				if amount > q1.BidSize {
+					amount = q1.BidSize
 				}
-				amount = amount * q1.Bid // A -> B
+				amount = amount * q1.Bid
 				amount *= (1 - fee)
 			}
 
@@ -117,10 +115,9 @@ func (c *Calculator) Run() {
 					continue
 				}
 
-				maxBuy := q2.AskSize
 				amount = amount / q2.Ask
-				if amount > maxBuy {
-					amount = maxBuy
+				if amount > q2.AskSize {
+					amount = q2.AskSize
 				}
 				amount *= (1 - fee)
 
@@ -129,9 +126,8 @@ func (c *Calculator) Run() {
 					continue
 				}
 
-				maxSell := q2.BidSize
-				if amount > maxSell {
-					amount = maxSell
+				if amount > q2.BidSize {
+					amount = q2.BidSize
 				}
 				amount = amount * q2.Bid
 				amount *= (1 - fee)
@@ -143,10 +139,9 @@ func (c *Calculator) Run() {
 					continue
 				}
 
-				maxBuy := q3.AskSize
 				amount = amount / q3.Ask
-				if amount > maxBuy {
-					amount = maxBuy
+				if amount > q3.AskSize {
+					amount = q3.AskSize
 				}
 				amount *= (1 - fee)
 
@@ -155,9 +150,8 @@ func (c *Calculator) Run() {
 					continue
 				}
 
-				maxSell := q3.BidSize
-				if amount > maxSell {
-					amount = maxSell
+				if amount > q3.BidSize {
+					amount = q3.BidSize
 				}
 				amount = amount * q3.Bid
 				amount *= (1 - fee)
@@ -165,23 +159,72 @@ func (c *Calculator) Run() {
 
 			profit := amount - 1.0
 
-			if profit > 0.001 {
-				msg := fmt.Sprintf(
-					"[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.4f / %.4f / %.4f]",
-					tri.A, tri.B, tri.C,
-					profit*100,
-					q1.BidSize, q2.BidSize, q3.BidSize,
-				)
-
-				// консоль
-				log.Println(msg)
-
-				// файл
-				c.fileLog.Println(msg)
+			if profit <= 0.001 {
+				continue
 			}
+
+			// ---------- volumes in USDT ----------
+			v1 := c.volumeToUSDT("KuCoin", s1, q1.BidSize, q1.Bid)
+			v2 := c.volumeToUSDT("KuCoin", s2, q2.BidSize, q2.Bid)
+			v3 := c.volumeToUSDT("KuCoin", s3, q3.BidSize, q3.Bid)
+
+			// если хотя бы один leg не приводится к USDT — пропускаем
+			if v1 == 0 || v2 == 0 || v3 == 0 {
+				continue
+			}
+
+			msg := fmt.Sprintf(
+				"[ARB] %s → %s → %s | profit=%.3f%% | volumes USDT: [%.0f / %.0f / %.0f]",
+				tri.A, tri.B, tri.C,
+				profit*100,
+				v1, v2, v3,
+			)
+
+			log.Println(msg)
+			c.fileLog.Println(msg)
 		}
 	}
 }
+
+
+
+func (c *Calculator) volumeToUSDT(
+	exchange string,
+	symbol string,
+	size float64,
+	price float64,
+) float64 {
+
+	parts := strings.Split(symbol, "-")
+	if len(parts) != 2 {
+		return 0
+	}
+
+	base := parts[0]
+	quote := parts[1]
+
+	// BASE-QUOTE → объём в QUOTE
+	quoteAmount := size * price
+
+	// 1) QUOTE == USDT
+	if quote == "USDT" {
+		return quoteAmount
+	}
+
+	// 2) есть QUOTE-USDT
+	if q, ok := c.mem.Get(exchange, quote+"-USDT"); ok && q.Bid > 0 {
+		return quoteAmount * q.Bid
+	}
+
+	// 3) есть USDT-QUOTE
+	if q, ok := c.mem.Get(exchange, "USDT-"+quote); ok && q.Ask > 0 {
+		return quoteAmount / q.Ask
+	}
+
+	// нет пути в USDT
+	return 0
+}
+
 
 
 
