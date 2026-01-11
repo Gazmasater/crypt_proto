@@ -63,44 +63,124 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-type Calculator struct {
-	triangles []Triangle
-	mem       *queue.MemoryStore
-	fileLog   *log.Logger
-}
+func (c *Calculator) Run() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
+	for range ticker.C {
 
-func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
-	f, err := os.OpenFile(
-		"arb_opportunities.log",
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
-		0644,
-	)
-	if err != nil {
-		log.Fatalf("failed to open arb log file: %v", err)
+		for _, tri := range c.triangles {
+
+			s1 := legSymbol(tri.Leg1)
+			s2 := legSymbol(tri.Leg2)
+			s3 := legSymbol(tri.Leg3)
+
+			q1, ok1 := c.mem.Get("KuCoin", s1)
+			q2, ok2 := c.mem.Get("KuCoin", s2)
+			q3, ok3 := c.mem.Get("KuCoin", s3)
+
+			if !ok1 || !ok2 || !ok3 {
+				continue
+			}
+
+			amount := 1.0 // стартуем с 1 A
+
+			// ---------- LEG 1 ----------
+			if strings.HasPrefix(tri.Leg1, "BUY") {
+				if q1.Ask <= 0 || q1.AskSize <= 0 {
+					continue
+				}
+
+				maxBuy := q1.AskSize     // сколько B можно купить
+				amount = amount / q1.Ask // A -> B
+				if amount > maxBuy {
+					amount = maxBuy
+				}
+				amount *= (1 - fee)
+
+			} else {
+				if q1.Bid <= 0 || q1.BidSize <= 0 {
+					continue
+				}
+
+				maxSell := q1.BidSize // сколько A можно продать
+				if amount > maxSell {
+					amount = maxSell
+				}
+				amount = amount * q1.Bid // A -> B
+				amount *= (1 - fee)
+			}
+
+			// ---------- LEG 2 ----------
+			if strings.HasPrefix(tri.Leg2, "BUY") {
+				if q2.Ask <= 0 || q2.AskSize <= 0 {
+					continue
+				}
+
+				maxBuy := q2.AskSize
+				amount = amount / q2.Ask
+				if amount > maxBuy {
+					amount = maxBuy
+				}
+				amount *= (1 - fee)
+
+			} else {
+				if q2.Bid <= 0 || q2.BidSize <= 0 {
+					continue
+				}
+
+				maxSell := q2.BidSize
+				if amount > maxSell {
+					amount = maxSell
+				}
+				amount = amount * q2.Bid
+				amount *= (1 - fee)
+			}
+
+			// ---------- LEG 3 ----------
+			if strings.HasPrefix(tri.Leg3, "BUY") {
+				if q3.Ask <= 0 || q3.AskSize <= 0 {
+					continue
+				}
+
+				maxBuy := q3.AskSize
+				amount = amount / q3.Ask
+				if amount > maxBuy {
+					amount = maxBuy
+				}
+				amount *= (1 - fee)
+
+			} else {
+				if q3.Bid <= 0 || q3.BidSize <= 0 {
+					continue
+				}
+
+				maxSell := q3.BidSize
+				if amount > maxSell {
+					amount = maxSell
+				}
+				amount = amount * q3.Bid
+				amount *= (1 - fee)
+			}
+
+			profit := amount - 1.0
+
+			if profit > 0.001 {
+				msg := fmt.Sprintf(
+					"[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.4f / %.4f / %.4f]",
+					tri.A, tri.B, tri.C,
+					profit*100,
+					q1.BidSize, q2.BidSize, q3.BidSize,
+				)
+
+				// консоль
+				log.Println(msg)
+
+				// файл
+				c.fileLog.Println(msg)
+			}
+		}
 	}
-
-	return &Calculator{
-		mem:       mem,
-		triangles: triangles,
-		fileLog:   log.New(f, "", log.LstdFlags),
-	}
-}
-
-
-if profit > 0 {
-	msg := fmt.Sprintf(
-		"[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.4f / %.4f / %.4f]",
-		tri.A, tri.B, tri.C,
-		profit*100,
-		q1.BidSize, q2.BidSize, q3.BidSize,
-	)
-
-	// консоль
-	log.Println(msg)
-
-	// файл
-	c.fileLog.Println(msg)
 }
 
 
