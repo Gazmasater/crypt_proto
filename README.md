@@ -63,135 +63,31 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func (c *Calculator) Run() {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		for _, tri := range c.triangles {
-
-			s1 := legSymbol(tri.Leg1)
-			s2 := legSymbol(tri.Leg2)
-			s3 := legSymbol(tri.Leg3)
-
-			q1, ok1 := c.mem.Get("KuCoin", s1)
-			q2, ok2 := c.mem.Get("KuCoin", s2)
-			q3, ok3 := c.mem.Get("KuCoin", s3)
-
-			if !ok1 || !ok2 || !ok3 {
-				continue
-			}
-
-			// ===============================
-			// 1. СЧИТАЕМ ЛИМИТ КАЖДОЙ НОГИ В USDT
-			// ===============================
-
-			usdtLimits := make([]float64, 0, 3)
-
-			// ---------- LEG 1 ----------
-			if strings.HasPrefix(tri.Leg1, "BUY") {
-				// BUY XXX/USDT
-				if q1.Ask <= 0 || q1.AskSize <= 0 {
-					continue
-				}
-				usdtLimits = append(usdtLimits, q1.Ask*q1.AskSize)
-			} else {
-				// SELL XXX/USDT
-				if q1.Bid <= 0 || q1.BidSize <= 0 {
-					continue
-				}
-				usdtLimits = append(usdtLimits, q1.Bid*q1.BidSize)
-			}
-
-			// ---------- LEG 2 ----------
-			if strings.HasPrefix(tri.Leg2, "BUY") {
-				// BUY A/B → лимит в B → переводим в USDT через LEG3
-				if q2.Ask <= 0 || q2.AskSize <= 0 || q3.Bid <= 0 {
-					continue
-				}
-				usdtLimits = append(usdtLimits, q2.Ask*q2.AskSize*q3.Bid)
-			} else {
-				// SELL A/B → A * (B/USDT)
-				if q2.Bid <= 0 || q2.BidSize <= 0 || q3.Bid <= 0 {
-					continue
-				}
-				usdtLimits = append(usdtLimits, q2.BidSize*q3.Bid)
-			}
-
-			// ---------- LEG 3 ----------
-			// всегда SELL ???/USDT
-			if q3.Bid <= 0 || q3.BidSize <= 0 {
-				continue
-			}
-			usdtLimits = append(usdtLimits, q3.Bid*q3.BidSize)
-
-			// ===============================
-			// 2. МИНИМАЛЬНЫЙ ИСПОЛНИМЫЙ ОБЪЁМ
-			// ===============================
-
-			maxUSDT := usdtLimits[0]
-			for _, v := range usdtLimits {
-				if v < maxUSDT {
-					maxUSDT = v
-				}
-			}
-
-			if maxUSDT <= 0 {
-				continue
-			}
-
-			// ===============================
-			// 3. ПРОГОН АРБИТРАЖА С maxUSDT
-			// ===============================
-
-			amount := maxUSDT // стартуем в USDT
-
-			// ---------- LEG 1 ----------
-			if strings.HasPrefix(tri.Leg1, "BUY") {
-				amount = amount / q1.Ask
-				amount *= (1 - fee)
-			} else {
-				amount = amount * q1.Bid
-				amount *= (1 - fee)
-			}
-
-			// ---------- LEG 2 ----------
-			if strings.HasPrefix(tri.Leg2, "BUY") {
-				amount = amount / q2.Ask
-				amount *= (1 - fee)
-			} else {
-				amount = amount * q2.Bid
-				amount *= (1 - fee)
-			}
-
-			// ---------- LEG 3 ----------
-			if strings.HasPrefix(tri.Leg3, "BUY") {
-				amount = amount / q3.Ask
-				amount *= (1 - fee)
-			} else {
-				amount = amount * q3.Bid
-				amount *= (1 - fee)
-			}
-
-			profitUSDT := amount - maxUSDT
-			profitPct := profitUSDT / maxUSDT
-
-			if profitPct > 0.001 {
-				msg := fmt.Sprintf(
-					"[ARB] %s → %s → %s | profit=%.4f%% | volume=%.2f USDT | profit=%.4f USDT",
-					tri.A, tri.B, tri.C,
-					profitPct*100,
-					maxUSDT,
-					profitUSDT,
-				)
-
-				log.Println(msg)
-				c.fileLog.Println(msg)
-			}
-		}
-	}
-}
-
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.077.pb.gz
+File: arb
+Build ID: 00f359f630cea5d5eb1389920b6bee5aa91f0b5e
+Type: cpu
+Time: 2026-01-11 23:57:35 MSK
+Duration: 30.04s, Total samples = 2.03s ( 6.76%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 1190ms, 58.62% of 2030ms total
+Dropped 96 nodes (cum <= 10.15ms)
+Showing top 10 nodes out of 121
+      flat  flat%   sum%        cum   cum%
+     690ms 33.99% 33.99%      690ms 33.99%  internal/runtime/syscall.Syscall6
+     150ms  7.39% 41.38%      150ms  7.39%  runtime.futex
+      80ms  3.94% 45.32%      100ms  4.93%  runtime.typePointers.next
+      70ms  3.45% 48.77%       70ms  3.45%  aeshashbody
+      40ms  1.97% 50.74%       40ms  1.97%  github.com/tidwall/gjson.parseSquash
+      40ms  1.97% 52.71%      520ms 25.62%  runtime.findRunnable
+      30ms  1.48% 54.19%      110ms  5.42%  github.com/tidwall/gjson.Get
+      30ms  1.48% 55.67%       70ms  3.45%  runtime.greyobject
+      30ms  1.48% 57.14%       30ms  1.48%  runtime.memmove
+      30ms  1.48% 58.62%       30ms  1.48%  runtime.nanotime (inline)
+(pprof) 
 
 
 
