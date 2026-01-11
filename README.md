@@ -228,6 +228,15 @@ func (c *Calculator) volumeToUSDT(
 
 
 
+2026/01/11 11:05:32 [ARB] USDT → ONT → BTC | profit=0.1461% | volumes: [1197.2179 / 224.5700 / 0.2203]
+2026/01/11 13:51:38 [ARB] USDT → TRVL → BTC | profit=1.2632% | volumes: [3561.0000 / 43864.0000 / 1.0466]
+2026/01/11 14:28:36 [ARB] USDT → EWT → BTC | profit=0.1783% | volumes: [56.3700 / 34.2900 / 0.8615]
+2026/01/11 14:54:19 [ARB] USDT → VRA → BTC | profit=0.3496% | volumes: [479156.0000 / 249166.0000 / 0.8113]
+2026/01/11 15:04:34 [ARB] USDT → EWT → BTC | profit=0.3458% | volumes: [256.2600 / 13.3300 / 0.5853]
+2026/01/11 15:37:56 [ARB] USDT → EWT → BTC | profit=1.2844% | volumes: [320.1000 / 34.1000 / 0.5285]
+
+
+
 
 
 
