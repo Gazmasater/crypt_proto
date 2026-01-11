@@ -83,7 +83,7 @@ func (c *Calculator) Run() {
 				continue
 			}
 
-			amount := 1.0 // стартуем с 1 USDT
+			amount := 1.0 // стартуем с 1 A
 
 			// ---------- LEG 1 ----------
 			if strings.HasPrefix(tri.Leg1, "BUY") {
@@ -91,9 +91,10 @@ func (c *Calculator) Run() {
 					continue
 				}
 
-				amount = amount / q1.Ask
-				if amount > q1.AskSize {
-					amount = q1.AskSize
+				maxBuy := q1.AskSize     // сколько B можно купить
+				amount = amount / q1.Ask // A -> B
+				if amount > maxBuy {
+					amount = maxBuy
 				}
 				amount *= (1 - fee)
 
@@ -102,10 +103,11 @@ func (c *Calculator) Run() {
 					continue
 				}
 
-				if amount > q1.BidSize {
-					amount = q1.BidSize
+				maxSell := q1.BidSize // сколько A можно продать
+				if amount > maxSell {
+					amount = maxSell
 				}
-				amount = amount * q1.Bid
+				amount = amount * q1.Bid // A -> B
 				amount *= (1 - fee)
 			}
 
@@ -115,9 +117,10 @@ func (c *Calculator) Run() {
 					continue
 				}
 
+				maxBuy := q2.AskSize
 				amount = amount / q2.Ask
-				if amount > q2.AskSize {
-					amount = q2.AskSize
+				if amount > maxBuy {
+					amount = maxBuy
 				}
 				amount *= (1 - fee)
 
@@ -126,8 +129,9 @@ func (c *Calculator) Run() {
 					continue
 				}
 
-				if amount > q2.BidSize {
-					amount = q2.BidSize
+				maxSell := q2.BidSize
+				if amount > maxSell {
+					amount = maxSell
 				}
 				amount = amount * q2.Bid
 				amount *= (1 - fee)
@@ -139,9 +143,10 @@ func (c *Calculator) Run() {
 					continue
 				}
 
+				maxBuy := q3.AskSize
 				amount = amount / q3.Ask
-				if amount > q3.AskSize {
-					amount = q3.AskSize
+				if amount > maxBuy {
+					amount = maxBuy
 				}
 				amount *= (1 - fee)
 
@@ -150,8 +155,9 @@ func (c *Calculator) Run() {
 					continue
 				}
 
-				if amount > q3.BidSize {
-					amount = q3.BidSize
+				maxSell := q3.BidSize
+				if amount > maxSell {
+					amount = maxSell
 				}
 				amount = amount * q3.Bid
 				amount *= (1 - fee)
@@ -159,82 +165,23 @@ func (c *Calculator) Run() {
 
 			profit := amount - 1.0
 
-			if profit <= 0.001 {
-				continue
+			if profit > 0.001 {
+				msg := fmt.Sprintf(
+					"[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.4f / %.4f / %.4f]",
+					tri.A, tri.B, tri.C,
+					profit*100,
+					q1.BidSize, q2.BidSize, q3.BidSize,
+				)
+
+				// консоль
+				log.Println(msg)
+
+				// файл
+				c.fileLog.Println(msg)
 			}
-
-			// ---------- volumes in USDT ----------
-			v1 := c.volumeToUSDT("KuCoin", s1, q1.BidSize, q1.Bid)
-			v2 := c.volumeToUSDT("KuCoin", s2, q2.BidSize, q2.Bid)
-			v3 := c.volumeToUSDT("KuCoin", s3, q3.BidSize, q3.Bid)
-
-			// если хотя бы один leg не приводится к USDT — пропускаем
-			if v1 == 0 || v2 == 0 || v3 == 0 {
-				continue
-			}
-
-			msg := fmt.Sprintf(
-				"[ARB] %s → %s → %s | profit=%.3f%% | volumes USDT: [%.0f / %.0f / %.0f]",
-				tri.A, tri.B, tri.C,
-				profit*100,
-				v1, v2, v3,
-			)
-
-			log.Println(msg)
-			c.fileLog.Println(msg)
 		}
 	}
 }
-
-
-
-func (c *Calculator) volumeToUSDT(
-	exchange string,
-	symbol string,
-	size float64,
-	price float64,
-) float64 {
-
-	parts := strings.Split(symbol, "-")
-	if len(parts) != 2 {
-		return 0
-	}
-
-	base := parts[0]
-	quote := parts[1]
-
-	// BASE-QUOTE → объём в QUOTE
-	quoteAmount := size * price
-
-	// 1) QUOTE == USDT
-	if quote == "USDT" {
-		return quoteAmount
-	}
-
-	// 2) есть QUOTE-USDT
-	if q, ok := c.mem.Get(exchange, quote+"-USDT"); ok && q.Bid > 0 {
-		return quoteAmount * q.Bid
-	}
-
-	// 3) есть USDT-QUOTE
-	if q, ok := c.mem.Get(exchange, "USDT-"+quote); ok && q.Ask > 0 {
-		return quoteAmount / q.Ask
-	}
-
-	// нет пути в USDT
-	return 0
-}
-
-
-
-
-2026/01/11 11:05:32 [ARB] USDT → ONT → BTC | profit=0.1461% | volumes: [1197.2179 / 224.5700 / 0.2203]
-2026/01/11 13:51:38 [ARB] USDT → TRVL → BTC | profit=1.2632% | volumes: [3561.0000 / 43864.0000 / 1.0466]
-2026/01/11 14:28:36 [ARB] USDT → EWT → BTC | profit=0.1783% | volumes: [56.3700 / 34.2900 / 0.8615]
-2026/01/11 14:54:19 [ARB] USDT → VRA → BTC | profit=0.3496% | volumes: [479156.0000 / 249166.0000 / 0.8113]
-2026/01/11 15:04:34 [ARB] USDT → EWT → BTC | profit=0.3458% | volumes: [256.2600 / 13.3300 / 0.5853]
-2026/01/11 15:37:56 [ARB] USDT → EWT → BTC | profit=1.2844% | volumes: [320.1000 / 34.1000 / 0.5285]
-
 
 
 
