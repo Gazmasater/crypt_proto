@@ -3,6 +3,7 @@ package calculator
 import (
 	"crypt_proto/internal/queue"
 	"encoding/csv"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -21,13 +22,24 @@ type Triangle struct {
 type Calculator struct {
 	mem       *queue.MemoryStore
 	triangles []Triangle
+	fileLog   *log.Logger
 }
 
 // NewCalculator создаёт калькулятор
 func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
+	f, err := os.OpenFile(
+		"arb_opportunities.log",
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+		0644,
+	)
+	if err != nil {
+		log.Fatalf("failed to open arb log file: %v", err)
+	}
+
 	return &Calculator{
 		mem:       mem,
 		triangles: triangles,
+		fileLog:   log.New(f, "", log.LstdFlags),
 	}
 }
 
@@ -134,13 +146,19 @@ func (c *Calculator) Run() {
 
 			profit := amount - 1.0
 
-			if profit > 0 {
-				log.Printf(
-					"[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.2f / %.2f / %.2f]",
+			if profit > 0.001 {
+				msg := fmt.Sprintf(
+					"[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.4f / %.4f / %.4f]",
 					tri.A, tri.B, tri.C,
 					profit*100,
 					q1.BidSize, q2.BidSize, q3.BidSize,
 				)
+
+				// консоль
+				log.Println(msg)
+
+				// файл
+				c.fileLog.Println(msg)
 			}
 		}
 	}
