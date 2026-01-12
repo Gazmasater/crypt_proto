@@ -117,25 +117,32 @@ Showing top 10 nodes out of 127
 
 
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+	// Проверяем тип сообщения
 	if gjson.GetBytes(msg, "type").String() != "message" {
 		return
 	}
 
+	// Проверяем топик
 	topic := gjson.GetBytes(msg, "topic").String()
 	if !strings.HasPrefix(topic, "/market/ticker:") {
 		return
 	}
 
-	symbol := strings.TrimPrefix(topic, "/market/ticker:") // БЕЗ normalize
+	// Берём символ из топика, оставляем дефис
+	symbol := strings.TrimPrefix(topic, "/market/ticker:") // пример: "MANA-USDT"
 
+	// Получаем данные
 	data := gjson.GetBytes(msg, "data")
-
 	bid := data.Get("bestBid").Float()
 	ask := data.Get("bestAsk").Float()
+	bidSize := data.Get("bestBidSize").Float()
+	askSize := data.Get("bestAskSize").Float()
+
 	if bid == 0 || ask == 0 {
 		return
 	}
 
+	// Проверка на изменение цены
 	ws.mu.Lock()
 	last := ws.last[symbol]
 	if last[0] == bid && last[1] == ask {
@@ -145,60 +152,34 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	ws.last[symbol] = [2]float64{bid, ask}
 	ws.mu.Unlock()
 
+	// Лог для отладки
+	log.Printf("[WS %d] %s bid=%.6f ask=%.6f", ws.id, symbol, bid, ask)
+
+	// Отправка в MemoryStore / канал калькулятора
 	c.out <- &models.MarketData{
 		Exchange:  "KuCoin",
-		Symbol:    symbol, // "MANA-USDT"
+		Symbol:    symbol, // совпадает с ключом в MemoryStore
 		Bid:       bid,
 		Ask:       ask,
-		BidSize:   data.Get("bestBidSize").Float(),
-		AskSize:   data.Get("bestAskSize").Float(),
+		BidSize:   bidSize,
+		AskSize:   askSize,
 		Timestamp: time.Now().UnixMilli(),
 	}
 }
 
 
 
-
-
-
-func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	if gjson.GetBytes(msg, "type").String() != "message" {
-		return
+// legSymbol возвращает BASE-QUOTE из Leg, используется в калькуляторе
+func legSymbol(leg string) string {
+	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(leg)))
+	if len(parts) < 2 {
+		return ""
 	}
-
-	topic := gjson.GetBytes(msg, "topic").String()
-	if !strings.HasPrefix(topic, "/market/ticker:") {
-		return
+	p := strings.Split(parts[1], "/")
+	if len(p) != 2 {
+		return ""
 	}
-
-	symbol := strings.TrimPrefix(topic, "/market/ticker:") // БЕЗ normalize
-
-	data := gjson.GetBytes(msg, "data")
-
-	bid := data.Get("bestBid").Float()
-	ask := data.Get("bestAsk").Float()
-	if bid == 0 || ask == 0 {
-		return
-	}
-
-	ws.mu.Lock()
-	last := ws.last[symbol]
-	if last[0] == bid && last[1] == ask {
-		ws.mu.Unlock()
-		return
-	}
-	ws.last[symbol] = [2]float64{bid, ask}
-	ws.mu.Unlock()
-
-	c.out <- &models.MarketData{
-		Exchange:  "KuCoin",
-		Symbol:    symbol, // "MANA-USDT"
-		Bid:       bid,
-		Ask:       ask,
-		BidSize:   data.Get("bestBidSize").Float(),
-		AskSize:   data.Get("bestAskSize").Float(),
-		Timestamp: time.Now().UnixMilli(),
-	}
+	return p[0] + "-" + p[1] // формат BASE-QUOTE
 }
 
 
