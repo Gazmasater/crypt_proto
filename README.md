@@ -90,6 +90,32 @@ Showing top 10 nodes out of 209
 
 
 
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.082.pb.gz
+File: arb
+Build ID: 991d3b51d26d0a48852c28a66aa2039c318c2e53
+Type: cpu
+Time: 2026-01-12 11:20:48 MSK
+Duration: 30s, Total samples = 1.55s ( 5.17%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 1100ms, 70.97% of 1550ms total
+Showing top 10 nodes out of 127
+      flat  flat%   sum%        cum   cum%
+     760ms 49.03% 49.03%      760ms 49.03%  internal/runtime/syscall.Syscall6
+     170ms 10.97% 60.00%      170ms 10.97%  runtime.futex
+      30ms  1.94% 61.94%       40ms  2.58%  strings.Fields
+      20ms  1.29% 63.23%       20ms  1.29%  crypto/internal/fips140/aes/gcm.gcmAesDec
+      20ms  1.29% 64.52%      860ms 55.48%  crypto/tls.(*Conn).readRecordOrCCS
+      20ms  1.29% 65.81%      950ms 61.29%  github.com/gorilla/websocket.(*Conn).ReadMessage
+      20ms  1.29% 67.10%       20ms  1.29%  github.com/gorilla/websocket.(*messageReader).Read
+      20ms  1.29% 68.39%       20ms  1.29%  runtime.(*mspan).base
+      20ms  1.29% 69.68%       20ms  1.29%  runtime.execute
+      20ms  1.29% 70.97%       30ms  1.94%  runtime.ifaceeq
+(pprof) 
+
+
+
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
     var (
         msgType string
