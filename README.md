@@ -125,54 +125,57 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	q1, ok1 := c.mem.Get("KuCoin", s1)
 	q2, ok2 := c.mem.Get("KuCoin", s2)
 	q3, ok3 := c.mem.Get("KuCoin", s3)
-
 	if !ok1 || !ok2 || !ok3 {
 		return
 	}
 
 	// ===== 1. USDT LIMITS =====
 
-	usdtLimits := make([]float64, 0, 3)
+	var usdtLimits [3]float64
+	i := 0
 
 	// LEG 1
 	if strings.HasPrefix(tri.Leg1, "BUY") {
 		if q1.Ask <= 0 || q1.AskSize <= 0 {
 			return
 		}
-		usdtLimits = append(usdtLimits, q1.Ask*q1.AskSize)
+		usdtLimits[i] = q1.Ask * q1.AskSize
 	} else {
 		if q1.Bid <= 0 || q1.BidSize <= 0 {
 			return
 		}
-		usdtLimits = append(usdtLimits, q1.Bid*q1.BidSize)
+		usdtLimits[i] = q1.Bid * q1.BidSize
 	}
+	i++
 
 	// LEG 2
 	if strings.HasPrefix(tri.Leg2, "BUY") {
 		if q2.Ask <= 0 || q2.AskSize <= 0 || q3.Bid <= 0 {
 			return
 		}
-		usdtLimits = append(usdtLimits, q2.Ask*q2.AskSize*q3.Bid)
+		usdtLimits[i] = q2.Ask * q2.AskSize * q3.Bid
 	} else {
 		if q2.Bid <= 0 || q2.BidSize <= 0 || q3.Bid <= 0 {
 			return
 		}
-		usdtLimits = append(usdtLimits, q2.BidSize*q3.Bid)
+		usdtLimits[i] = q2.BidSize * q3.Bid
 	}
+	i++
 
 	// LEG 3
 	if q3.Bid <= 0 || q3.BidSize <= 0 {
 		return
 	}
-	usdtLimits = append(usdtLimits, q3.Bid*q3.BidSize)
+	usdtLimits[i] = q3.Bid * q3.BidSize
 
 	// ===== 2. MIN LIMIT =====
 
 	maxUSDT := usdtLimits[0]
-	for _, v := range usdtLimits {
-		if v < maxUSDT {
-			maxUSDT = v
-		}
+	if usdtLimits[1] < maxUSDT {
+		maxUSDT = usdtLimits[1]
+	}
+	if usdtLimits[2] < maxUSDT {
+		maxUSDT = usdtLimits[2]
 	}
 	if maxUSDT <= 0 {
 		return
@@ -203,10 +206,25 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
 
-	if (profitPct > 0.001) && (profitUSDT > 0.02) {
+	// ===== 4. LOG =====
 
+	if profitPct > 0.001 && profitUSDT > 0.02 {
+
+		msg := fmt.Sprintf(
+			"[ARB] %s → %s → %s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
+			tri.A,
+			tri.B,
+			tri.C,
+			profitPct*100,
+			maxUSDT,
+			profitUSDT,
+		)
+
+		log.Println(msg)
+		c.fileLog.Println(msg)
 	}
 }
+
 
 
 
