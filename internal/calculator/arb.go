@@ -3,7 +3,6 @@ package calculator
 import (
 	"crypt_proto/internal/queue"
 	"encoding/csv"
-	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -158,16 +157,16 @@ func (c *Calculator) Run() {
 			profitPct := profitUSDT / maxUSDT
 
 			if (profitPct > 0.001) && (profitUSDT > 0.02) {
-				msg := fmt.Sprintf(
-					"[ARB] %s → %s → %s | profit=%.4f%% | volume=%.2f USDT | profit=%.4f USDT",
-					tri.A, tri.B, tri.C,
-					profitPct*100,
-					maxUSDT,
-					profitUSDT,
-				)
+				//msg := fmt.Sprintf(
+				//	"[ARB] %s → %s → %s | profit=%.4f%% | volume=%.2f USDT | profit=%.4f USDT",
+				//	tri.A, tri.B, tri.C,
+				//	profitPct*100,
+				//	maxUSDT,
+				//	profitUSDT,
+				//)
 
-				log.Println(msg)
-				c.fileLog.Println(msg)
+				//log.Println(msg)
+				//c.fileLog.Println(msg)
 			}
 		}
 	}
@@ -205,11 +204,23 @@ func ParseTrianglesFromCSV(path string) ([]Triangle, error) {
 	return res, nil
 }
 
+//func legSymbol(leg string) string {
+//	// "BUY COTI/USDT" -> "COTI/USDT"
+//	parts := strings.Fields(leg)
+//	if len(parts) != 2 {
+//		return ""
+//	}
+//	return strings.ToUpper(parts[1])
+//}
+
 func legSymbol(leg string) string {
-	// "BUY COTI/USDT" -> "COTI/USDT"
-	parts := strings.Fields(leg)
-	if len(parts) != 2 {
+	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(leg)))
+	if len(parts) < 2 {
 		return ""
 	}
-	return strings.ToUpper(parts[1])
+	p := strings.Split(parts[1], "/")
+	if len(p) != 2 {
+		return ""
+	}
+	return p[0] + "-" + p[1] // формат BASE-QUOTE
 }
