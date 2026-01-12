@@ -227,6 +227,30 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 
 
 
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.096.pb.gz
+File: arb
+Build ID: 88f36eeb9337c7213d316c4fb407e31ceb0f85a7
+Type: cpu
+Time: 2026-01-12 18:48:57 MSK
+Duration: 30.06s, Total samples = 1.29s ( 4.29%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 830ms, 64.34% of 1290ms total
+Showing top 10 nodes out of 162
+      flat  flat%   sum%        cum   cum%
+     540ms 41.86% 41.86%      540ms 41.86%  internal/runtime/syscall.Syscall6
+      80ms  6.20% 48.06%       80ms  6.20%  runtime.futex
+      50ms  3.88% 51.94%       60ms  4.65%  github.com/tidwall/gjson.parseObject
+      30ms  2.33% 54.26%       30ms  2.33%  aeshashbody
+      30ms  2.33% 56.59%       30ms  2.33%  runtime.nextFreeFast
+      20ms  1.55% 58.14%      460ms 35.66%  bytes.(*Buffer).ReadFrom
+      20ms  1.55% 59.69%      440ms 34.11%  crypto/tls.(*atLeastReader).Read
+      20ms  1.55% 61.24%       90ms  6.98%  github.com/tidwall/gjson.Get
+      20ms  1.55% 62.79%      100ms  7.75%  github.com/tidwall/gjson.getBytes
+      20ms  1.55% 64.34%       20ms  1.55%  runtime.duffcopy
+(pprof) 
+
 
 
 
