@@ -49,7 +49,6 @@ func (c *Calculator) Run() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-
 		for _, tri := range c.triangles {
 
 			s1 := legSymbol(tri.Leg1)
@@ -64,100 +63,110 @@ func (c *Calculator) Run() {
 				continue
 			}
 
-			amount := 1.0 // стартуем с 1 A
+			// ===============================
+			// 1. СЧИТАЕМ ЛИМИТ КАЖДОЙ НОГИ В USDT
+			// ===============================
+
+			usdtLimits := make([]float64, 0, 3)
 
 			// ---------- LEG 1 ----------
 			if strings.HasPrefix(tri.Leg1, "BUY") {
+				// BUY XXX/USDT
 				if q1.Ask <= 0 || q1.AskSize <= 0 {
 					continue
 				}
-
-				maxBuy := q1.AskSize     // сколько B можно купить
-				amount = amount / q1.Ask // A -> B
-				if amount > maxBuy {
-					amount = maxBuy
-				}
-				amount *= (1 - fee)
-
+				usdtLimits = append(usdtLimits, q1.Ask*q1.AskSize)
 			} else {
+				// SELL XXX/USDT
 				if q1.Bid <= 0 || q1.BidSize <= 0 {
 					continue
 				}
+				usdtLimits = append(usdtLimits, q1.Bid*q1.BidSize)
+			}
 
-				maxSell := q1.BidSize // сколько A можно продать
-				if amount > maxSell {
-					amount = maxSell
+			// ---------- LEG 2 ----------
+			if strings.HasPrefix(tri.Leg2, "BUY") {
+				// BUY A/B → лимит в B → переводим в USDT через LEG3
+				if q2.Ask <= 0 || q2.AskSize <= 0 || q3.Bid <= 0 {
+					continue
 				}
-				amount = amount * q1.Bid // A -> B
+				usdtLimits = append(usdtLimits, q2.Ask*q2.AskSize*q3.Bid)
+			} else {
+				// SELL A/B → A * (B/USDT)
+				if q2.Bid <= 0 || q2.BidSize <= 0 || q3.Bid <= 0 {
+					continue
+				}
+				usdtLimits = append(usdtLimits, q2.BidSize*q3.Bid)
+			}
+
+			// ---------- LEG 3 ----------
+			// всегда SELL ???/USDT
+			if q3.Bid <= 0 || q3.BidSize <= 0 {
+				continue
+			}
+			usdtLimits = append(usdtLimits, q3.Bid*q3.BidSize)
+
+			// ===============================
+			// 2. МИНИМАЛЬНЫЙ ИСПОЛНИМЫЙ ОБЪЁМ
+			// ===============================
+
+			maxUSDT := usdtLimits[0]
+			for _, v := range usdtLimits {
+				if v < maxUSDT {
+					maxUSDT = v
+				}
+			}
+
+			if maxUSDT <= 0 {
+				continue
+			}
+
+			// ===============================
+			// 3. ПРОГОН АРБИТРАЖА С maxUSDT
+			// ===============================
+
+			amount := maxUSDT // стартуем в USDT
+
+			// ---------- LEG 1 ----------
+			if strings.HasPrefix(tri.Leg1, "BUY") {
+				amount = amount / q1.Ask
+				amount *= (1 - fee)
+			} else {
+				amount = amount * q1.Bid
 				amount *= (1 - fee)
 			}
 
 			// ---------- LEG 2 ----------
 			if strings.HasPrefix(tri.Leg2, "BUY") {
-				if q2.Ask <= 0 || q2.AskSize <= 0 {
-					continue
-				}
-
-				maxBuy := q2.AskSize
 				amount = amount / q2.Ask
-				if amount > maxBuy {
-					amount = maxBuy
-				}
 				amount *= (1 - fee)
-
 			} else {
-				if q2.Bid <= 0 || q2.BidSize <= 0 {
-					continue
-				}
-
-				maxSell := q2.BidSize
-				if amount > maxSell {
-					amount = maxSell
-				}
 				amount = amount * q2.Bid
 				amount *= (1 - fee)
 			}
 
 			// ---------- LEG 3 ----------
 			if strings.HasPrefix(tri.Leg3, "BUY") {
-				if q3.Ask <= 0 || q3.AskSize <= 0 {
-					continue
-				}
-
-				maxBuy := q3.AskSize
 				amount = amount / q3.Ask
-				if amount > maxBuy {
-					amount = maxBuy
-				}
 				amount *= (1 - fee)
-
 			} else {
-				if q3.Bid <= 0 || q3.BidSize <= 0 {
-					continue
-				}
-
-				maxSell := q3.BidSize
-				if amount > maxSell {
-					amount = maxSell
-				}
 				amount = amount * q3.Bid
 				amount *= (1 - fee)
 			}
 
-			profit := amount - 1.0
+			profitUSDT := amount - maxUSDT
+			profitPct := profitUSDT / maxUSDT
 
-			if profit > 0.001 {
+			if (profitPct > 0.001) && (profitUSDT > 0.02) {
 				msg := fmt.Sprintf(
-					"[ARB] %s → %s → %s | profit=%.4f%% | volumes: [%.4f / %.4f / %.4f]",
+					"[ARB] %s → %s → %s | profit=%.4f%% | volume=%.2f USDT | profit=%.4f USDT",
 					tri.A, tri.B, tri.C,
-					profit*100,
-					q1.BidSize, q2.BidSize, q3.BidSize,
+					profitPct*100,
+					maxUSDT,
+					profitUSDT,
 				)
 
-				// консоль
 				log.Println(msg)
-
-				// файл
 				c.fileLog.Println(msg)
 			}
 		}
