@@ -116,72 +116,6 @@ Showing top 10 nodes out of 127
 
 
 
-type Calculator struct {
-	mem       *queue.MemoryStore
-	triangles []Triangle
-	bySymbol  map[string][]Triangle
-	fileLog   *log.Logger
-}
-
-
-
-func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
-	f, err := os.OpenFile(
-		"arb_opportunities.log",
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
-		0644,
-	)
-	if err != nil {
-		log.Fatalf("failed to open arb log file: %v", err)
-	}
-
-	c := &Calculator{
-		mem:       mem,
-		triangles: triangles,
-		bySymbol:  make(map[string][]Triangle),
-		fileLog:   log.New(f, "", log.LstdFlags),
-	}
-
-	for _, tri := range triangles {
-		s1 := legSymbol(tri.Leg1)
-		s2 := legSymbol(tri.Leg2)
-		s3 := legSymbol(tri.Leg3)
-
-		if s1 != "" {
-			c.bySymbol[s1] = append(c.bySymbol[s1], tri)
-		}
-		if s2 != "" {
-			c.bySymbol[s2] = append(c.bySymbol[s2], tri)
-		}
-		if s3 != "" {
-			c.bySymbol[s3] = append(c.bySymbol[s3], tri)
-		}
-	}
-
-	return c
-}
-
-
-
-func (c *Calculator) Run(in <-chan *models.MarketData) {
-	for md := range in {
-
-		// сохраняем маркет
-		c.mem.Set(md)
-
-		tris := c.bySymbol[md.Symbol]
-		if len(tris) == 0 {
-			continue
-		}
-
-		for _, tri := range tris {
-			c.calcTriangle(&tri)
-		}
-	}
-}
-
-
-
 func (c *Calculator) calcTriangle(tri *Triangle) {
 
 	s1 := legSymbol(tri.Leg1)
@@ -269,66 +203,11 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
 
-	if profitPct > 0.001 && profitUSDT > 0.02 {
-		// лог включишь когда надо
+	if (profitPct > 0.001) && (profitUSDT > 0.02) {
+
 	}
 }
 
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "WrongArgCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongArgCount"
-		}
-	},
-	"severity": 8,
-	"message": "not enough arguments in call to calc.Run\n\thave ()\n\twant (<-chan *models.MarketData)",
-	"source": "compiler",
-	"startLineNumber": 61,
-	"startColumn": 14,
-	"endLineNumber": 61,
-	"endColumn": 14,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/arb.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "c.mem.Set undefined (type *queue.MemoryStore has no field or method Set)",
-	"source": "compiler",
-	"startLineNumber": 70,
-	"startColumn": 9,
-	"endLineNumber": 70,
-	"endColumn": 12,
-	"origin": "extHost1"
-}]
-
-
-
-marketCh := make(chan *models.MarketData, 10000)
-
-collector.Start(marketCh)
-
-calc := calculator.NewCalculator(mem, collector.Triangles())
-go calc.Run(marketCh)
 
 
 
