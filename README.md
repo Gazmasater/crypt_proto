@@ -323,5 +323,17 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 
 
 
+marketCh := make(chan *models.MarketData, 10000)
+
+collector.Start(marketCh)
+
+calc := calculator.NewCalculator(mem, collector.Triangles())
+go calc.Run(marketCh)
+
+
+
+
+
+
 
 
