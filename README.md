@@ -185,3 +185,47 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 
 
 
+
+func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+	if gjson.GetBytes(msg, "type").String() != "message" {
+		return
+	}
+
+	topic := gjson.GetBytes(msg, "topic").String()
+	if !strings.HasPrefix(topic, "/market/ticker:") {
+		return
+	}
+
+	symbol := normalize(strings.TrimPrefix(topic, "/market/ticker:"))
+
+	data := gjson.GetBytes(msg, "data")
+
+	bid := data.Get("bestBid").Float()
+	ask := data.Get("bestAsk").Float()
+	if bid == 0 || ask == 0 {
+		return
+	}
+
+	ws.mu.Lock()
+	last := ws.last[symbol]
+	if last[0] == bid && last[1] == ask {
+		ws.mu.Unlock()
+		return
+	}
+	ws.last[symbol] = [2]float64{bid, ask}
+	ws.mu.Unlock()
+
+	c.out <- &models.MarketData{
+		Exchange:  "KuCoin",
+		Symbol:    symbol,
+		Bid:       bid,
+		Ask:       ask,
+		BidSize:   data.Get("bestBidSize").Float(),
+		AskSize:   data.Get("bestAskSize").Float(),
+		Timestamp: time.Now().UnixMilli(),
+	}
+}
+
+
+
+
