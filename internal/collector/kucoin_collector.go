@@ -198,25 +198,32 @@ func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
 
 /* ================= HANDLE ================= */
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+	// Проверяем тип сообщения
 	if gjson.GetBytes(msg, "type").String() != "message" {
 		return
 	}
 
+	// Проверяем топик
 	topic := gjson.GetBytes(msg, "topic").String()
 	if !strings.HasPrefix(topic, "/market/ticker:") {
 		return
 	}
 
-	symbol := normalize(strings.TrimPrefix(topic, "/market/ticker:"))
+	// Берём символ из топика, оставляем дефис
+	symbol := strings.TrimPrefix(topic, "/market/ticker:") // пример: "MANA-USDT"
 
+	// Получаем данные
 	data := gjson.GetBytes(msg, "data")
-
 	bid := data.Get("bestBid").Float()
 	ask := data.Get("bestAsk").Float()
+	bidSize := data.Get("bestBidSize").Float()
+	askSize := data.Get("bestAskSize").Float()
+
 	if bid == 0 || ask == 0 {
 		return
 	}
 
+	// Проверка на изменение цены
 	ws.mu.Lock()
 	last := ws.last[symbol]
 	if last[0] == bid && last[1] == ask {
@@ -226,13 +233,17 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	ws.last[symbol] = [2]float64{bid, ask}
 	ws.mu.Unlock()
 
+	// Лог для отладки
+	//log.Printf("[WS %d] %s bid=%.6f ask=%.6f", ws.id, symbol, bid, ask)
+
+	// Отправка в MemoryStore / канал калькулятора
 	c.out <- &models.MarketData{
 		Exchange:  "KuCoin",
-		Symbol:    symbol,
+		Symbol:    symbol, // совпадает с ключом в MemoryStore
 		Bid:       bid,
 		Ask:       ask,
-		BidSize:   data.Get("bestBidSize").Float(),
-		AskSize:   data.Get("bestAskSize").Float(),
+		BidSize:   bidSize,
+		AskSize:   askSize,
 		Timestamp: time.Now().UnixMilli(),
 	}
 }
