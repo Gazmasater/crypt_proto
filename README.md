@@ -184,6 +184,33 @@ func legSymbol(leg string) string {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.094.pb.gz
+File: arb
+Build ID: 7bd1d0c66608774c2a072573091bfe9ee1927708
+Type: cpu
+Time: 2026-01-12 16:21:55 MSK
+Duration: 30s, Total samples = 1.24s ( 4.13%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 790ms, 63.71% of 1240ms total
+Showing top 10 nodes out of 174
+      flat  flat%   sum%        cum   cum%
+     510ms 41.13% 41.13%      510ms 41.13%  internal/runtime/syscall.Syscall6
+      70ms  5.65% 46.77%       70ms  5.65%  runtime.futex
+      40ms  3.23% 50.00%       40ms  3.23%  aeshashbody
+      40ms  3.23% 53.23%       70ms  5.65%  github.com/tidwall/gjson.parseObject
+      30ms  2.42% 55.65%       30ms  2.42%  strconv.readFloat
+      20ms  1.61% 57.26%       20ms  1.61%  crypto/internal/fips140/aes/gcm.gcmAesDec
+      20ms  1.61% 58.87%       20ms  1.61%  memeqbody
+      20ms  1.61% 60.48%       40ms  3.23%  runtime.mapaccess1_faststr
+      20ms  1.61% 62.10%       20ms  1.61%  runtime.memclrNoHeapPointers
+      20ms  1.61% 63.71%       20ms  1.61%  runtime.memmove
+(pprof) 
+
+
+
 
 
 
