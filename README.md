@@ -116,98 +116,164 @@ Showing top 10 nodes out of 127
 
 
 
-func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	// Проверяем тип сообщения
-	if gjson.GetBytes(msg, "type").String() != "message" {
-		return
+type Calculator struct {
+	mem       *queue.MemoryStore
+	triangles []Triangle
+	bySymbol  map[string][]Triangle
+	fileLog   *log.Logger
+}
+
+
+
+func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
+	f, err := os.OpenFile(
+		"arb_opportunities.log",
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+		0644,
+	)
+	if err != nil {
+		log.Fatalf("failed to open arb log file: %v", err)
 	}
 
-	// Проверяем топик
-	topic := gjson.GetBytes(msg, "topic").String()
-	if !strings.HasPrefix(topic, "/market/ticker:") {
-		return
+	c := &Calculator{
+		mem:       mem,
+		triangles: triangles,
+		bySymbol:  make(map[string][]Triangle),
+		fileLog:   log.New(f, "", log.LstdFlags),
 	}
 
-	// Берём символ из топика, оставляем дефис
-	symbol := strings.TrimPrefix(topic, "/market/ticker:") // пример: "MANA-USDT"
+	for _, tri := range triangles {
+		s1 := legSymbol(tri.Leg1)
+		s2 := legSymbol(tri.Leg2)
+		s3 := legSymbol(tri.Leg3)
 
-	// Получаем данные
-	data := gjson.GetBytes(msg, "data")
-	bid := data.Get("bestBid").Float()
-	ask := data.Get("bestAsk").Float()
-	bidSize := data.Get("bestBidSize").Float()
-	askSize := data.Get("bestAskSize").Float()
-
-	if bid == 0 || ask == 0 {
-		return
+		if s1 != "" {
+			c.bySymbol[s1] = append(c.bySymbol[s1], tri)
+		}
+		if s2 != "" {
+			c.bySymbol[s2] = append(c.bySymbol[s2], tri)
+		}
+		if s3 != "" {
+			c.bySymbol[s3] = append(c.bySymbol[s3], tri)
+		}
 	}
 
-	// Проверка на изменение цены
-	ws.mu.Lock()
-	last := ws.last[symbol]
-	if last[0] == bid && last[1] == ask {
-		ws.mu.Unlock()
-		return
-	}
-	ws.last[symbol] = [2]float64{bid, ask}
-	ws.mu.Unlock()
+	return c
+}
 
-	// Лог для отладки
-	log.Printf("[WS %d] %s bid=%.6f ask=%.6f", ws.id, symbol, bid, ask)
 
-	// Отправка в MemoryStore / канал калькулятора
-	c.out <- &models.MarketData{
-		Exchange:  "KuCoin",
-		Symbol:    symbol, // совпадает с ключом в MemoryStore
-		Bid:       bid,
-		Ask:       ask,
-		BidSize:   bidSize,
-		AskSize:   askSize,
-		Timestamp: time.Now().UnixMilli(),
+
+func (c *Calculator) Run(in <-chan *models.MarketData) {
+	for md := range in {
+
+		// сохраняем маркет
+		c.mem.Set(md)
+
+		tris := c.bySymbol[md.Symbol]
+		if len(tris) == 0 {
+			continue
+		}
+
+		for _, tri := range tris {
+			c.calcTriangle(&tri)
+		}
 	}
 }
 
 
 
-// legSymbol возвращает BASE-QUOTE из Leg, используется в калькуляторе
-func legSymbol(leg string) string {
-	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(leg)))
-	if len(parts) < 2 {
-		return ""
+func (c *Calculator) calcTriangle(tri *Triangle) {
+
+	s1 := legSymbol(tri.Leg1)
+	s2 := legSymbol(tri.Leg2)
+	s3 := legSymbol(tri.Leg3)
+
+	q1, ok1 := c.mem.Get("KuCoin", s1)
+	q2, ok2 := c.mem.Get("KuCoin", s2)
+	q3, ok3 := c.mem.Get("KuCoin", s3)
+
+	if !ok1 || !ok2 || !ok3 {
+		return
 	}
-	p := strings.Split(parts[1], "/")
-	if len(p) != 2 {
-		return ""
+
+	// ===== 1. USDT LIMITS =====
+
+	usdtLimits := make([]float64, 0, 3)
+
+	// LEG 1
+	if strings.HasPrefix(tri.Leg1, "BUY") {
+		if q1.Ask <= 0 || q1.AskSize <= 0 {
+			return
+		}
+		usdtLimits = append(usdtLimits, q1.Ask*q1.AskSize)
+	} else {
+		if q1.Bid <= 0 || q1.BidSize <= 0 {
+			return
+		}
+		usdtLimits = append(usdtLimits, q1.Bid*q1.BidSize)
 	}
-	return p[0] + "-" + p[1] // формат BASE-QUOTE
+
+	// LEG 2
+	if strings.HasPrefix(tri.Leg2, "BUY") {
+		if q2.Ask <= 0 || q2.AskSize <= 0 || q3.Bid <= 0 {
+			return
+		}
+		usdtLimits = append(usdtLimits, q2.Ask*q2.AskSize*q3.Bid)
+	} else {
+		if q2.Bid <= 0 || q2.BidSize <= 0 || q3.Bid <= 0 {
+			return
+		}
+		usdtLimits = append(usdtLimits, q2.BidSize*q3.Bid)
+	}
+
+	// LEG 3
+	if q3.Bid <= 0 || q3.BidSize <= 0 {
+		return
+	}
+	usdtLimits = append(usdtLimits, q3.Bid*q3.BidSize)
+
+	// ===== 2. MIN LIMIT =====
+
+	maxUSDT := usdtLimits[0]
+	for _, v := range usdtLimits {
+		if v < maxUSDT {
+			maxUSDT = v
+		}
+	}
+	if maxUSDT <= 0 {
+		return
+	}
+
+	// ===== 3. PROGON =====
+
+	amount := maxUSDT
+
+	if strings.HasPrefix(tri.Leg1, "BUY") {
+		amount = amount / q1.Ask * (1 - fee)
+	} else {
+		amount = amount * q1.Bid * (1 - fee)
+	}
+
+	if strings.HasPrefix(tri.Leg2, "BUY") {
+		amount = amount / q2.Ask * (1 - fee)
+	} else {
+		amount = amount * q2.Bid * (1 - fee)
+	}
+
+	if strings.HasPrefix(tri.Leg3, "BUY") {
+		amount = amount / q3.Ask * (1 - fee)
+	} else {
+		amount = amount * q3.Bid * (1 - fee)
+	}
+
+	profitUSDT := amount - maxUSDT
+	profitPct := profitUSDT / maxUSDT
+
+	if profitPct > 0.001 && profitUSDT > 0.02 {
+		// лог включишь когда надо
+	}
 }
 
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.094.pb.gz
-File: arb
-Build ID: 7bd1d0c66608774c2a072573091bfe9ee1927708
-Type: cpu
-Time: 2026-01-12 16:21:55 MSK
-Duration: 30s, Total samples = 1.24s ( 4.13%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 790ms, 63.71% of 1240ms total
-Showing top 10 nodes out of 174
-      flat  flat%   sum%        cum   cum%
-     510ms 41.13% 41.13%      510ms 41.13%  internal/runtime/syscall.Syscall6
-      70ms  5.65% 46.77%       70ms  5.65%  runtime.futex
-      40ms  3.23% 50.00%       40ms  3.23%  aeshashbody
-      40ms  3.23% 53.23%       70ms  5.65%  github.com/tidwall/gjson.parseObject
-      30ms  2.42% 55.65%       30ms  2.42%  strconv.readFloat
-      20ms  1.61% 57.26%       20ms  1.61%  crypto/internal/fips140/aes/gcm.gcmAesDec
-      20ms  1.61% 58.87%       20ms  1.61%  memeqbody
-      20ms  1.61% 60.48%       40ms  3.23%  runtime.mapaccess1_faststr
-      20ms  1.61% 62.10%       20ms  1.61%  runtime.memclrNoHeapPointers
-      20ms  1.61% 63.71%       20ms  1.61%  runtime.memmove
-(pprof) 
 
 
 
