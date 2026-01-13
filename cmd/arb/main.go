@@ -58,7 +58,7 @@ func main() {
 
 	// ------------------- Калькулятор -------------------
 	calc := calculator.NewCalculator(mem, triangles)
-	go calc.Run()
+	go calc.Run(out)
 
 	// ------------------- Graceful shutdown -------------------
 	stop := make(chan os.Signal, 1)
