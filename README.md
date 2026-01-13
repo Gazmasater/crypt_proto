@@ -63,322 +63,179 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package collector
-
-import (
-	"context"
-	"encoding/csv"
-	"encoding/json"
-	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"strings"
-	"time"
-
-	"github.com/tidwall/gjson"
-
-	"crypt_proto/internal/calculator"
-	"crypt_proto/pkg/models"
-
-	"github.com/gorilla/websocket"
-)
-
-const (
-	maxSubsPerWS = 90
-	subRate      = 120 * time.Millisecond
-	pingInterval = 20 * time.Second
-)
-
-/* ================= POOL ================= */
-
-type KuCoinCollector struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wsList    []*kucoinWS
-	out       chan<- *models.MarketData
-	triangles []calculator.Triangle
+type LiveTriangle struct {
+	Tri    Triangle
+	Start  int64   // unix ms, когда треугольник стал прибыльным
+	Stop   int64   // unix ms, когда треугольник перестал быть прибыльным
+	MaxProfit float64
 }
 
-/* ================= WS ================= */
+type Calculator struct {
+	mem       *queue.MemoryStore
+	triangles []Triangle
+	bySymbol  map[string][]Triangle
+	fileLog   *log.Logger
 
-type kucoinWS struct {
-	id      int
-	conn    *websocket.Conn
-	symbols []string
-	last    map[string][2]float64 // ONLY readLoop touches this
+	live map[string]*LiveTriangle // ключ = Leg1|Leg2|Leg3
 }
 
-/* ================= CONSTRUCTOR ================= */
-
-func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
-	symbols, err := readPairsFromCSV(path)
-	if err != nil {
-		return nil, err
-	}
-	if len(symbols) == 0 {
-		return nil, fmt.Errorf("no symbols")
-	}
-
-	triangles, _ := calculator.ParseTrianglesFromCSV(path)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	var wsList []*kucoinWS
-
-	for i := 0; i < len(symbols); i += maxSubsPerWS {
-		end := i + maxSubsPerWS
-		if end > len(symbols) {
-			end = len(symbols)
-		}
-		wsList = append(wsList, &kucoinWS{
-			id:      len(wsList),
-			symbols: symbols[i:end],
-			last:    make(map[string][2]float64),
-		})
-	}
-
-	return &KuCoinCollector{
-		ctx:       ctx,
-		cancel:    cancel,
-		wsList:    wsList,
-		triangles: triangles,
-	}, nil
-}
-
-func (kc *KuCoinCollector) Triangles() []calculator.Triangle {
-	return kc.triangles
-}
-
-/* ================= INTERFACE ================= */
-
-func (c *KuCoinCollector) Name() string {
-	return "KuCoin"
-}
-
-func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
-	c.out = out
-
-	for _, ws := range c.wsList {
-		if err := ws.connect(); err != nil {
-			return err
-		}
-		go ws.readLoop(c)
-		go ws.subscribeLoop()
-		go ws.pingLoop()
-	}
-
-	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
-	return nil
-}
-
-func (c *KuCoinCollector) Stop() error {
-	c.cancel()
-	for _, ws := range c.wsList {
-		if ws.conn != nil {
-			_ = ws.conn.Close()
-		}
-	}
-	return nil
-}
-
-/* ================= CONNECT ================= */
-
-func (ws *kucoinWS) connect() error {
-	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return err
-	}
-
-	url := fmt.Sprintf(
-		"%s?token=%s&connectId=%d",
-		r.Data.InstanceServers[0].Endpoint,
-		r.Data.Token,
-		time.Now().UnixNano(),
+func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
+	f, err := os.OpenFile(
+		"arb_opportunities.log",
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+		0644,
 	)
-
-	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
-		return err
+		log.Fatalf("failed to open arb log file: %v", err)
 	}
 
-	ws.conn = conn
-	log.Printf("[KuCoin WS %d] connected\n", ws.id)
-	return nil
-}
-
-/* ================= SUBSCRIBE ================= */
-
-func (ws *kucoinWS) subscribeLoop() {
-	time.Sleep(time.Second)
-
-	t := time.NewTicker(subRate)
-	defer t.Stop()
-
-	for _, s := range ws.symbols {
-		<-t.C
-		_ = ws.conn.WriteJSON(map[string]any{
-			"id":       time.Now().UnixNano(),
-			"type":     "subscribe",
-			"topic":    "/market/ticker:" + s,
-			"response": true,
-		})
+	c := &Calculator{
+		mem:       mem,
+		triangles: triangles,
+		bySymbol:  make(map[string][]Triangle),
+		fileLog:   log.New(f, "", log.LstdFlags),
+		live:      make(map[string]*LiveTriangle),
 	}
-}
 
-/* ================= PING ================= */
+	for _, tri := range triangles {
+		s1 := legSymbol(tri.Leg1)
+		s2 := legSymbol(tri.Leg2)
+		s3 := legSymbol(tri.Leg3)
 
-func (ws *kucoinWS) pingLoop() {
-	t := time.NewTicker(pingInterval)
-	defer t.Stop()
-
-	for range t.C {
-		_ = ws.conn.WriteJSON(map[string]any{
-			"id":   time.Now().UnixNano(),
-			"type": "ping",
-		})
+		if s1 != "" {
+			c.bySymbol[s1] = append(c.bySymbol[s1], tri)
+		}
+		if s2 != "" {
+			c.bySymbol[s2] = append(c.bySymbol[s2], tri)
+		}
+		if s3 != "" {
+			c.bySymbol[s3] = append(c.bySymbol[s3], tri)
+		}
 	}
+
+	return c
 }
 
-/* ================= READ ================= */
+func (c *Calculator) calcTriangle(tri *Triangle) {
+	s1 := legSymbol(tri.Leg1)
+	s2 := legSymbol(tri.Leg2)
+	s3 := legSymbol(tri.Leg3)
 
-func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
-	for {
-		_, msg, err := ws.conn.ReadMessage()
-		if err != nil {
-			log.Printf("[KuCoin WS %d] read error: %v\n", ws.id, err)
+	q1, ok1 := c.mem.Get("KuCoin", s1)
+	q2, ok2 := c.mem.Get("KuCoin", s2)
+	q3, ok3 := c.mem.Get("KuCoin", s3)
+	if !ok1 || !ok2 || !ok3 {
+		return
+	}
+
+	// ===== USDT LIMITS =====
+	var usdtLimits [3]float64
+	i := 0
+
+	if strings.HasPrefix(tri.Leg1, "BUY") {
+		if q1.Ask <= 0 || q1.AskSize <= 0 {
 			return
 		}
-		ws.handle(c, msg)
+		usdtLimits[i] = q1.Ask * q1.AskSize
+	} else {
+		if q1.Bid <= 0 || q1.BidSize <= 0 {
+			return
+		}
+		usdtLimits[i] = q1.Bid * q1.BidSize
 	}
-}
+	i++
 
-/* ================= HANDLE ================= */
+	if strings.HasPrefix(tri.Leg2, "BUY") {
+		if q2.Ask <= 0 || q2.AskSize <= 0 || q3.Bid <= 0 {
+			return
+		}
+		usdtLimits[i] = q2.Ask * q2.AskSize * q3.Bid
+	} else {
+		if q2.Bid <= 0 || q2.BidSize <= 0 || q3.Bid <= 0 {
+			return
+		}
+		usdtLimits[i] = q2.BidSize * q3.Bid
+	}
+	i++
 
-func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	if gjson.GetBytes(msg, "type").String() != "message" {
+	if q3.Bid <= 0 || q3.BidSize <= 0 {
+		return
+	}
+	usdtLimits[i] = q3.Bid * q3.BidSize
+
+	// ===== MIN LIMIT =====
+	maxUSDT := usdtLimits[0]
+	if usdtLimits[1] < maxUSDT {
+		maxUSDT = usdtLimits[1]
+	}
+	if usdtLimits[2] < maxUSDT {
+		maxUSDT = usdtLimits[2]
+	}
+	if maxUSDT <= 0 {
 		return
 	}
 
-	topic := gjson.GetBytes(msg, "topic").String()
-	if !strings.HasPrefix(topic, "/market/ticker:") {
-		return
+	// ===== ПРОГОН =====
+	amount := maxUSDT
+
+	if strings.HasPrefix(tri.Leg1, "BUY") {
+		amount = amount / q1.Ask * (1 - fee)
+	} else {
+		amount = amount * q1.Bid * (1 - fee)
 	}
 
-	symbol := strings.TrimPrefix(topic, "/market/ticker:")
-
-	data := gjson.GetBytes(msg, "data")
-	bid := data.Get("bestBid").Float()
-	ask := data.Get("bestAsk").Float()
-	bidSize := data.Get("bestBidSize").Float()
-	askSize := data.Get("bestAskSize").Float()
-
-	if bid == 0 || ask == 0 {
-		return
+	if strings.HasPrefix(tri.Leg2, "BUY") {
+		amount = amount / q2.Ask * (1 - fee)
+	} else {
+		amount = amount * q2.Bid * (1 - fee)
 	}
 
-	last := ws.last[symbol]
-	if last[0] == bid && last[1] == ask {
-		return
-	}
-	ws.last[symbol] = [2]float64{bid, ask}
-
-	c.out <- &models.MarketData{
-		Exchange:  "KuCoin",
-		Symbol:    symbol,
-		Bid:       bid,
-		Ask:       ask,
-		BidSize:   bidSize,
-		AskSize:   askSize,
-		Timestamp: time.Now().UnixMilli(),
-	}
-}
-
-/* ================= CSV ================= */
-
-func readPairsFromCSV(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	rows, err := r.ReadAll()
-	if err != nil {
-		return nil, err
+	if strings.HasPrefix(tri.Leg3, "BUY") {
+		amount = amount / q3.Ask * (1 - fee)
+	} else {
+		amount = amount * q3.Bid * (1 - fee)
 	}
 
-	set := make(map[string]struct{})
-	for _, row := range rows[1:] {
-		for i := 3; i <= 5 && i < len(row); i++ {
-			if p := parseLeg(row[i]); p != "" {
-				set[p] = struct{}{}
+	profitUSDT := amount - maxUSDT
+	profitPct := profitUSDT / maxUSDT
+
+	key := tri.Leg1 + "|" + tri.Leg2 + "|" + tri.Leg3
+
+	// ===== Пороговая прибыль =====
+	if profitPct > 0.001 && profitUSDT > 0.02 {
+		lt, ok := c.live[key]
+		if !ok {
+			// создаём новый живой треугольник
+			c.live[key] = &LiveTriangle{
+				Tri:       *tri,
+				Start:     time.Now().UnixMilli(),
+				MaxProfit: profitUSDT,
+			}
+		} else {
+			// обновляем макс. прибыль
+			if profitUSDT > lt.MaxProfit {
+				lt.MaxProfit = profitUSDT
 			}
 		}
-	}
 
-	res := make([]string, 0, len(set))
-	for k := range set {
-		res = append(res, k)
+		msg := fmt.Sprintf(
+			"[ARB] %s → %s → %s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
+			tri.A, tri.B, tri.C, profitPct*100, maxUSDT, profitUSDT,
+		)
+		log.Println(msg)
+		c.fileLog.Println(msg)
+
+	} else {
+		// треугольник перестал быть прибыльным
+		if lt, ok := c.live[key]; ok {
+			lt.Stop = time.Now().UnixMilli()
+			liveTime := lt.Stop - lt.Start
+			log.Printf("[LIVE] %s → %s → %s прожил %d ms | max profit %.4f USDT",
+				lt.Tri.A, lt.Tri.B, lt.Tri.C, liveTime, lt.MaxProfit)
+			delete(c.live, key)
+		}
 	}
-	return res, nil
 }
-
-/* ================= HELPERS ================= */
-
-func parseLeg(s string) string {
-	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
-	if len(parts) < 2 {
-		return ""
-	}
-	p := strings.Split(parts[1], "/")
-	if len(p) != 2 {
-		return ""
-	}
-	return p[0] + "-" + p[1]
-}
-
-
-
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.104.pb.gz
-File: arb
-Build ID: 63302cd9d8087f6f82a53584f4286a4f35d4a4a6
-Type: cpu
-Time: 2026-01-13 12:28:29 MSK
-Duration: 30s, Total samples = 1.11s ( 3.70%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 710ms, 63.96% of 1110ms total
-Showing top 10 nodes out of 145
-      flat  flat%   sum%        cum   cum%
-     420ms 37.84% 37.84%      420ms 37.84%  internal/runtime/syscall.Syscall6
-      90ms  8.11% 45.95%       90ms  8.11%  runtime.futex
-      30ms  2.70% 48.65%       30ms  2.70%  aeshashbody
-      30ms  2.70% 51.35%       70ms  6.31%  github.com/tidwall/gjson.parseObject
-      30ms  2.70% 54.05%       30ms  2.70%  github.com/tidwall/gjson.parseSquash
-      30ms  2.70% 56.76%       30ms  2.70%  runtime.mallocgcSmallNoscan
-      20ms  1.80% 58.56%       90ms  8.11%  github.com/tidwall/gjson.Get
-      20ms  1.80% 60.36%       20ms  1.80%  runtime.(*mcache).prepareForSweep
-      20ms  1.80% 62.16%       20ms  1.80%  runtime.casgstatus
-      20ms  1.80% 63.96%       20ms  1.80%  runtime.nanotime1
-(pprof) 
-
 
 
 
