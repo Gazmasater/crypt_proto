@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -22,11 +21,12 @@ import (
 
 const (
 	maxSubsPerWS = 90
-	subRate      = 120 * time.Millisecond // ~8/sec
+	subRate      = 120 * time.Millisecond
 	pingInterval = 20 * time.Second
 )
 
 /* ================= POOL ================= */
+
 type KuCoinCollector struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -36,15 +36,16 @@ type KuCoinCollector struct {
 }
 
 /* ================= WS ================= */
+
 type kucoinWS struct {
 	id      int
 	conn    *websocket.Conn
 	symbols []string
-	last    map[string][2]float64
-	mu      sync.Mutex
+	last    map[string][2]float64 // ONLY readLoop touches this
 }
 
 /* ================= CONSTRUCTOR ================= */
+
 func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 	symbols, err := readPairsFromCSV(path)
 	if err != nil {
@@ -54,11 +55,11 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
 		return nil, fmt.Errorf("no symbols")
 	}
 
-	// --- формируем треугольники ---
-	triangles, _ := calculator.ParseTrianglesFromCSV(path) // <- создаём функцию, которая вернёт []Triangle
+	triangles, _ := calculator.ParseTrianglesFromCSV(path)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wsList []*kucoinWS
+
 	for i := 0; i < len(symbols); i += maxSubsPerWS {
 		end := i + maxSubsPerWS
 		if end > len(symbols) {
@@ -84,20 +85,23 @@ func (kc *KuCoinCollector) Triangles() []calculator.Triangle {
 }
 
 /* ================= INTERFACE ================= */
+
 func (c *KuCoinCollector) Name() string {
 	return "KuCoin"
 }
 
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	c.out = out
+
 	for _, ws := range c.wsList {
 		if err := ws.connect(); err != nil {
 			return err
 		}
 		go ws.readLoop(c)
-		go ws.pingLoop()
 		go ws.subscribeLoop()
+		go ws.pingLoop()
 	}
+
 	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
 	return nil
 }
@@ -106,13 +110,14 @@ func (c *KuCoinCollector) Stop() error {
 	c.cancel()
 	for _, ws := range c.wsList {
 		if ws.conn != nil {
-			ws.conn.Close()
+			_ = ws.conn.Close()
 		}
 	}
 	return nil
 }
 
 /* ================= CONNECT ================= */
+
 func (ws *kucoinWS) connect() error {
 	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
 	resp, err := http.DefaultClient.Do(req)
@@ -134,7 +139,8 @@ func (ws *kucoinWS) connect() error {
 		return err
 	}
 
-	url := fmt.Sprintf("%s?token=%s&connectId=%d",
+	url := fmt.Sprintf(
+		"%s?token=%s&connectId=%d",
 		r.Data.InstanceServers[0].Endpoint,
 		r.Data.Token,
 		time.Now().UnixNano(),
@@ -144,38 +150,37 @@ func (ws *kucoinWS) connect() error {
 	if err != nil {
 		return err
 	}
+
 	ws.conn = conn
 	log.Printf("[KuCoin WS %d] connected\n", ws.id)
 	return nil
 }
 
 /* ================= SUBSCRIBE ================= */
+
 func (ws *kucoinWS) subscribeLoop() {
-	time.Sleep(1 * time.Second) // ждём welcome
+	time.Sleep(time.Second)
+
 	t := time.NewTicker(subRate)
 	defer t.Stop()
 
 	for _, s := range ws.symbols {
 		<-t.C
-		topic := "/market/ticker:" + s
-		err := ws.conn.WriteJSON(map[string]any{
+		_ = ws.conn.WriteJSON(map[string]any{
 			"id":       time.Now().UnixNano(),
 			"type":     "subscribe",
-			"topic":    topic,
+			"topic":    "/market/ticker:" + s,
 			"response": true,
 		})
-		if err != nil {
-			log.Printf("[KuCoin WS %d] subscribe error %s\n", ws.id, s)
-		} else {
-			log.Printf("[KuCoin WS %d] subscribed %s\n", ws.id, s)
-		}
 	}
 }
 
 /* ================= PING ================= */
+
 func (ws *kucoinWS) pingLoop() {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
+
 	for range t.C {
 		_ = ws.conn.WriteJSON(map[string]any{
 			"id":   time.Now().UnixNano(),
@@ -185,6 +190,7 @@ func (ws *kucoinWS) pingLoop() {
 }
 
 /* ================= READ ================= */
+
 func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
 	for {
 		_, msg, err := ws.conn.ReadMessage()
@@ -197,22 +203,19 @@ func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
 }
 
 /* ================= HANDLE ================= */
+
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	// Проверяем тип сообщения
 	if gjson.GetBytes(msg, "type").String() != "message" {
 		return
 	}
 
-	// Проверяем топик
 	topic := gjson.GetBytes(msg, "topic").String()
 	if !strings.HasPrefix(topic, "/market/ticker:") {
 		return
 	}
 
-	// Берём символ из топика, оставляем дефис
-	symbol := strings.TrimPrefix(topic, "/market/ticker:") // пример: "MANA-USDT"
+	symbol := strings.TrimPrefix(topic, "/market/ticker:")
 
-	// Получаем данные
 	data := gjson.GetBytes(msg, "data")
 	bid := data.Get("bestBid").Float()
 	ask := data.Get("bestAsk").Float()
@@ -223,23 +226,15 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	// Проверка на изменение цены
-	ws.mu.Lock()
 	last := ws.last[symbol]
 	if last[0] == bid && last[1] == ask {
-		ws.mu.Unlock()
 		return
 	}
 	ws.last[symbol] = [2]float64{bid, ask}
-	ws.mu.Unlock()
 
-	// Лог для отладки
-	//log.Printf("[WS %d] %s bid=%.6f ask=%.6f", ws.id, symbol, bid, ask)
-
-	// Отправка в MemoryStore / канал калькулятора
 	c.out <- &models.MarketData{
 		Exchange:  "KuCoin",
-		Symbol:    symbol, // совпадает с ключом в MemoryStore
+		Symbol:    symbol,
 		Bid:       bid,
 		Ask:       ask,
 		BidSize:   bidSize,
@@ -249,6 +244,7 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 }
 
 /* ================= CSV ================= */
+
 func readPairsFromCSV(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -265,14 +261,13 @@ func readPairsFromCSV(path string) ([]string, error) {
 	set := make(map[string]struct{})
 	for _, row := range rows[1:] {
 		for i := 3; i <= 5 && i < len(row); i++ {
-			p := parseLeg(row[i])
-			if p != "" {
+			if p := parseLeg(row[i]); p != "" {
 				set[p] = struct{}{}
 			}
 		}
 	}
 
-	var res []string
+	res := make([]string, 0, len(set))
 	for k := range set {
 		res = append(res, k)
 	}
@@ -280,6 +275,7 @@ func readPairsFromCSV(path string) ([]string, error) {
 }
 
 /* ================= HELPERS ================= */
+
 func parseLeg(s string) string {
 	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
 	if len(parts) < 2 {
@@ -290,9 +286,4 @@ func parseLeg(s string) string {
 		return ""
 	}
 	return p[0] + "-" + p[1]
-}
-
-func normalize(s string) string {
-	parts := strings.Split(s, "-")
-	return parts[0] + "/" + parts[1]
 }
