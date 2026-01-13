@@ -239,4 +239,55 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 
 
 
+2026/01/13 15:54:03 [ARB] USDT → SCRT → BTC | 0.6813% | volume=9.21 USDT | profit=0.0628 USDT
+2026/01/13 15:54:05 [ARB] USDT → SCRT → BTC | 0.6813% | volume=9.21 USDT | profit=0.0628 USDT
+2026/01/13 15:54:05 [LIVE] USDT → SCRT → BTC прожил 1954 ms | max profit 0.0628 USDT
+2026/01/13 16:03:02 [ARB] USDT → ICP → BTC | 0.2964% | volume=9.20 USDT | profit=0.0273 USDT
+2026/01/13 16:03:02 [ARB] USDT → ICP → BTC | 0.3243% | volume=9.20 USDT | profit=0.0298 USDT
+2026/01/13 16:03:02 [LIVE] USDT → ICP → BTC прожил 669 ms | max profit 0.0298 USDT
+2026/01/13 16:03:06 [ARB] USDT → ICP → BTC | 0.2537% | volume=9.20 USDT | profit=0.0233 USDT
+2026/01/13 16:03:06 [LIVE] USDT → ICP → BTC прожил 97 ms | max profit 0.0233 USDT
+2026/01/13 16:03:07 [ARB] USDT → ICP → BTC | 0.2243% | volume=9.20 USDT | profit=0.0206 USDT
+2026/01/13 16:03:07 [LIVE] USDT → ICP → BTC прожил 209 ms | max profit 0.0206 USDT
+2026/01/13 16:03:09 [ARB] USDT → ICP → BTC | 0.2242% | volume=9.20 USDT | profit=0.0206 USDT
+2026/01/13 16:03:09 [ARB] USDT → ICP → BTC | 0.2534% | volume=9.20 USDT | profit=0.0233 USDT
+2026/01/13 16:03:10 [LIVE] USDT → ICP → BTC прожил 1185 ms | max profit 0.0233 USDT
+2026/01/13 16:03:10 [ARB] USDT → ICP → BTC | 0.2242% | volume=9.20 USDT | profit=0.0206 USDT
+2026/01/13 16:03:10 [LIVE] USDT → ICP → BTC прожил 121 ms | max profit 0.0206 USDT
+2026/01/13 16:03:37 [ARB] USDT → ICP → BTC | 0.2410% | volume=9.20 USDT | profit=0.0222 USDT
+2026/01/13 16:03:39 [ARB] USDT → ICP → BTC | 0.2410% | volume=9.20 USDT | profit=0.0222 USDT
+2026/01/13 16:03:39 [LIVE] USDT → ICP → BTC прожил 1740 ms | max profit 0.0222 USDT
+2026/01/13 16:03:39 [ARB] USDT → ICP → BTC | 0.2701% | volume=9.20 USDT | profit=0.0249 USDT
+2026/01/13 16:03:40 [ARB] USDT → ICP → BTC | 0.2993% | volume=9.20 USDT | profit=0.0275 USDT
+2026/01/13 16:03:41 [LIVE] USDT → ICP → BTC прожил 1631 ms | max profit 0.0275 USDT
+2026/01/13 16:03:52 [ARB] USDT → ICP → BTC | 0.2410% | volume=9.20 USDT | profit=0.0222 USDT
+2026/01/13 16:03:54 [ARB] USDT → ICP → BTC | 0.3285% | volume=9.20 USDT | profit=0.0302 USDT
+2026/01/13 16:03:54 [ARB] USDT → ICP → BTC | 0.2993% | volume=9.20 USDT | profit=0.0275 USDT
+2026/01/13 16:03:55 [ARB] USDT → ICP → BTC | 0.3285% | volume=9.20 USDT | profit=0.0302 USDT
+2026/01/13 16:03:55 [ARB] USDT → ICP → BTC | 0.3285% | volume=9.20 USDT | profit=0.0302 USDT
+2026/01/13 16:03:56 [LIVE] USDT → ICP → BTC прожил 4455 ms | max profit 0.0302 USDT
+2026/01/13 16:03:57 [ARB] USDT → ICP → BTC | 0.3577% | volume=9.20 USDT | profit=0.0329 USDT
+2026/01/13 16:04:00 [LIVE] USDT → ICP → BTC прожил 3573 ms | max profit 0.0329 USDT
+2026/01/13 16:04:01 [ARB] USDT → ICP → BTC | 0.3285% | volume=9.20 USDT | profit=0.0302 USDT
+2026/01/13 16:04:02 [ARB] USDT → ICP → BTC | 0.2701% | volume=9.20 USDT | profit=0.0249 USDT
+2026/01/13 16:04:02 [ARB] USDT → ICP → BTC | 0.2410% | volume=9.20 USDT | profit=0.0222 USDT
+2026/01/13 16:04:02 [LIVE] USDT → ICP → BTC прожил 1585 ms | max profit 0.0302 USDT
+2026/01/13 16:04:03 [ARB] USDT → ICP → BTC | 0.2410% | volume=9.20 USDT | profit=0.0222 USDT
+2026/01/13 16:04:03 [LIVE] USDT → ICP → BTC прожил 456 ms | max profit 0.0222 USDT
+2026/01/13 16:04:16 [ARB] USDT → ICP → BTC | 0.2410% | volume=9.20 USDT | profit=0.0222 USDT
+2026/01/13 16:04:17 [LIVE] USDT → ICP → BTC прожил 713 ms | max profit 0.0222 USDT
+2026/01/13 16:04:22 [ARB] USDT → ICP → BTC | 0.5080% | volume=9.20 USDT | profit=0.0467 USDT
+2026/01/13 16:04:23 [ARB] USDT → ICP → BTC | 0.5080% | volume=9.20 USDT | profit=0.0467 USDT
+2026/01/13 16:04:23 [ARB] USDT → ICP → BTC | 0.5373% | volume=9.20 USDT | profit=0.0494 USDT
+2026/01/13 16:04:23 [ARB] USDT → ICP → BTC | 0.5384% | volume=9.20 USDT | profit=0.0495 USDT
+2026/01/13 16:04:24 [ARB] USDT → ICP → BTC | 0.5437% | volume=9.20 USDT | profit=0.0500 USDT
+2026/01/13 16:04:24 [ARB] USDT → ICP → BTC | 0.5437% | volume=9.20 USDT | profit=0.0500 USDT
+2026/01/13 16:04:24 [ARB] USDT → ICP → BTC | 0.5438% | volume=9.20 USDT | profit=0.0500 USDT
+2026/01/13 16:04:24 [ARB] USDT → ICP → BTC | 0.7200% | volume=9.20 USDT | profit=0.0663 USDT
+2026/01/13 16:04:25 [ARB] USDT → ICP → BTC | 0.6613% | volume=9.20 USDT | profit=0.0609 USDT
+2026/01/13 16:04:25 [ARB] USDT → ICP → BTC | 0.6367% | volume=9.20 USDT | profit=0.0586 USDT
+2026/01/13 16:04:25 [LIVE] USDT → ICP → BTC прожил 3049 ms | max profit 0.0663 USDT
+
+
+
 
