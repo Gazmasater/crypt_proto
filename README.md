@@ -1,3 +1,13 @@
+Название API
+9623527002
+
+6966b78122ca320001d2acae
+fa1e37ae-21ff-4257-844d-3dcd21d26ccd
+
+
+
+
+
 apikey = "4333ed4b-cd83-49f5-97d1-c399e2349748"
 secretkey = "E3848531135EDB4CCFDA0F1BC14CD274"
 IP = ""
