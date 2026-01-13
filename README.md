@@ -355,6 +355,31 @@ func parseLeg(s string) string {
 
 
 
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.104.pb.gz
+File: arb
+Build ID: 63302cd9d8087f6f82a53584f4286a4f35d4a4a6
+Type: cpu
+Time: 2026-01-13 12:28:29 MSK
+Duration: 30s, Total samples = 1.11s ( 3.70%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 710ms, 63.96% of 1110ms total
+Showing top 10 nodes out of 145
+      flat  flat%   sum%        cum   cum%
+     420ms 37.84% 37.84%      420ms 37.84%  internal/runtime/syscall.Syscall6
+      90ms  8.11% 45.95%       90ms  8.11%  runtime.futex
+      30ms  2.70% 48.65%       30ms  2.70%  aeshashbody
+      30ms  2.70% 51.35%       70ms  6.31%  github.com/tidwall/gjson.parseObject
+      30ms  2.70% 54.05%       30ms  2.70%  github.com/tidwall/gjson.parseSquash
+      30ms  2.70% 56.76%       30ms  2.70%  runtime.mallocgcSmallNoscan
+      20ms  1.80% 58.56%       90ms  8.11%  github.com/tidwall/gjson.Get
+      20ms  1.80% 60.36%       20ms  1.80%  runtime.(*mcache).prepareForSweep
+      20ms  1.80% 62.16%       20ms  1.80%  runtime.casgstatus
+      20ms  1.80% 63.96%       20ms  1.80%  runtime.nanotime1
+(pprof) 
+
+
 
 
 
