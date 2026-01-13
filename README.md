@@ -63,194 +63,55 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-(pprof) gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.081.pb.gz
-File: arb
-Build ID: 00f359f630cea5d5eb1389920b6bee5aa91f0b5e
-Type: cpu
-Time: 2026-01-12 10:59:06 MSK
-Duration: 30.04s, Total samples = 1.98s ( 6.59%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 1130ms, 57.07% of 1980ms total
-Showing top 10 nodes out of 209
-      flat  flat%   sum%        cum   cum%
-     670ms 33.84% 33.84%      670ms 33.84%  internal/runtime/syscall.Syscall6
-     100ms  5.05% 38.89%      100ms  5.05%  runtime.futex
-      70ms  3.54% 42.42%       70ms  3.54%  aeshashbody
-      60ms  3.03% 45.45%      130ms  6.57%  runtime.scanobject
-      50ms  2.53% 47.98%       90ms  4.55%  github.com/tidwall/gjson.parseObject
-      50ms  2.53% 50.51%      130ms  6.57%  runtime.mapassign_faststr
-      40ms  2.02% 52.53%       50ms  2.53%  runtime.typePointers.next
-      30ms  1.52% 54.04%      820ms 41.41%  bufio.(*Reader).fill
-      30ms  1.52% 55.56%       30ms  1.52%  memeqbody
-      30ms  1.52% 57.07%       60ms  3.03%  runtime.mapaccess1_faststr
-(pprof) 
-
-
-
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.082.pb.gz
-File: arb
-Build ID: 991d3b51d26d0a48852c28a66aa2039c318c2e53
-Type: cpu
-Time: 2026-01-12 11:20:48 MSK
-Duration: 30s, Total samples = 1.55s ( 5.17%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 1100ms, 70.97% of 1550ms total
-Showing top 10 nodes out of 127
-      flat  flat%   sum%        cum   cum%
-     760ms 49.03% 49.03%      760ms 49.03%  internal/runtime/syscall.Syscall6
-     170ms 10.97% 60.00%      170ms 10.97%  runtime.futex
-      30ms  1.94% 61.94%       40ms  2.58%  strings.Fields
-      20ms  1.29% 63.23%       20ms  1.29%  crypto/internal/fips140/aes/gcm.gcmAesDec
-      20ms  1.29% 64.52%      860ms 55.48%  crypto/tls.(*Conn).readRecordOrCCS
-      20ms  1.29% 65.81%      950ms 61.29%  github.com/gorilla/websocket.(*Conn).ReadMessage
-      20ms  1.29% 67.10%       20ms  1.29%  github.com/gorilla/websocket.(*messageReader).Read
-      20ms  1.29% 68.39%       20ms  1.29%  runtime.(*mspan).base
-      20ms  1.29% 69.68%       20ms  1.29%  runtime.execute
-      20ms  1.29% 70.97%       30ms  1.94%  runtime.ifaceeq
-(pprof) 
-
-
-
-func (c *Calculator) calcTriangle(tri *Triangle) {
-
-	s1 := legSymbol(tri.Leg1)
-	s2 := legSymbol(tri.Leg2)
-	s3 := legSymbol(tri.Leg3)
-
-	q1, ok1 := c.mem.Get("KuCoin", s1)
-	q2, ok2 := c.mem.Get("KuCoin", s2)
-	q3, ok3 := c.mem.Get("KuCoin", s3)
-	if !ok1 || !ok2 || !ok3 {
-		return
-	}
-
-	// ===== 1. USDT LIMITS =====
-
-	var usdtLimits [3]float64
-	i := 0
-
-	// LEG 1
-	if strings.HasPrefix(tri.Leg1, "BUY") {
-		if q1.Ask <= 0 || q1.AskSize <= 0 {
-			return
-		}
-		usdtLimits[i] = q1.Ask * q1.AskSize
-	} else {
-		if q1.Bid <= 0 || q1.BidSize <= 0 {
-			return
-		}
-		usdtLimits[i] = q1.Bid * q1.BidSize
-	}
-	i++
-
-	// LEG 2
-	if strings.HasPrefix(tri.Leg2, "BUY") {
-		if q2.Ask <= 0 || q2.AskSize <= 0 || q3.Bid <= 0 {
-			return
-		}
-		usdtLimits[i] = q2.Ask * q2.AskSize * q3.Bid
-	} else {
-		if q2.Bid <= 0 || q2.BidSize <= 0 || q3.Bid <= 0 {
-			return
-		}
-		usdtLimits[i] = q2.BidSize * q3.Bid
-	}
-	i++
-
-	// LEG 3
-	if q3.Bid <= 0 || q3.BidSize <= 0 {
-		return
-	}
-	usdtLimits[i] = q3.Bid * q3.BidSize
-
-	// ===== 2. MIN LIMIT =====
-
-	maxUSDT := usdtLimits[0]
-	if usdtLimits[1] < maxUSDT {
-		maxUSDT = usdtLimits[1]
-	}
-	if usdtLimits[2] < maxUSDT {
-		maxUSDT = usdtLimits[2]
-	}
-	if maxUSDT <= 0 {
-		return
-	}
-
-	// ===== 3. PROGON =====
-
-	amount := maxUSDT
-
-	if strings.HasPrefix(tri.Leg1, "BUY") {
-		amount = amount / q1.Ask * (1 - fee)
-	} else {
-		amount = amount * q1.Bid * (1 - fee)
-	}
-
-	if strings.HasPrefix(tri.Leg2, "BUY") {
-		amount = amount / q2.Ask * (1 - fee)
-	} else {
-		amount = amount * q2.Bid * (1 - fee)
-	}
-
-	if strings.HasPrefix(tri.Leg3, "BUY") {
-		amount = amount / q3.Ask * (1 - fee)
-	} else {
-		amount = amount * q3.Bid * (1 - fee)
-	}
-
-	profitUSDT := amount - maxUSDT
-	profitPct := profitUSDT / maxUSDT
-
-	// ===== 4. LOG =====
-
-	if profitPct > 0.001 && profitUSDT > 0.02 {
-
-		msg := fmt.Sprintf(
-			"[ARB] %s → %s → %s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
-			tri.A,
-			tri.B,
-			tri.C,
-			profitPct*100,
-			maxUSDT,
-			profitUSDT,
-		)
-
-		log.Println(msg)
-		c.fileLog.Println(msg)
-	}
-}
-
-
-
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.096.pb.gz
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.102.pb.gz
 File: arb
 Build ID: 88f36eeb9337c7213d316c4fb407e31ceb0f85a7
 Type: cpu
-Time: 2026-01-12 18:48:57 MSK
-Duration: 30.06s, Total samples = 1.29s ( 4.29%)
+Time: 2026-01-12 23:15:21 MSK
+Duration: 30s, Total samples = 1.38s ( 4.60%)
 Entering interactive mode (type "help" for commands, "o" for options)
 (pprof) top
-Showing nodes accounting for 830ms, 64.34% of 1290ms total
-Showing top 10 nodes out of 162
+Showing nodes accounting for 820ms, 59.42% of 1380ms total
+Showing top 10 nodes out of 167
       flat  flat%   sum%        cum   cum%
-     540ms 41.86% 41.86%      540ms 41.86%  internal/runtime/syscall.Syscall6
-      80ms  6.20% 48.06%       80ms  6.20%  runtime.futex
-      50ms  3.88% 51.94%       60ms  4.65%  github.com/tidwall/gjson.parseObject
-      30ms  2.33% 54.26%       30ms  2.33%  aeshashbody
-      30ms  2.33% 56.59%       30ms  2.33%  runtime.nextFreeFast
-      20ms  1.55% 58.14%      460ms 35.66%  bytes.(*Buffer).ReadFrom
-      20ms  1.55% 59.69%      440ms 34.11%  crypto/tls.(*atLeastReader).Read
-      20ms  1.55% 61.24%       90ms  6.98%  github.com/tidwall/gjson.Get
-      20ms  1.55% 62.79%      100ms  7.75%  github.com/tidwall/gjson.getBytes
-      20ms  1.55% 64.34%       20ms  1.55%  runtime.duffcopy
+     550ms 39.86% 39.86%      550ms 39.86%  internal/runtime/syscall.Syscall6
+      70ms  5.07% 44.93%       70ms  5.07%  runtime.futex
+      40ms  2.90% 47.83%       40ms  2.90%  aeshashbody
+      30ms  2.17% 50.00%       30ms  2.17%  bytes.(*Buffer).Len
+      30ms  2.17% 52.17%       30ms  2.17%  runtime.nextFreeFast
+      20ms  1.45% 53.62%       50ms  3.62%  crypto/tls.(*xorNonceAEAD).Open
+      20ms  1.45% 55.07%       20ms  1.45%  internal/runtime/maps.(*ctrlGroup).setEmpty
+      20ms  1.45% 56.52%      320ms 23.19%  runtime.mcall
+      20ms  1.45% 57.97%      170ms 12.32%  runtime.netpoll
+      20ms  1.45% 59.42%       20ms  1.45%  runtime.save
+(pprof) gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ ^C
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ ^C
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.103.pb.gz
+File: arb
+Build ID: 88f36eeb9337c7213d316c4fb407e31ceb0f85a7
+Type: cpu
+Time: 2026-01-13 12:04:38 MSK
+Duration: 30s, Total samples = 1.13s ( 3.77%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 740ms, 65.49% of 1130ms total
+Showing top 10 nodes out of 157
+      flat  flat%   sum%        cum   cum%
+     420ms 37.17% 37.17%      420ms 37.17%  internal/runtime/syscall.Syscall6
+     130ms 11.50% 48.67%      130ms 11.50%  runtime.futex
+      30ms  2.65% 51.33%       30ms  2.65%  runtime.memmove
+      30ms  2.65% 53.98%       40ms  3.54%  runtime.scanobject
+      30ms  2.65% 56.64%       40ms  3.54%  strconv.atof64
+      20ms  1.77% 58.41%       20ms  1.77%  aeshashbody
+      20ms  1.77% 60.18%       20ms  1.77%  internal/runtime/maps.ctrlGroup.matchH2
+      20ms  1.77% 61.95%       20ms  1.77%  memeqbody
+      20ms  1.77% 63.72%       20ms  1.77%  runtime.(*mspan).refillAllocCache
+      20ms  1.77% 65.49%       20ms  1.77%  runtime.ifaceeq
 (pprof) 
-
 
 
 
