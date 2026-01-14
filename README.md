@@ -92,57 +92,53 @@ type Quote struct {
 }
 
 type MemoryStore struct {
-	data   atomic.Value        // map[string]Quote
-	batch  chan *models.MarketData
-	index  map[string]int      // BASE-QUOTE -> индекс для fast access
-	indexM sync.RWMutex
+	data  atomic.Value // map[string]Quote
+	batch chan *models.MarketData
+	// Индексация для быстрого поиска Leg → symbol
+	index map[string]string
+	mu    sync.Mutex
 }
 
-// NewMemoryStore создаёт стор
-func NewMemoryStore(symbols []string) *MemoryStore {
+func NewMemoryStore() *MemoryStore {
 	s := &MemoryStore{
 		batch: make(chan *models.MarketData, 100_000),
-		index: make(map[string]int),
+		index: make(map[string]string),
 	}
 	s.data.Store(make(map[string]Quote))
-
-	for i, sym := range symbols {
-		s.index[sym] = i
-	}
-
 	return s
 }
 
-// Index возвращает индекс символа
-func (s *MemoryStore) Index(symbol string) int {
-	s.indexM.RLock()
-	defer s.indexM.RUnlock()
-	return s.index[symbol]
-}
-
-// Run — основной цикл стора
 func (s *MemoryStore) Run() {
 	for md := range s.batch {
 		s.apply(md)
 	}
 }
 
-// Push — приём данных
 func (s *MemoryStore) Push(md *models.MarketData) {
 	select {
 	case s.batch <- md:
 	default:
+		// защита от переполнения
 	}
 }
 
-// Get — snapshot-чтение
 func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
 	m := s.data.Load().(map[string]Quote)
 	q, ok := m[exchange+"|"+symbol]
 	return q, ok
 }
 
-// apply — атомарное обновление
+// Индекс символа → Leg
+func (s *MemoryStore) Index(leg string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.index[leg]; ok {
+		return v
+	}
+	s.index[leg] = legSymbol(leg)
+	return s.index[leg]
+}
+
 func (s *MemoryStore) apply(md *models.MarketData) {
 	key := md.Exchange + "|" + md.Symbol
 	quote := Quote{
@@ -162,15 +158,13 @@ func (s *MemoryStore) apply(md *models.MarketData) {
 	s.data.Store(newMap)
 }
 
-// Symbols возвращает все символы
-func (s *MemoryStore) Symbols() []string {
-	s.indexM.RLock()
-	defer s.indexM.RUnlock()
-	keys := make([]string, 0, len(s.index))
-	for k := range s.index {
-		keys = append(keys, k)
+// Вспомогательная функция
+func legSymbol(leg string) string {
+	parts := strings.Fields(leg)
+	if len(parts) < 2 {
+		return ""
 	}
-	return keys
+	return parts[1]
 }
 
 
@@ -206,9 +200,9 @@ const (
 type KuCoinCollector struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
+	mem       *queue.MemoryStore
 	wsList    []*kucoinWS
 	out       chan<- *models.MarketData
-	mem       *queue.MemoryStore
 	triangles []calculator.TriangleFast
 }
 
@@ -219,7 +213,6 @@ type kucoinWS struct {
 	last    map[string][2]float64
 }
 
-// NewKuCoinCollectorFromCSV создаёт коллектор
 func NewKuCoinCollectorFromCSV(path string, mem *queue.MemoryStore) (*KuCoinCollector, error) {
 	symbols, err := readPairsFromCSV(path)
 	if err != nil {
@@ -246,14 +239,9 @@ func NewKuCoinCollectorFromCSV(path string, mem *queue.MemoryStore) (*KuCoinColl
 	return &KuCoinCollector{
 		ctx:    ctx,
 		cancel: cancel,
-		wsList: wsList,
 		mem:    mem,
+		wsList: wsList,
 	}, nil
-}
-
-// Symbols возвращает все символы
-func (kc *KuCoinCollector) Symbols() []string {
-	return kc.mem.Symbols()
 }
 
 func (kc *KuCoinCollector) Name() string {
@@ -284,8 +272,6 @@ func (kc *KuCoinCollector) Stop() error {
 	return nil
 }
 
-// =============== WS =================
-
 func (ws *kucoinWS) connect() error {
 	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
 	resp, err := http.DefaultClient.Do(req)
@@ -307,8 +293,7 @@ func (ws *kucoinWS) connect() error {
 		return err
 	}
 
-	url := fmt.Sprintf(
-		"%s?token=%s&connectId=%d",
+	url := fmt.Sprintf("%s?token=%s&connectId=%d",
 		r.Data.InstanceServers[0].Endpoint,
 		r.Data.Token,
 		time.Now().UnixNano(),
@@ -365,19 +350,16 @@ func (ws *kucoinWS) handle(kc *KuCoinCollector, msg []byte) {
 	if gjson.GetBytes(msg, "type").String() != "message" {
 		return
 	}
-
 	topic := gjson.GetBytes(msg, "topic").String()
 	if !strings.HasPrefix(topic, "/market/ticker:") {
 		return
 	}
-
 	symbol := strings.TrimPrefix(topic, "/market/ticker:")
 	data := gjson.GetBytes(msg, "data")
 	bid := data.Get("bestBid").Float()
 	ask := data.Get("bestAsk").Float()
 	bidSize := data.Get("bestBidSize").Float()
 	askSize := data.Get("bestAskSize").Float()
-
 	if bid == 0 || ask == 0 {
 		return
 	}
@@ -399,7 +381,6 @@ func (ws *kucoinWS) handle(kc *KuCoinCollector, msg []byte) {
 	}
 }
 
-// CSV
 func readPairsFromCSV(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -421,8 +402,7 @@ func readPairsFromCSV(path string) ([]string, error) {
 			}
 		}
 	}
-
-	res := make([]string, 0, len(set))
+	var res []string
 	for k := range set {
 		res = append(res, k)
 	}
@@ -444,21 +424,23 @@ func parseLeg(s string) string {
 
 
 
+
 package calculator
 
 import (
 	"fmt"
 	"log"
 	"os"
+
 	"crypt_proto/internal/queue"
 )
 
 const fee = 0.001
 
 type TriangleFast struct {
-	A, B, C          string
-	Leg1Idx, Leg2Idx, Leg3Idx int
-	Buy1, Buy2, Buy3 bool
+	A, B, C       string
+	Leg1Idx, Leg2Idx, Leg3Idx string
+	Buy1, Buy2, Buy3           bool
 }
 
 type CalculatorFast struct {
@@ -470,7 +452,7 @@ type CalculatorFast struct {
 func NewCalculatorFast(mem *queue.MemoryStore, triangles []TriangleFast) *CalculatorFast {
 	f, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		log.Fatalf("failed to open arb log: %v", err)
+		log.Fatalf("failed to open arb log file: %v", err)
 	}
 	return &CalculatorFast{
 		mem:       mem,
@@ -479,31 +461,55 @@ func NewCalculatorFast(mem *queue.MemoryStore, triangles []TriangleFast) *Calcul
 	}
 }
 
-// CalcTriangleFast экспортированный метод для расчёта
 func (c *CalculatorFast) CalcTriangleFast(tri TriangleFast) {
-	q1, ok1 := c.mem.Get("KuCoin", c.mem.Symbols()[tri.Leg1Idx])
-	q2, ok2 := c.mem.Get("KuCoin", c.mem.Symbols()[tri.Leg2Idx])
-	q3, ok3 := c.mem.Get("KuCoin", c.mem.Symbols()[tri.Leg3Idx])
+	q1, ok1 := c.mem.Get("KuCoin", tri.Leg1Idx)
+	q2, ok2 := c.mem.Get("KuCoin", tri.Leg2Idx)
+	q3, ok3 := c.mem.Get("KuCoin", tri.Leg3Idx)
 	if !ok1 || !ok2 || !ok3 {
 		return
 	}
 
-	// лимиты
-	var usdtLimits [3]float64
-	if tri.Buy1 { usdtLimits[0] = q1.Ask * q1.AskSize } else { usdtLimits[0] = q1.Bid * q1.BidSize }
-	if tri.Buy2 { usdtLimits[1] = q2.Ask * q2.AskSize * q3.Bid } else { usdtLimits[1] = q2.BidSize * q3.Bid }
-	if tri.Buy3 { usdtLimits[2] = q3.Bid * q3.BidSize }
+	// Рассчёт лимитов
+	usdt1 := q1.Ask*q1.AskSize
+	if !tri.Buy1 {
+		usdt1 = q1.Bid * q1.BidSize
+	}
+	usdt2 := q2.Ask*q2.AskSize
+	if !tri.Buy2 {
+		usdt2 = q2.Bid * q2.BidSize
+	}
+	usdt3 := q3.Ask * q3.AskSize
+	if !tri.Buy3 {
+		usdt3 = q3.Bid * q3.BidSize
+	}
 
-	maxUSDT := usdtLimits[0]
-	if usdtLimits[1] < maxUSDT { maxUSDT = usdtLimits[1] }
-	if usdtLimits[2] < maxUSDT { maxUSDT = usdtLimits[2] }
-	if maxUSDT <= 0 { return }
+	maxUSDT := usdt1
+	if usdt2 < maxUSDT {
+		maxUSDT = usdt2
+	}
+	if usdt3 < maxUSDT {
+		maxUSDT = usdt3
+	}
+	if maxUSDT <= 0 {
+		return
+	}
 
-	// прогон
 	amount := maxUSDT
-	if tri.Buy1 { amount = amount / q1.Ask * (1 - fee) } else { amount = amount * q1.Bid * (1 - fee) }
-	if tri.Buy2 { amount = amount / q2.Ask * (1 - fee) } else { amount = amount * q2.Bid * (1 - fee) }
-	if tri.Buy3 { amount = amount / q3.Ask * (1 - fee) } else { amount = amount * q3.Bid * (1 - fee) }
+	if tri.Buy1 {
+		amount = amount / q1.Ask * (1 - fee)
+	} else {
+		amount = amount * q1.Bid * (1 - fee)
+	}
+	if tri.Buy2 {
+		amount = amount / q2.Ask * (1 - fee)
+	} else {
+		amount = amount * q2.Bid * (1 - fee)
+	}
+	if tri.Buy3 {
+		amount = amount / q3.Ask * (1 - fee)
+	} else {
+		amount = amount * q3.Bid * (1 - fee)
+	}
 
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
@@ -520,7 +526,6 @@ func (c *CalculatorFast) CalcTriangleFast(tri TriangleFast) {
 
 
 
-
 package main
 
 import (
@@ -530,11 +535,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"crypt_proto/internal/collector"
-	"crypt_proto/internal/queue"
 	"crypt_proto/internal/calculator"
-	"crypt_proto/pkg/models"
+	"crypt_proto/internal/queue"
 )
 
 func main() {
@@ -543,15 +548,9 @@ func main() {
 		_ = http.ListenAndServe("localhost:6060", nil)
 	}()
 
-	mem := queue.NewMemoryStore(nil)
+	out := make(chan *queue.Quote, 100_000)
+	mem := queue.NewMemoryStore()
 	go mem.Run()
-
-	out := make(chan *models.MarketData, 100_000)
-	go func() {
-		for md := range out {
-			mem.Push(md)
-		}
-	}()
 
 	kc, err := collector.NewKuCoinCollectorFromCSV("../exchange/data/kucoin_triangles_usdt.csv", mem)
 	if err != nil {
@@ -560,9 +559,12 @@ func main() {
 	if err := kc.Start(out); err != nil {
 		log.Fatal(err)
 	}
-	log.Println("[Main] KuCoinCollector started")
 
-	trianglesCSV, _ := calculator.ParseTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
+	trianglesCSV, err := collector.ReadTrianglesCSV("../exchange/data/kucoin_triangles_usdt.csv")
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	var triangles []calculator.TriangleFast
 	for _, t := range trianglesCSV {
 		triangles = append(triangles, calculator.TriangleFast{
@@ -578,7 +580,9 @@ func main() {
 
 	calc := calculator.NewCalculatorFast(mem, triangles)
 	go func() {
-		for md := range out {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
 			for _, tri := range triangles {
 				calc.CalcTriangleFast(tri)
 			}
@@ -590,65 +594,13 @@ func main() {
 	<-stop
 
 	log.Println("[Main] shutting down...")
-	kc.Stop()
+	_ = kc.Stop()
 	close(out)
 	log.Println("[Main] exited")
 }
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredImportedName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredImportedName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: calculator.ParseTrianglesFromCSV",
-	"source": "compiler",
-	"startLineNumber": 42,
-	"startColumn": 32,
-	"endLineNumber": 42,
-	"endColumn": 53,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
-
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UnusedVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UnusedVar"
-		}
-	},
-	"severity": 8,
-	"message": "declared and not used: md",
-	"source": "compiler",
-	"startLineNumber": 58,
-	"startColumn": 7,
-	"endLineNumber": 58,
-	"endColumn": 9,
-	"modelVersionId": 4,
-	"tags": [
-		1
-	],
-	"origin": "extHost1"
-}]
 
 
 
