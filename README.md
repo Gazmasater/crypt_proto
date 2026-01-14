@@ -602,57 +602,51 @@ func main() {
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "IncompatibleAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "IncompatibleAssign"
+out := make(chan *models.MarketData, 100_000)
+
+
+
+func ReadTrianglesCSV(path string) ([]TriangleCSV, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	rows, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	var triangles []TriangleCSV
+	for _, row := range rows[1:] {
+		if len(row) < 6 {
+			continue
 		}
-	},
-	"severity": 8,
-	"message": "cannot use out (variable of type chan *queue.Quote) as chan<- *models.MarketData value in argument to kc.Start",
-	"source": "compiler",
-	"startLineNumber": 31,
-	"startColumn": 21,
-	"endLineNumber": 31,
-	"endColumn": 24,
-	"modelVersionId": 5,
-	"origin": "extHost1"
-}]
+		triangles = append(triangles, TriangleCSV{
+			A:    row[0],
+			B:    row[1],
+			C:    row[2],
+			Leg1: row[3],
+			Leg2: row[4],
+			Leg3: row[5],
+		})
+	}
+	return triangles, nil
+}
+
+type TriangleCSV struct {
+	A, B, C       string
+	Leg1, Leg2, Leg3 string
+}
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredImportedName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredImportedName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: collector.ReadTrianglesCSV",
-	"source": "compiler",
-	"startLineNumber": 35,
-	"startColumn": 33,
-	"endLineNumber": 35,
-	"endColumn": 49,
-	"modelVersionId": 5,
-	"origin": "extHost1"
-}]
-
-
+trianglesCSV, err := collector.ReadTrianglesCSV("../exchange/data/kucoin_triangles_usdt.csv")
+if err != nil {
+	log.Fatal(err)
+}
 
 
 
