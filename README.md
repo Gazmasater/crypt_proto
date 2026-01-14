@@ -72,28 +72,48 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.128.pb.gz
-File: arb
-Build ID: d8095edd0e7b84fc1bd6776bcad2be691a5b7dcc
-Type: cpu
-Time: 2026-01-15 00:53:04 MSK
-Duration: 30s, Total samples = 820ms ( 2.73%)
+Duration: 30.05s, Total samples = 1.99s ( 6.62%)
 Entering interactive mode (type "help" for commands, "o" for options)
 (pprof) top
-Showing nodes accounting for 540ms, 65.85% of 820ms total
-Showing top 10 nodes out of 120
+Showing nodes accounting for 1130ms, 56.78% of 1990ms total
+Showing top 10 nodes out of 182
       flat  flat%   sum%        cum   cum%
-     370ms 45.12% 45.12%      370ms 45.12%  internal/runtime/syscall.Syscall6
-      30ms  3.66% 48.78%       30ms  3.66%  runtime.mapaccess2_faststr
-      20ms  2.44% 51.22%       20ms  2.44%  aeshashbody
-      20ms  2.44% 53.66%       20ms  2.44%  github.com/tidwall/gjson.parseSquash
-      20ms  2.44% 56.10%       20ms  2.44%  github.com/tidwall/gjson.parseString
-      20ms  2.44% 58.54%       20ms  2.44%  runtime.futex
-      20ms  2.44% 60.98%       20ms  2.44%  runtime.memmove
-      20ms  2.44% 63.41%       20ms  2.44%  strconv.atof64exact
-      10ms  1.22% 64.63%      340ms 41.46%  bytes.(*Buffer).ReadFrom
-      10ms  1.22% 65.85%       80ms  9.76%  crypt_proto/internal/calculator.(*Calculator).Run
+     570ms 28.64% 28.64%      570ms 28.64%  internal/runtime/syscall.Syscall6
+     170ms  8.54% 37.19%      170ms  8.54%  runtime.futex
+      70ms  3.52% 40.70%       70ms  3.52%  runtime.typePointers.next
+      60ms  3.02% 43.72%       60ms  3.02%  runtime.memmove
+      50ms  2.51% 46.23%       70ms  3.52%  github.com/tidwall/gjson.parseObject
+      50ms  2.51% 48.74%      160ms  8.04%  runtime.scanobject
+      40ms  2.01% 50.75%       40ms  2.01%  aeshashbody
+      40ms  2.01% 52.76%       90ms  4.52%  runtime.concatstrings
+      40ms  2.01% 54.77%      140ms  7.04%  runtime.mallocgcSmallScanNoHeader
+      40ms  2.01% 56.78%       40ms  2.01%  runtime.nanotime
+(pprof) 
+
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
+Saved profile in /home/gaz358/pprof/pprof.arb.alloc_objects.alloc_space.inuse_objects.inuse_space.006.pb.gz
+File: arb
+Build ID: d8095edd0e7b84fc1bd6776bcad2be691a5b7dcc
+Type: inuse_space
+Time: 2026-01-15 01:11:27 MSK
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 4075.42kB, 100% of 4075.42kB total
+Showing top 10 nodes out of 40
+      flat  flat%   sum%        cum   cum%
+    1539kB 37.76% 37.76%     1539kB 37.76%  runtime.allocm
+ 1024.04kB 25.13% 62.89%  1024.04kB 25.13%  crypto/internal/fips140/nistec.NewP384Point (inline)
+ 1000.34kB 24.55% 87.44%  1000.34kB 24.55%  main.main
+  512.05kB 12.56%   100%   512.05kB 12.56%  runtime.acquireSudog
+         0     0%   100%  1024.04kB 25.13%  crypto/ecdsa.VerifyASN1
+         0     0%   100%  1024.04kB 25.13%  crypto/ecdsa.verifyFIPS[go.shape.*crypto/internal/fips140/nistec.P384Point]
+         0     0%   100%  1024.04kB 25.13%  crypto/internal/fips140/ecdsa.Verify[go.shape.*crypto/internal/fips140/nistec.P384Point]
+         0     0%   100%  1024.04kB 25.13%  crypto/internal/fips140/ecdsa.verifyGeneric[go.shape.*crypto/internal/fips140/nistec.P384Point]
+         0     0%   100%  1024.04kB 25.13%  crypto/internal/fips140/ecdsa.verify[go.shape.*crypto/internal/fips140/nistec.P384Point] (inline)
+         0     0%   100%  1024.04kB 25.13%  crypto/internal/fips140/nistec.(*P384Point).ScalarBaseMult
 (pprof) 
 
 
