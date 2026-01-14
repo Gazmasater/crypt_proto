@@ -597,5 +597,60 @@ func main() {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredImportedName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredImportedName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: calculator.ParseTrianglesFromCSV",
+	"source": "compiler",
+	"startLineNumber": 42,
+	"startColumn": 32,
+	"endLineNumber": 42,
+	"endColumn": 53,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
+
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: md",
+	"source": "compiler",
+	"startLineNumber": 58,
+	"startColumn": 7,
+	"endLineNumber": 58,
+	"endColumn": 9,
+	"modelVersionId": 4,
+	"tags": [
+		1
+	],
+	"origin": "extHost1"
+}]
+
+
+
 
 
