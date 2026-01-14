@@ -117,3 +117,22 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
     return res, nil
 }
 
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+2026/01/15 00:43:31 pprof on http://localhost:6060/debug/pprof/
+2026/01/15 00:43:31 [KuCoin] started with 1 WS
+2026/01/15 00:43:31 [Main] KuCoinCollector started
+panic: runtime error: invalid memory address or nil pointer dereference
+[signal SIGSEGV: segmentation violation code=0x1 addr=0xc0 pc=0x6a0bd7]
+
+goroutine 9 [running]:
+github.com/gorilla/websocket.(*Conn).NextReader(0x0)
+        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:1000 +0x17
+github.com/gorilla/websocket.(*Conn).ReadMessage(0x0?)
+        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:1093 +0x13
+crypt_proto/internal/collector.(*kucoinWS).readLoop(0xc0000b14d0, 0xc00004a9c0)
+        /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go:119 +0x5b
+created by crypt_proto/internal/collector.(*KuCoinCollector).Start in goroutine 1
+        /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go:72 +0xed
+exit status 2
