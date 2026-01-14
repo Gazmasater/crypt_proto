@@ -645,28 +645,16 @@ func main() {
 
 
 
+import "github.com/gorilla/websocket"
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: WebsocketConn",
-	"source": "compiler",
-	"startLineNumber": 41,
-	"startColumn": 11,
-	"endLineNumber": 41,
-	"endColumn": 24,
-	"modelVersionId": 1,
-	"origin": "extHost1"
-}]
+type kucoinWS struct {
+	id      int
+	conn    *websocket.Conn  // <- исправлено
+	symbols []string
+	last    map[string][2]float64
+}
+
+
+
+
 
