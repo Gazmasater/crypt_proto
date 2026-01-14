@@ -577,43 +577,35 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"crypt_proto/internal/calculator"
 	"crypt_proto/internal/collector"
 	"crypt_proto/internal/queue"
-	"crypt_proto/pkg/models"
 )
 
 func main() {
 	// ------------------- pprof -------------------
 	go func() {
 		log.Println("pprof on http://localhost:6060/debug/pprof/")
-		_ = http.ListenAndServe("localhost:6060", nil)
+		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+			log.Fatalf("pprof listen error: %v", err)
+		}
 	}()
-
-	// ------------------- Канал данных от коллекторов -------------------
-	out := make(chan *models.MarketData, 100_000)
 
 	// ------------------- In-Memory Store -------------------
 	mem := queue.NewMemoryStore()
-	go mem.Run()
-
-	// прокачка данных: out → mem
-	go func() {
-		for md := range out {
-			mem.Push(md)
-		}
-	}()
 
 	// ------------------- Коллектор -------------------
 	kc, err := collector.NewKuCoinCollectorFromCSV(
 		"../exchange/data/kucoin_triangles_usdt.csv",
+		mem, // передаем память напрямую
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if err := kc.Start(out); err != nil {
+	if err := kc.Start(); err != nil {
 		log.Fatal(err)
 	}
 	log.Println("[Main] KuCoinCollector started")
@@ -628,7 +620,12 @@ func main() {
 
 	// ------------------- Калькулятор -------------------
 	calc := calculator.NewCalculator(mem, triangles)
-	go calc.Run(out)
+	go func() {
+		for {
+			calc.Run() // polling loop
+			time.Sleep(1 * time.Millisecond) // минимальная пауза, чтобы CPU не 100%
+		}
+	}()
 
 	// ------------------- Graceful shutdown -------------------
 	stop := make(chan os.Signal, 1)
@@ -637,8 +634,10 @@ func main() {
 
 	log.Println("[Main] shutting down...")
 
-	kc.Stop()
-	close(out)
+	// останавливаем коллектора
+	if err := kc.Stop(); err != nil {
+		log.Printf("error stopping collector: %v", err)
+	}
 
 	log.Println("[Main] exited")
 }
