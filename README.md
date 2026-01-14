@@ -351,3 +351,154 @@ func main() {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "WrongAssignCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongAssignCount"
+		}
+	},
+	"severity": 8,
+	"message": "assignment mismatch: 3 variables but collector.NewKuCoinCollectorFromCSV returns 2 values",
+	"source": "compiler",
+	"startLineNumber": 25,
+	"startColumn": 22,
+	"endLineNumber": 25,
+	"endColumn": 103,
+	"modelVersionId": 96,
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "not enough arguments in call to collector.NewKuCoinCollectorFromCSV\n\thave (string)\n\twant (string, *queue.MemoryStore)",
+	"source": "compiler",
+	"startLineNumber": 25,
+	"startColumn": 102,
+	"endLineNumber": 25,
+	"endColumn": 102,
+	"modelVersionId": 96,
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "UndeclaredImportedName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredImportedName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: calculator.ParseTrianglesFromCSV",
+	"source": "compiler",
+	"startLineNumber": 45,
+	"startColumn": 32,
+	"endLineNumber": 45,
+	"endColumn": 53,
+	"modelVersionId": 96,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "calc.calcTriangleFast undefined (cannot refer to unexported method calcTriangleFast)",
+	"source": "compiler",
+	"startLineNumber": 65,
+	"startColumn": 10,
+	"endLineNumber": 65,
+	"endColumn": 26,
+	"modelVersionId": 96,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "kc.mem.Update undefined (type *queue.MemoryStore has no field or method Update)",
+	"source": "compiler",
+	"startLineNumber": 220,
+	"startColumn": 9,
+	"endLineNumber": 220,
+	"endColumn": 15,
+	"modelVersionId": 22,
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/arb.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "default",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/gopls/internal/analysis/unusedfunc",
+			"scheme": "https",
+			"authority": "pkg.go.dev"
+		}
+	},
+	"severity": 2,
+	"message": "method \"calcTriangleFast\" is unused",
+	"source": "unusedfunc",
+	"startLineNumber": 42,
+	"startColumn": 26,
+	"endLineNumber": 42,
+	"endColumn": 42,
+	"modelVersionId": 11,
+	"tags": [
+		1
+	],
+	"origin": "extHost1"
+}]
+
+
+
