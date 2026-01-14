@@ -73,6 +73,76 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+package queue
+
+import (
+	"sync"
+	"time"
+
+	"crypt_proto/pkg/models"
+)
+
+type Quote struct {
+	Bid       float64
+	Ask       float64
+	BidSize   float64
+	AskSize   float64
+	Timestamp int64
+}
+
+type MemoryStore struct {
+	m     sync.Map
+	batch chan *models.MarketData
+}
+
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{
+		batch: make(chan *models.MarketData, 10_000),
+	}
+}
+
+// Run — основной цикл стора
+func (s *MemoryStore) Run() {
+	for md := range s.batch {
+		s.apply(md)
+	}
+}
+
+// Push — приём данных от коллекторов
+func (s *MemoryStore) Push(md *models.MarketData) {
+	select {
+	case s.batch <- md:
+	default:
+		// защита от переполнения
+	}
+}
+
+// Get — lock-free чтение
+func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
+	key := exchange + "|" + symbol
+	q, ok := s.m.Load(key)
+	if !ok {
+		return Quote{}, false
+	}
+	return q.(Quote), true
+}
+
+// apply — lock-free запись
+func (s *MemoryStore) apply(md *models.MarketData) {
+	key := md.Exchange + "|" + md.Symbol
+	quote := Quote{
+		Bid:       md.Bid,
+		Ask:       md.Ask,
+		BidSize:   md.BidSize,
+		AskSize:   md.AskSize,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	s.m.Store(key, quote)
+}
+
+
+
+
 package calculator
 
 import (
@@ -82,24 +152,24 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 )
 
+// fee
 const fee = 0.001 // 0.1%
 
-// LegIndex хранит precomputed ключ и направление (BUY/SELL)
+type Triangle struct {
+	A, B, C string
+
+	// заранее подготовленные LegIndex
+	Legs [3]LegIndex
+}
+
+// LegIndex — информация по каждой ноге для быстрого расчёта
 type LegIndex struct {
-	Key   string // "KuCoin|COTI-USDT"
+	Key   string // BASE-QUOTE
 	IsBuy bool
 }
 
-// Triangle описывает один треугольный арбитраж
-type Triangle struct {
-	A, B, C string
-	Legs    [3]LegIndex
-}
-
-// Calculator считает профит по треугольникам
 type Calculator struct {
 	mem       *queue.MemoryStore
 	triangles []Triangle
@@ -107,13 +177,8 @@ type Calculator struct {
 	fileLog   *log.Logger
 }
 
-// NewCalculator создаёт калькулятор
 func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
-	f, err := os.OpenFile(
-		"arb_opportunities.log",
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
-		0644,
-	)
+	f, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Fatalf("failed to open arb log file: %v", err)
 	}
@@ -125,12 +190,16 @@ func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
 		fileLog:   log.New(f, "", log.LstdFlags),
 	}
 
-	// Заполняем bySymbol для быстрого поиска
 	for i := range triangles {
 		tri := &triangles[i]
-		for _, leg := range tri.Legs {
-			if leg.Key != "" {
-				c.bySymbol[leg.Key] = append(c.bySymbol[leg.Key], tri)
+		// подготавливаем LegIndex
+		for j, leg := range [3]string{tri.Leg1, tri.Leg2, tri.Leg3} {
+			tri.Legs[j] = parseLegIndex(leg)
+		}
+		// по символам для быстрого поиска
+		for _, l := range tri.Legs {
+			if l.Key != "" {
+				c.bySymbol[l.Key] = append(c.bySymbol[l.Key], tri)
 			}
 		}
 	}
@@ -138,24 +207,21 @@ func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
 	return c
 }
 
-// Run запускает цикл расчёта
 func (c *Calculator) Run(in <-chan *models.MarketData) {
 	for md := range in {
 		c.mem.Push(md)
 
-		key := "KuCoin|" + md.Symbol
-		tris := c.bySymbol[key]
+		tris := c.bySymbol[md.Symbol]
 		for _, tri := range tris {
 			c.calcTriangle(tri)
 		}
 	}
 }
 
-// calcTriangle рассчитывает профит по треугольнику
 func (c *Calculator) calcTriangle(tri *Triangle) {
-	q := [3]queue.Quote{}
+	q := make([]queue.Quote, 3)
 	for i, leg := range tri.Legs {
-		quote, ok := c.mem.Get("KuCoin", strings.Split(leg.Key, "|")[1])
+		quote, ok := c.mem.Get("KuCoin", leg.Key)
 		if !ok {
 			return
 		}
@@ -163,47 +229,49 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	}
 
 	// ===== 1. USDT LIMITS =====
-	usdtLimits := [3]float64{}
+	var usdt [3]float64
 
-	// LEG 1
-	if tri.Legs[0].IsBuy {
-		if q[0].Ask <= 0 || q[0].AskSize <= 0 {
-			return
+	for i, leg := range tri.Legs {
+		switch i {
+		case 0:
+			if leg.IsBuy {
+				if q[i].Ask <= 0 || q[i].AskSize <= 0 {
+					return
+				}
+				usdt[i] = q[i].Ask * q[i].AskSize
+			} else {
+				if q[i].Bid <= 0 || q[i].BidSize <= 0 {
+					return
+				}
+				usdt[i] = q[i].Bid * q[i].BidSize
+			}
+		case 1:
+			if leg.IsBuy {
+				if q[i].Ask <= 0 || q[i].AskSize <= 0 || q[2].Bid <= 0 {
+					return
+				}
+				usdt[i] = q[i].Ask * q[i].AskSize * q[2].Bid
+			} else {
+				if q[i].Bid <= 0 || q[i].BidSize <= 0 || q[2].Bid <= 0 {
+					return
+				}
+				usdt[i] = q[i].BidSize * q[2].Bid
+			}
+		case 2:
+			if q[i].Bid <= 0 || q[i].BidSize <= 0 {
+				return
+			}
+			usdt[i] = q[i].Bid * q[i].BidSize
 		}
-		usdtLimits[0] = q[0].Ask * q[0].AskSize
-	} else {
-		if q[0].Bid <= 0 || q[0].BidSize <= 0 {
-			return
-		}
-		usdtLimits[0] = q[0].Bid * q[0].BidSize
 	}
-
-	// LEG 2
-	if tri.Legs[1].IsBuy {
-		if q[1].Ask <= 0 || q[1].AskSize <= 0 || q[2].Bid <= 0 {
-			return
-		}
-		usdtLimits[1] = q[1].Ask * q[1].AskSize * q[2].Bid
-	} else {
-		if q[1].Bid <= 0 || q[1].BidSize <= 0 || q[2].Bid <= 0 {
-			return
-		}
-		usdtLimits[1] = q[1].BidSize * q[2].Bid
-	}
-
-	// LEG 3
-	if q[2].Bid <= 0 || q[2].BidSize <= 0 {
-		return
-	}
-	usdtLimits[2] = q[2].Bid * q[2].BidSize
 
 	// ===== 2. MIN LIMIT =====
-	maxUSDT := usdtLimits[0]
-	if usdtLimits[1] < maxUSDT {
-		maxUSDT = usdtLimits[1]
+	maxUSDT := usdt[0]
+	if usdt[1] < maxUSDT {
+		maxUSDT = usdt[1]
 	}
-	if usdtLimits[2] < maxUSDT {
-		maxUSDT = usdtLimits[2]
+	if usdt[2] < maxUSDT {
+		maxUSDT = usdt[2]
 	}
 	if maxUSDT <= 0 {
 		return
@@ -211,92 +279,66 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 
 	// ===== 3. PROGON =====
 	amount := maxUSDT
-
-	if tri.Legs[0].IsBuy {
-		amount = amount / q[0].Ask * (1 - fee)
-	} else {
-		amount = amount * q[0].Bid * (1 - fee)
-	}
-
-	if tri.Legs[1].IsBuy {
-		amount = amount / q[1].Ask * (1 - fee)
-	} else {
-		amount = amount * q[1].Bid * (1 - fee)
-	}
-
-	if tri.Legs[2].IsBuy {
-		amount = amount / q[2].Ask * (1 - fee)
-	} else {
-		amount = amount * q[2].Bid * (1 - fee)
+	for i, leg := range tri.Legs {
+		if leg.IsBuy {
+			amount = amount / q[i].Ask * (1 - fee)
+		} else {
+			amount = amount * q[i].Bid * (1 - fee)
+		}
 	}
 
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
 
-	// ===== 4. LOG =====
 	if profitPct > 0.001 && profitUSDT > 0.02 {
-		msg := fmt.Sprintf(
-			"[ARB] %s → %s → %s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
-			tri.A, tri.B, tri.C,
-			profitPct*100,
-			maxUSDT,
-			profitUSDT,
-		)
+		msg := fmt.Sprintf("[ARB] %s→%s→%s | %.4f%% | vol=%.2f | profit=%.4f",
+			tri.A, tri.B, tri.C, profitPct*100, maxUSDT, profitUSDT)
 		log.Println(msg)
 		c.fileLog.Println(msg)
 	}
 }
 
-// ParseTrianglesFromCSV читает CSV и сразу создаёт LegIndex
-func ParseTrianglesFromCSV(path string) ([]Triangle, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
+// ================= HELPERS =================
 
-	r := csv.NewReader(f)
-	rows, err := r.ReadAll()
-	if err != nil {
-		return nil, err
-	}
-
-	var res []Triangle
-	for _, row := range rows[1:] {
-		if len(row) < 6 {
-			continue
-		}
-
-		tri := Triangle{
-			A: strings.TrimSpace(row[0]),
-			B: strings.TrimSpace(row[1]),
-			C: strings.TrimSpace(row[2]),
-		}
-
-		legs := []string{row[3], row[4], row[5]}
-		for i, leg := range legs {
-			leg = strings.ToUpper(strings.TrimSpace(leg))
-			parts := strings.Fields(leg)
-			if len(parts) != 2 {
-				continue
-			}
-			isBuy := parts[0] == "BUY"
-			symbolParts := strings.Split(parts[1], "/")
-			if len(symbolParts) != 2 {
-				continue
-			}
-			key := "KuCoin|" + symbolParts[0] + "-" + symbolParts[1]
-			tri.Legs[i] = LegIndex{
-				Key:   key,
-				IsBuy: isBuy,
-			}
-		}
-
-		res = append(res, tri)
-	}
-
-	return res, nil
+type LegIndex struct {
+	Key   string
+	IsBuy bool
 }
 
+func parseLegIndex(leg string) LegIndex {
+	l := LegIndex{}
+	if len(leg) < 4 {
+		return l
+	}
+	if leg[:3] == "BUY" {
+		l.IsBuy = true
+	} else {
+		l.IsBuy = false
+	}
+	parts := []rune(leg)
+	// найти пробел
+	for i, r := range parts {
+		if r == ' ' {
+			baseQuote := string(parts[i+1:])
+			s := []rune(baseQuote)
+			for j, c := range s {
+				if c >= 'a' && c <= 'z' {
+					s[j] = c - 'a' + 'A'
+				}
+			}
+			p := string(s)
+			// BASE/QUOTE -> BASE-QUOTE
+			for k, c := range p {
+				if c == '/' {
+					p = p[:k] + "-" + p[k+1:]
+					break
+				}
+			}
+			l.Key = p
+			break
+		}
+	}
+	return l
+}
 
 
