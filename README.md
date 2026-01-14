@@ -657,4 +657,32 @@ type kucoinWS struct {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.120.pb.gz
+File: arb
+Build ID: bb9959f5d18a1eaa8a886f19fee81f77456fece9
+Type: cpu
+Time: 2026-01-14 21:32:34 MSK
+Duration: 30.15s, Total samples = 35.34s (117.21%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 18320ms, 51.84% of 35340ms total
+Dropped 277 nodes (cum <= 176.70ms)
+Showing top 10 nodes out of 104
+      flat  flat%   sum%        cum   cum%
+    3810ms 10.78% 10.78%     7630ms 21.59%  strings.Fields
+    2710ms  7.67% 18.45%     6910ms 19.55%  runtime.concatstrings
+    2080ms  5.89% 24.34%     2080ms  5.89%  runtime.nextFreeFast (inline)
+    2010ms  5.69% 30.02%     4700ms 13.30%  internal/sync.(*HashTrieMap[go.shape.interface {},go.shape.interface {}]).Load
+    1960ms  5.55% 35.57%     1960ms  5.55%  strings.ToUpper
+    1570ms  4.44% 40.01%     6180ms 17.49%  runtime.mallocgcSmallScanNoHeader
+    1410ms  3.99% 44.00%     1410ms  3.99%  runtime.memmove
+     960ms  2.72% 46.72%     1060ms  3.00%  runtime.(*mspan).writeHeapBitsSmall
+     950ms  2.69% 49.41%     1950ms  5.52%  runtime.mallocgcTiny
+     860ms  2.43% 51.84%    29690ms 84.01%  crypt_proto/internal/calculator.(*Calculator).calcTriangle
+(pprof) 
+
+
+
 
