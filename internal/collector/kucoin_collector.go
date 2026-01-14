@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	maxSubsPerWS = 90
+	maxSubsPerWS = 110
 	subRate      = 120 * time.Millisecond
 	pingInterval = 20 * time.Second
 )
