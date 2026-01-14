@@ -72,31 +72,48 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-triangles, _ := calculator.ParseTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
-	calc := calculator.NewCalculator(mem, triangles)
+func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
+    f, err := os.Open(path)
+    if err != nil {
+        return nil, err
+    }
+    defer f.Close()
 
+    rows, err := csv.NewReader(f).ReadAll()
+    if err != nil {
+        return nil, err
+    }
 
-	[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "IncompatibleAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "IncompatibleAssign"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use triangles (variable of type []calculator.Triangle) as []*calculator.Triangle value in argument to calculator.NewCalculator",
-	"source": "compiler",
-	"startLineNumber": 37,
-	"startColumn": 40,
-	"endLineNumber": 37,
-	"endColumn": 49,
-	"modelVersionId": 29,
-	"origin": "extHost1"
-}]
+    var res []*Triangle
+    for _, row := range rows[1:] {
+        if len(row) < 6 {
+            continue
+        }
+
+        tri := &Triangle{
+            A: strings.TrimSpace(row[0]),
+            B: strings.TrimSpace(row[1]),
+            C: strings.TrimSpace(row[2]),
+        }
+
+        legs := []string{row[3], row[4], row[5]}
+        for i, leg := range legs {
+            leg = strings.ToUpper(strings.TrimSpace(leg))
+            parts := strings.Fields(leg)
+            if len(parts) != 2 {
+                continue
+            }
+            isBuy := parts[0] == "BUY"
+            symbolParts := strings.Split(parts[1], "/")
+            if len(symbolParts) != 2 {
+                continue
+            }
+            key := "KuCoin|" + symbolParts[0] + "-" + symbolParts[1]
+            tri.Legs[i] = LegIndex{Key: key, IsBuy: isBuy}
+        }
+
+        res = append(res, tri)
+    }
+    return res, nil
+}
 
