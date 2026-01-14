@@ -72,67 +72,43 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
-    f, err := os.Open(path)
+func (ws *kucoinWS) connect() error {
+    req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
+    resp, err := http.DefaultClient.Do(req)
     if err != nil {
-        return nil, err
+        return err
     }
-    defer f.Close()
+    defer resp.Body.Close()
 
-    rows, err := csv.NewReader(f).ReadAll()
+    var r struct {
+        Data struct {
+            Token           string `json:"token"`
+            InstanceServers []struct {
+                Endpoint string `json:"endpoint"`
+            } `json:"instanceServers"`
+        } `json:"data"`
+    }
+
+    if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+        return err
+    }
+
+    url := fmt.Sprintf(
+        "%s?token=%s&connectId=%d",
+        r.Data.InstanceServers[0].Endpoint,
+        r.Data.Token,
+        time.Now().UnixNano(),
+    )
+
+    conn, _, err := websocket.DefaultDialer.Dial(url, nil)
     if err != nil {
-        return nil, err
+        return err
     }
 
-    var res []*Triangle
-    for _, row := range rows[1:] {
-        if len(row) < 6 {
-            continue
-        }
-
-        tri := &Triangle{
-            A: strings.TrimSpace(row[0]),
-            B: strings.TrimSpace(row[1]),
-            C: strings.TrimSpace(row[2]),
-        }
-
-        legs := []string{row[3], row[4], row[5]}
-        for i, leg := range legs {
-            leg = strings.ToUpper(strings.TrimSpace(leg))
-            parts := strings.Fields(leg)
-            if len(parts) != 2 {
-                continue
-            }
-            isBuy := parts[0] == "BUY"
-            symbolParts := strings.Split(parts[1], "/")
-            if len(symbolParts) != 2 {
-                continue
-            }
-            key := "KuCoin|" + symbolParts[0] + "-" + symbolParts[1]
-            tri.Legs[i] = LegIndex{Key: key, IsBuy: isBuy}
-        }
-
-        res = append(res, tri)
-    }
-    return res, nil
+    ws.conn = conn
+    log.Printf("[KuCoin WS %d] connected\n", ws.id)
+    return nil
 }
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-2026/01/15 00:43:31 pprof on http://localhost:6060/debug/pprof/
-2026/01/15 00:43:31 [KuCoin] started with 1 WS
-2026/01/15 00:43:31 [Main] KuCoinCollector started
-panic: runtime error: invalid memory address or nil pointer dereference
-[signal SIGSEGV: segmentation violation code=0x1 addr=0xc0 pc=0x6a0bd7]
-
-goroutine 9 [running]:
-github.com/gorilla/websocket.(*Conn).NextReader(0x0)
-        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:1000 +0x17
-github.com/gorilla/websocket.(*Conn).ReadMessage(0x0?)
-        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:1093 +0x13
-crypt_proto/internal/collector.(*kucoinWS).readLoop(0xc0000b14d0, 0xc00004a9c0)
-        /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go:119 +0x5b
-created by crypt_proto/internal/collector.(*KuCoinCollector).Start in goroutine 1
-        /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go:72 +0xed
-exit status 2
