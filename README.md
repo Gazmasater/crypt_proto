@@ -76,101 +76,227 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 package calculator
 
 import (
+	"crypt_proto/internal/queue"
+	"crypt_proto/pkg/models"
+	"encoding/csv"
 	"fmt"
 	"log"
 	"os"
-
-	"crypt_proto/internal/queue"
+	"strings"
 )
 
-const fee = 0.001
+const fee = 0.001 // 0.1%
 
-type TriangleFast struct {
-	A, B, C                   string
-	Leg1Idx, Leg2Idx, Leg3Idx string
-	Buy1, Buy2, Buy3          bool
+// LegIndex хранит precomputed ключ и направление (BUY/SELL)
+type LegIndex struct {
+	Key   string // "KuCoin|COTI-USDT"
+	IsBuy bool
 }
 
-type CalculatorFast struct {
+// Triangle описывает один треугольный арбитраж
+type Triangle struct {
+	A, B, C string
+	Legs    [3]LegIndex
+}
+
+// Calculator считает профит по треугольникам
+type Calculator struct {
 	mem       *queue.MemoryStore
-	triangles []TriangleFast
+	triangles []Triangle
+	bySymbol  map[string][]*Triangle
 	fileLog   *log.Logger
 }
 
-func NewCalculatorFast(mem *queue.MemoryStore, triangles []TriangleFast) *CalculatorFast {
-	f, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+// NewCalculator создаёт калькулятор
+func NewCalculator(mem *queue.MemoryStore, triangles []Triangle) *Calculator {
+	f, err := os.OpenFile(
+		"arb_opportunities.log",
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+		0644,
+	)
 	if err != nil {
 		log.Fatalf("failed to open arb log file: %v", err)
 	}
-	return &CalculatorFast{
+
+	c := &Calculator{
 		mem:       mem,
 		triangles: triangles,
+		bySymbol:  make(map[string][]*Triangle),
 		fileLog:   log.New(f, "", log.LstdFlags),
+	}
+
+	// Заполняем bySymbol для быстрого поиска
+	for i := range triangles {
+		tri := &triangles[i]
+		for _, leg := range tri.Legs {
+			if leg.Key != "" {
+				c.bySymbol[leg.Key] = append(c.bySymbol[leg.Key], tri)
+			}
+		}
+	}
+
+	return c
+}
+
+// Run запускает цикл расчёта
+func (c *Calculator) Run(in <-chan *models.MarketData) {
+	for md := range in {
+		c.mem.Push(md)
+
+		key := "KuCoin|" + md.Symbol
+		tris := c.bySymbol[key]
+		for _, tri := range tris {
+			c.calcTriangle(tri)
+		}
 	}
 }
 
-func (c *CalculatorFast) CalcTriangleFast(tri TriangleFast) {
-	q1, ok1 := c.mem.Get("KuCoin", tri.Leg1Idx)
-	q2, ok2 := c.mem.Get("KuCoin", tri.Leg2Idx)
-	q3, ok3 := c.mem.Get("KuCoin", tri.Leg3Idx)
-	if !ok1 || !ok2 || !ok3 {
+// calcTriangle рассчитывает профит по треугольнику
+func (c *Calculator) calcTriangle(tri *Triangle) {
+	q := [3]queue.Quote{}
+	for i, leg := range tri.Legs {
+		quote, ok := c.mem.Get("KuCoin", strings.Split(leg.Key, "|")[1])
+		if !ok {
+			return
+		}
+		q[i] = quote
+	}
+
+	// ===== 1. USDT LIMITS =====
+	usdtLimits := [3]float64{}
+
+	// LEG 1
+	if tri.Legs[0].IsBuy {
+		if q[0].Ask <= 0 || q[0].AskSize <= 0 {
+			return
+		}
+		usdtLimits[0] = q[0].Ask * q[0].AskSize
+	} else {
+		if q[0].Bid <= 0 || q[0].BidSize <= 0 {
+			return
+		}
+		usdtLimits[0] = q[0].Bid * q[0].BidSize
+	}
+
+	// LEG 2
+	if tri.Legs[1].IsBuy {
+		if q[1].Ask <= 0 || q[1].AskSize <= 0 || q[2].Bid <= 0 {
+			return
+		}
+		usdtLimits[1] = q[1].Ask * q[1].AskSize * q[2].Bid
+	} else {
+		if q[1].Bid <= 0 || q[1].BidSize <= 0 || q[2].Bid <= 0 {
+			return
+		}
+		usdtLimits[1] = q[1].BidSize * q[2].Bid
+	}
+
+	// LEG 3
+	if q[2].Bid <= 0 || q[2].BidSize <= 0 {
 		return
 	}
+	usdtLimits[2] = q[2].Bid * q[2].BidSize
 
-	// Рассчёт лимитов
-	usdt1 := q1.Ask * q1.AskSize
-	if !tri.Buy1 {
-		usdt1 = q1.Bid * q1.BidSize
+	// ===== 2. MIN LIMIT =====
+	maxUSDT := usdtLimits[0]
+	if usdtLimits[1] < maxUSDT {
+		maxUSDT = usdtLimits[1]
 	}
-	usdt2 := q2.Ask * q2.AskSize
-	if !tri.Buy2 {
-		usdt2 = q2.Bid * q2.BidSize
-	}
-	usdt3 := q3.Ask * q3.AskSize
-	if !tri.Buy3 {
-		usdt3 = q3.Bid * q3.BidSize
-	}
-
-	maxUSDT := usdt1
-	if usdt2 < maxUSDT {
-		maxUSDT = usdt2
-	}
-	if usdt3 < maxUSDT {
-		maxUSDT = usdt3
+	if usdtLimits[2] < maxUSDT {
+		maxUSDT = usdtLimits[2]
 	}
 	if maxUSDT <= 0 {
 		return
 	}
 
+	// ===== 3. PROGON =====
 	amount := maxUSDT
-	if tri.Buy1 {
-		amount = amount / q1.Ask * (1 - fee)
+
+	if tri.Legs[0].IsBuy {
+		amount = amount / q[0].Ask * (1 - fee)
 	} else {
-		amount = amount * q1.Bid * (1 - fee)
+		amount = amount * q[0].Bid * (1 - fee)
 	}
-	if tri.Buy2 {
-		amount = amount / q2.Ask * (1 - fee)
+
+	if tri.Legs[1].IsBuy {
+		amount = amount / q[1].Ask * (1 - fee)
 	} else {
-		amount = amount * q2.Bid * (1 - fee)
+		amount = amount * q[1].Bid * (1 - fee)
 	}
-	if tri.Buy3 {
-		amount = amount / q3.Ask * (1 - fee)
+
+	if tri.Legs[2].IsBuy {
+		amount = amount / q[2].Ask * (1 - fee)
 	} else {
-		amount = amount * q3.Bid * (1 - fee)
+		amount = amount * q[2].Bid * (1 - fee)
 	}
 
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
 
-	//if profitPct > 0.001 && profitUSDT > 0.02 {
-	msg := fmt.Sprintf("[ARB] %s → %s → %s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
-		tri.A, tri.B, tri.C, profitPct*100, maxUSDT, profitUSDT)
-	log.Println(msg)
-	c.fileLog.Println(msg)
-	//}
+	// ===== 4. LOG =====
+	if profitPct > 0.001 && profitUSDT > 0.02 {
+		msg := fmt.Sprintf(
+			"[ARB] %s → %s → %s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
+			tri.A, tri.B, tri.C,
+			profitPct*100,
+			maxUSDT,
+			profitUSDT,
+		)
+		log.Println(msg)
+		c.fileLog.Println(msg)
+	}
 }
 
+// ParseTrianglesFromCSV читает CSV и сразу создаёт LegIndex
+func ParseTrianglesFromCSV(path string) ([]Triangle, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
 
+	r := csv.NewReader(f)
+	rows, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	var res []Triangle
+	for _, row := range rows[1:] {
+		if len(row) < 6 {
+			continue
+		}
+
+		tri := Triangle{
+			A: strings.TrimSpace(row[0]),
+			B: strings.TrimSpace(row[1]),
+			C: strings.TrimSpace(row[2]),
+		}
+
+		legs := []string{row[3], row[4], row[5]}
+		for i, leg := range legs {
+			leg = strings.ToUpper(strings.TrimSpace(leg))
+			parts := strings.Fields(leg)
+			if len(parts) != 2 {
+				continue
+			}
+			isBuy := parts[0] == "BUY"
+			symbolParts := strings.Split(parts[1], "/")
+			if len(symbolParts) != 2 {
+				continue
+			}
+			key := "KuCoin|" + symbolParts[0] + "-" + symbolParts[1]
+			tri.Legs[i] = LegIndex{
+				Key:   key,
+				IsBuy: isBuy,
+			}
+		}
+
+		res = append(res, tri)
+	}
+
+	return res, nil
+}
 
 
 
