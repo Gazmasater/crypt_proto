@@ -294,4 +294,10 @@ func main() {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/16 02:23:54.586645 START TRIANGLE 11.00 USDT
+2026/01/16 02:23:55.032178 [FAIL] LEG1 USDT→DASH buy DASH-USDT value=11.00000000 resp={"msg":"validation.createOrder.clientOidIsRequired","code":"400100"}
+2026/01/16 02:23:55.032227 ABORT AFTER LEG1
+
+
 
