@@ -74,231 +74,168 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
-
-/* ================= CONFIG ================= */
 
 const (
-	apiKey    = "KUCOIN_API_KEY"
-	apiSecret = "KUCOIN_API_SECRET"
-	apiPass   = "KUCOIN_API_PASSPHRASE"
+	apiKey        = "KUCOIN_API_KEY"
+	apiSecret     = "KUCOIN_API_SECRET"
+	apiPassphrase = "KUCOIN_API_PASSPHRASE"
 
-	startUSDT = 20.0
-	symbol1   = "X-USDT"
-	symbol2   = "X-BTC"
-	symbol3   = "BTC-USDT"
-	baseURL   = "https://api.kucoin.com"
-	fee       = 0.001
+	baseURL = "https://api.kucoin.com"
 )
 
-/* ================= STATE ================= */
-
-type Step uint8
-
-const (
-	Idle Step = iota
-	Buy1
-	Sell2
-	Sell3
-)
-
-var step = Idle
-var lastAmount float64
-
-/* ================= MAIN ================= */
-
-func main() {
-	log.Println("START")
-
-	// Получаем Private WS токен
-	wsToken := getPrivateWSToken()
-
-	// Подключаем WS
-	conn := connectPrivateWS(wsToken)
-
-	// Аутентификация через WS
-	loginPrivateWS(conn)
-	log.Println("Private WS connected & authenticated ✅")
-
-	// Читаем события WS
-	go readWS(conn)
-
-	// Стартуем треугольник
-	step = Buy1
-	lastAmount = startUSDT
-	log.Printf("[STEP 1] Buying %s for %.2f USDT\n", symbol1, startUSDT)
-	placeMarketWS(conn, symbol1, "buy", startUSDT)
-
-	select {} // блок main
+type OrderResp struct {
+	Code string `json:"code"`
+	Data struct {
+		OrderId string `json:"orderId"`
+	} `json:"data"`
 }
 
-/* ================= PRIVATE WS ================= */
-
-func connectPrivateWS(token WSToken) *websocket.Conn {
-	url := token.Endpoint + "?token=" + token.Token
-	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Подписка на ордера
-	sub := map[string]any{
-		"id":    strconv.FormatInt(time.Now().UnixNano(), 10),
-		"type":  "subscribe",
-		"topic": "/spotMarket/tradeOrders",
-	}
-	if err := conn.WriteJSON(sub); err != nil {
-		log.Fatal(err)
-	}
-	return conn
+type FillResp struct {
+	Code string `json:"code"`
+	Data struct {
+		Items []struct {
+			Size   string `json:"size"`
+			Funds string `json:"funds"`
+			Fee   string `json:"fee"`
+		} `json:"items"`
+	} `json:"data"`
 }
 
-func readWS(conn *websocket.Conn) {
-	for {
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			log.Fatal(err)
-		}
-		handleOrderEvent(msg, conn)
-	}
-}
-
-func loginPrivateWS(conn *websocket.Conn) {
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	sign := hmacSHA256Base64(ts+"POST"+"/users/self/verify", apiSecret)
-	pass := hmacSHA256Base64(apiPass, apiSecret)
-
-	loginMsg := map[string]any{
-		"id":         strconv.FormatInt(time.Now().UnixNano(), 10),
-		"type":       "login",
-		"clientOid":  strconv.FormatInt(time.Now().UnixNano(), 10),
-		"apiKey":     apiKey,
-		"passphrase": pass,
-		"timestamp":  ts,
-		"signature":  sign,
-	}
-	if err := conn.WriteJSON(loginMsg); err != nil {
-		log.Fatal(err)
-	}
-}
-
-/* ================= WS HANDLER ================= */
-
-func handleOrderEvent(msg []byte, conn *websocket.Conn) {
-	var m map[string]any
-	if err := json.Unmarshal(msg, &m); err != nil {
-		return
-	}
-
-	if m["type"] != "message" {
-		return
-	}
-
-	data, ok := m["data"].(map[string]any)
-	if !ok || data["status"].(string) != "done" {
-		return
-	}
-
-	filledSize, _ := strconv.ParseFloat(data["filledSize"].(string), 64)
-	lastPrice, _ := strconv.ParseFloat(data["price"].(string), 64)
-
-	switch step {
-	case Buy1:
-		log.Printf("[STEP 1 DONE] Bought %.8f %s at price %.8f\n", filledSize, symbol1, lastPrice)
-		step = Sell2
-		log.Printf("[STEP 2] Selling %s for %s\n", symbol2, symbol3)
-		placeMarketWS(conn, symbol2, "sell", filledSize)
-
-	case Sell2:
-		log.Printf("[STEP 2 DONE] Sold %.8f %s at price %.8f\n", filledSize, symbol2, lastPrice)
-		step = Sell3
-		placeMarketWS(conn, symbol3, "sell", filledSize)
-
-	case Sell3:
-		log.Printf("[STEP 3 DONE] Sold %.8f %s at price %.8f\n", filledSize, symbol3, lastPrice)
-		profit := filledSize - startUSDT
-		profitPct := (profit / startUSDT) * 100
-		log.Printf("[ARB DONE ✅] Profit: %.6f USDT (%.4f%%)\n", profit, profitPct)
-		step = Idle
-	}
-}
-
-/* ================= MARKET ORDER WS ================= */
-
-func placeMarketWS(conn *websocket.Conn, symbol, side string, size float64) {
-	msg := map[string]any{
-		"id":        strconv.FormatInt(time.Now().UnixNano(), 10),
-		"type":      "order",
-		"clientOid": strconv.FormatInt(time.Now().UnixNano(), 10),
-		"side":      side,
-		"symbol":    symbol,
-		"size":      fmt.Sprintf("%.8f", size),
-		"orderType": "market",
-	}
-	if err := conn.WriteJSON(msg); err != nil {
-		log.Println("WS order error:", err)
-	}
-}
-
-/* ================= AUTH HELPERS ================= */
-
-func hmacSHA256Base64(msg, secret string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
+func sign(ts, method, path, body string) string {
+	msg := ts + method + path + body
+	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(msg))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
-/* ================= WS TOKEN ================= */
+func headers(method, path, body string) http.Header {
+	ts := strconv.FormatInt(time.Now().UnixNano()/1e6, 10)
+	sig := sign(ts, method, path, body)
 
-type WSToken struct {
-	Token    string
-	Endpoint string
+	h := http.Header{}
+	h.Set("KC-API-KEY", apiKey)
+	h.Set("KC-API-SIGN", sig)
+	h.Set("KC-API-TIMESTAMP", ts)
+	h.Set("KC-API-PASSPHRASE", apiPassphrase)
+	h.Set("KC-API-KEY-VERSION", "2")
+	h.Set("Content-Type", "application/json")
+	return h
 }
 
-func getPrivateWSToken() WSToken {
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
+func placeMarket(symbol, side string, funds float64) string {
+	bodyMap := map[string]any{
+		"symbol": symbol,
+		"side":   side,
+		"type":   "market",
+	}
 
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	sign := hmacSHA256Base64(ts+"POST"+"/api/v1/bullet-private", apiSecret)
+	if side == "buy" {
+		bodyMap["funds"] = fmt.Sprintf("%.8f", funds)
+	} else {
+		bodyMap["size"] = fmt.Sprintf("%.8f", funds)
+	}
 
-	req.Header.Set("KC-API-KEY", apiKey)
-	req.Header.Set("KC-API-SIGN", sign)
-	req.Header.Set("KC-API-TIMESTAMP", ts)
-	req.Header.Set("KC-API-PASSPHRASE", hmacSHA256Base64(apiPass, apiSecret))
-	req.Header.Set("KC-API-KEY-VERSION", "2")
+	body, _ := json.Marshal(bodyMap)
+
+	req, _ := http.NewRequest(
+		"POST",
+		baseURL+"/api/v1/orders",
+		bytes.NewReader(body),
+	)
+	req.Header = headers("POST", "/api/v1/orders", string(body))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("ORDER ERROR: %v", err)
 	}
 	defer resp.Body.Close()
 
-	var r struct {
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		log.Fatal(err)
+	raw, _ := io.ReadAll(resp.Body)
+	var r OrderResp
+	json.Unmarshal(raw, &r)
+
+	if r.Code != "200000" {
+		log.Fatalf("ORDER FAIL %s: %s", symbol, string(raw))
 	}
 
-	return WSToken{
-		Token:    r.Data.Token,
-		Endpoint: r.Data.InstanceServers[0].Endpoint,
-	}
+	log.Printf("ORDER OK %s %s id=%s", side, symbol, r.Data.OrderId)
+	return r.Data.OrderId
 }
+
+func waitFill(orderID string) (float64, float64) {
+	time.Sleep(200 * time.Millisecond) // KuCoin latency
+
+	path := "/api/v1/fills?orderId=" + orderID
+	req, _ := http.NewRequest("GET", baseURL+path, nil)
+	req.Header = headers("GET", path, "")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatalf("FILL ERROR: %v", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	var r FillResp
+	json.Unmarshal(raw, &r)
+
+	if len(r.Data.Items) == 0 {
+		log.Fatalf("NO FILLS %s", orderID)
+	}
+
+	var size, funds float64
+	for _, f := range r.Data.Items {
+		s, _ := strconv.ParseFloat(f.Size, 64)
+		fd, _ := strconv.ParseFloat(f.Funds, 64)
+		size += s
+		funds += fd
+	}
+
+	return size, funds
+}
+
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	startUSDT := 20.0
+	usdt := startUSDT
+
+	log.Println("START TRIANGLE WITH", usdt, "USDT")
+
+	// 1) USDT → X
+	o1 := placeMarket("X-USDT", "buy", usdt)
+	xQty, usdtSpent := waitFill(o1)
+	log.Printf("LEG1 OK: bought X=%.8f spent USDT=%.8f", xQty, usdtSpent)
+
+	// 2) X → BTC
+	o2 := placeMarket("X-BTC", "sell", xQty)
+	xSold, btcGot := waitFill(o2)
+	log.Printf("LEG2 OK: sold X=%.8f got BTC=%.8f", xSold, btcGot)
+
+	// 3) BTC → USDT
+	o3 := placeMarket("BTC-USDT", "sell", btcGot)
+	btcSold, usdtFinal := waitFill(o3)
+	log.Printf("LEG3 OK: sold BTC=%.8f got USDT=%.8f", btcSold, usdtFinal)
+
+	profit := usdtFinal - startUSDT
+	pct := profit / startUSDT * 100
+
+	log.Println("------ RESULT ------")
+	log.Printf("START: %.4f USDT", startUSDT)
+	log.Printf("END:   %.4f USDT", usdtFinal)
+	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
+}
+
 
