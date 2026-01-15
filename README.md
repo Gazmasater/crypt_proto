@@ -85,8 +85,6 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 /* ================= CONFIG ================= */
@@ -129,7 +127,6 @@ type FillResp struct {
 			Size   string `json:"size"`
 			Funds  string `json:"funds"`
 			Fee    string `json:"fee"`
-			Symbol string `json:"symbol"`
 		} `json:"items"`
 	} `json:"data"`
 }
@@ -151,7 +148,7 @@ func headers(method, path, body string) http.Header {
 	h.Set("KC-API-KEY", apiKey)
 	h.Set("KC-API-SIGN", sig)
 	h.Set("KC-API-TIMESTAMP", ts)
-	h.Set("KC-API-PASSPHRASE", apiPassphrase)
+	h.Set("KC-API-PASSPHRASE", apiPassphrase) // API Passphrase
 	h.Set("KC-API-KEY-VERSION", "2")
 	h.Set("Content-Type", "application/json")
 	return h
@@ -174,7 +171,11 @@ func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
 
 	rawBody, _ := json.Marshal(body)
 
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(rawBody))
+	req, _ := http.NewRequest(
+		"POST",
+		baseURL+"/api/v1/orders",
+		bytes.NewReader(rawBody),
+	)
 	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
 
 	resp, err := http.DefaultClient.Do(req)
@@ -189,16 +190,19 @@ func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
 	_ = json.Unmarshal(raw, &r)
 
 	if r.Code != "200000" {
-		log.Printf("[FAIL] %s %s %s value=%.8f resp=%s", leg, side, symbol, value, raw)
+		log.Printf("[FAIL] %s %s %s value=%.8f resp=%s",
+			leg, side, symbol, value, raw)
 		return "", fmt.Errorf("order rejected")
 	}
 
-	log.Printf("[OK] %s %s %s orderId=%s", leg, side, symbol, r.Data.OrderId)
+	log.Printf("[OK] %s %s %s orderId=%s",
+		leg, side, symbol, r.Data.OrderId)
+
 	return r.Data.OrderId, nil
 }
 
 func waitFill(leg Leg, orderID string) (float64, float64, error) {
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // latency
 
 	path := "/api/v1/fills?orderId=" + orderID
 	req, _ := http.NewRequest("GET", baseURL+path, nil)
@@ -212,11 +216,13 @@ func waitFill(leg Leg, orderID string) (float64, float64, error) {
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
+
 	var r FillResp
 	_ = json.Unmarshal(raw, &r)
 
 	if len(r.Data.Items) == 0 {
-		log.Printf("[FAIL] %s no fills orderId=%s resp=%s", leg, orderID, raw)
+		log.Printf("[FAIL] %s no fills orderId=%s resp=%s",
+			leg, orderID, raw)
 		return 0, 0, fmt.Errorf("no fills")
 	}
 
@@ -232,57 +238,12 @@ func waitFill(leg Leg, orderID string) (float64, float64, error) {
 	return size, funds, nil
 }
 
-/* ================= PRIVATE WS ================= */
-
-type WSToken struct {
-	Token           string `json:"token"`
-	InstanceServers []struct {
-		Endpoint string `json:"endpoint"`
-	} `json:"instanceServers"`
-}
-
-func connectPrivateWS() *websocket.Conn {
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	sig := sign(ts, "POST", "/api/v1/bullet-private", "")
-
-	req.Header = headers("POST", "/api/v1/bullet-private", "")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Fatal("WS token request failed:", err)
-	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Code string  `json:"code"`
-		Data WSToken `json:"data"`
-	}
-	raw, _ := io.ReadAll(resp.Body)
-	_ = json.Unmarshal(raw, &r)
-
-	if r.Code != "200000" || len(r.Data.InstanceServers) == 0 {
-		log.Fatalf("No Private WS servers returned, response=%s", raw)
-	}
-
-	wsURL := r.Data.InstanceServers[0].Endpoint + "?token=" + r.Data.Token
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		log.Fatal("WS connect failed:", err)
-	}
-	log.Println("Private WS connected:", wsURL)
-	return conn
-}
-
 /* ================= MAIN ================= */
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-	// Подключение Private WS (для уведомлений о статусе ордеров)
-	ws := connectPrivateWS()
-	defer ws.Close()
+	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
 	// ---------- LEG 1 ----------
 	o1, err := placeMarket(Leg1, sym1, "buy", startUSDT)
@@ -291,7 +252,7 @@ func main() {
 		return
 	}
 
-	xQty, usdtSpent, err := waitFill(Leg1, o1)
+	xQty, _, err := waitFill(Leg1, o1)
 	if err != nil {
 		log.Println("ABORT AFTER LEG1 FILL")
 		return
@@ -333,56 +294,5 @@ func main() {
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
 }
 
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UnusedVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UnusedVar"
-		}
-	},
-	"severity": 8,
-	"message": "declared and not used: sig",
-	"source": "compiler",
-	"startLineNumber": 174,
-	"startColumn": 2,
-	"endLineNumber": 174,
-	"endColumn": 5,
-	"modelVersionId": 4,
-	"tags": [
-		1
-	],
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UnusedVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UnusedVar"
-		}
-	},
-	"severity": 8,
-	"message": "declared and not used: usdtSpent",
-	"source": "compiler",
-	"startLineNumber": 221,
-	"startColumn": 8,
-	"endLineNumber": 221,
-	"endColumn": 17,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
 
 
