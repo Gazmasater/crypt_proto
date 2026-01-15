@@ -85,6 +85,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 /* ================= CONFIG ================= */
@@ -92,7 +94,7 @@ import (
 const (
 	apiKey        = "KUCOIN_API_KEY"        // твой ключ API
 	apiSecret     = "KUCOIN_API_SECRET"     // твой секрет
-	apiPassphrase = "KUCOIN_API_PASSPHRASE" // твой пароль API (API Passphrase)
+	apiPassphrase = "KUCOIN_API_PASSPHRASE" // твой API Passphrase
 
 	baseURL = "https://api.kucoin.com"
 
@@ -124,9 +126,9 @@ type FillResp struct {
 	Code string `json:"code"`
 	Data struct {
 		Items []struct {
-			Size   string `json:"size"`
-			Funds  string `json:"funds"`
-			Fee    string `json:"fee"`
+			Size  string `json:"size"`
+			Funds string `json:"funds"`
+			Fee   string `json:"fee"`
 		} `json:"items"`
 	} `json:"data"`
 }
@@ -163,9 +165,10 @@ func headers(method, path, body string) http.Header {
 
 func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
 	body := map[string]string{
-		"symbol": symbol,
-		"type":   "market",
-		"side":   side,
+		"symbol":    symbol,
+		"type":      "market",
+		"side":      side,
+		"clientOid": uuid.New().String(), // обязательно для KuCoin
 	}
 
 	if side == "buy" {
@@ -202,7 +205,7 @@ func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
 }
 
 func waitFill(leg Leg, orderID string) (float64, float64, error) {
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // KuCoin latency
 
 	path := "/api/v1/fills?orderId=" + orderID
 	req, _ := http.NewRequest("GET", baseURL+path, nil)
@@ -293,11 +296,6 @@ func main() {
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
 }
 
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/16 02:23:54.586645 START TRIANGLE 11.00 USDT
-2026/01/16 02:23:55.032178 [FAIL] LEG1 USDT→DASH buy DASH-USDT value=11.00000000 resp={"msg":"validation.createOrder.clientOidIsRequired","code":"400100"}
-2026/01/16 02:23:55.032227 ABORT AFTER LEG1
 
 
 
