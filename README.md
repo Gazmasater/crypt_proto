@@ -90,9 +90,9 @@ import (
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "KUCOIN_API_KEY"
-	apiSecret     = "KUCOIN_API_SECRET"
-	apiPassphrase = "KUCOIN_API_PASSPHRASE"
+	apiKey        = "KUCOIN_API_KEY"        // твой ключ API
+	apiSecret     = "KUCOIN_API_SECRET"     // твой секрет
+	apiPassphrase = "KUCOIN_API_PASSPHRASE" // твой пароль API (API Passphrase)
 
 	baseURL = "https://api.kucoin.com"
 
@@ -134,9 +134,14 @@ type FillResp struct {
 /* ================= AUTH ================= */
 
 func sign(ts, method, path, body string) string {
-	msg := ts + method + path + body
 	mac := hmac.New(sha256.New, []byte(apiSecret))
-	mac.Write([]byte(msg))
+	mac.Write([]byte(ts + method + path + body))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func passphrase() string {
+	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac.Write([]byte(apiPassphrase))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -148,7 +153,7 @@ func headers(method, path, body string) http.Header {
 	h.Set("KC-API-KEY", apiKey)
 	h.Set("KC-API-SIGN", sig)
 	h.Set("KC-API-TIMESTAMP", ts)
-	h.Set("KC-API-PASSPHRASE", apiPassphrase) // API Passphrase
+	h.Set("KC-API-PASSPHRASE", passphrase())
 	h.Set("KC-API-KEY-VERSION", "2")
 	h.Set("Content-Type", "application/json")
 	return h
@@ -171,11 +176,7 @@ func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
 
 	rawBody, _ := json.Marshal(body)
 
-	req, _ := http.NewRequest(
-		"POST",
-		baseURL+"/api/v1/orders",
-		bytes.NewReader(rawBody),
-	)
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(rawBody))
 	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
 
 	resp, err := http.DefaultClient.Do(req)
@@ -186,6 +187,7 @@ func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
+
 	var r OrderResp
 	_ = json.Unmarshal(raw, &r)
 
@@ -195,14 +197,12 @@ func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
 		return "", fmt.Errorf("order rejected")
 	}
 
-	log.Printf("[OK] %s %s %s orderId=%s",
-		leg, side, symbol, r.Data.OrderId)
-
+	log.Printf("[OK] %s %s %s orderId=%s", leg, side, symbol, r.Data.OrderId)
 	return r.Data.OrderId, nil
 }
 
 func waitFill(leg Leg, orderID string) (float64, float64, error) {
-	time.Sleep(200 * time.Millisecond) // latency
+	time.Sleep(200 * time.Millisecond)
 
 	path := "/api/v1/fills?orderId=" + orderID
 	req, _ := http.NewRequest("GET", baseURL+path, nil)
@@ -221,8 +221,7 @@ func waitFill(leg Leg, orderID string) (float64, float64, error) {
 	_ = json.Unmarshal(raw, &r)
 
 	if len(r.Data.Items) == 0 {
-		log.Printf("[FAIL] %s no fills orderId=%s resp=%s",
-			leg, orderID, raw)
+		log.Printf("[FAIL] %s no fills orderId=%s resp=%s", leg, orderID, raw)
 		return 0, 0, fmt.Errorf("no fills")
 	}
 
@@ -245,7 +244,7 @@ func main() {
 
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-	// ---------- LEG 1 ----------
+	// LEG 1: USDT → X
 	o1, err := placeMarket(Leg1, sym1, "buy", startUSDT)
 	if err != nil {
 		log.Println("ABORT AFTER LEG1")
@@ -258,7 +257,7 @@ func main() {
 		return
 	}
 
-	// ---------- LEG 2 ----------
+	// LEG 2: X → BTC
 	o2, err := placeMarket(Leg2, sym2, "sell", xQty)
 	if err != nil {
 		log.Println("ABORT AFTER LEG2")
@@ -271,7 +270,7 @@ func main() {
 		return
 	}
 
-	// ---------- LEG 3 ----------
+	// LEG 3: BTC → USDT
 	o3, err := placeMarket(Leg3, sym3, "sell", btcGot)
 	if err != nil {
 		log.Println("ABORT AFTER LEG3")
@@ -284,7 +283,7 @@ func main() {
 		return
 	}
 
-	// ---------- RESULT ----------
+	// RESULT
 	profit := usdtFinal - startUSDT
 	pct := profit / startUSDT * 100
 
