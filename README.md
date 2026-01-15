@@ -297,5 +297,12 @@ func main() {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/16 02:31:02.168645 START TRIANGLE 11.00 USDT
+2026/01/16 02:31:02.663462 [OK] LEG1 USDT→DASH buy DASH-USDT orderId=696978b6a0031a0007457988
+2026/01/16 02:31:03.278030 [FAIL] LEG1 USDT→DASH no fills orderId=696978b6a0031a0007457988 resp={"code":"200000","data":{"currentPage":1,"pageSize":50,"totalNum":0,"totalPage":0,"items":[]}}
+2026/01/16 02:31:03.278067 ABORT AFTER LEG1 FILL
+
+
 
 
