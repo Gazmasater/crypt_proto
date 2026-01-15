@@ -80,21 +80,20 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "KUCOIN_API_KEY"        // твой ключ API
-	apiSecret     = "KUCOIN_API_SECRET"     // твой секрет
-	apiPassphrase = "KUCOIN_API_PASSPHRASE" // твой API Passphrase
+	apiKey        = "KUCOIN_API_KEY"
+	apiSecret     = "KUCOIN_API_SECRET"
+	apiPassphrase = "KUCOIN_API_PASSPHRASE"
 
 	baseURL = "https://api.kucoin.com"
 
@@ -107,30 +106,21 @@ const (
 
 /* ================= TYPES ================= */
 
-type Leg string
+type Step int
 
 const (
-	Leg1 Leg = "LEG1 USDT→X"
-	Leg2 Leg = "LEG2 X→BTC"
-	Leg3 Leg = "LEG3 BTC→USDT"
+	StepIdle Step = iota
+	StepLeg1
+	StepLeg2
+	StepLeg3
 )
 
-type OrderResp struct {
-	Code string `json:"code"`
-	Data struct {
-		OrderId string `json:"orderId"`
-	} `json:"data"`
-}
+var step = StepIdle
 
-type FillResp struct {
-	Code string `json:"code"`
-	Data struct {
-		Items []struct {
-			Size  string `json:"size"`
-			Funds string `json:"funds"`
-			Fee   string `json:"fee"`
-		} `json:"items"`
-	} `json:"data"`
+type WSMsg struct {
+	Type string                 `json:"type"`
+	Topic string                `json:"topic"`
+	Data map[string]interface{} `json:"data"`
 }
 
 /* ================= AUTH ================= */
@@ -163,12 +153,11 @@ func headers(method, path, body string) http.Header {
 
 /* ================= REST ================= */
 
-func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
+func placeMarket(symbol, side string, value float64) (string, error) {
 	body := map[string]string{
-		"symbol":    symbol,
-		"type":      "market",
-		"side":      side,
-		"clientOid": uuid.New().String(), // обязательно для KuCoin
+		"symbol": symbol,
+		"type":   "market",
+		"side":   side,
 	}
 
 	if side == "buy" {
@@ -184,125 +173,188 @@ func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("[FAIL] %s HTTP error: %v", leg, err)
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
-
-	var r OrderResp
-	_ = json.Unmarshal(raw, &r)
+	var r struct {
+		Code string `json:"code"`
+		Data struct {
+			OrderId string `json:"orderId"`
+		} `json:"data"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&r)
 
 	if r.Code != "200000" {
-		log.Printf("[FAIL] %s %s %s value=%.8f resp=%s",
-			leg, side, symbol, value, raw)
 		return "", fmt.Errorf("order rejected")
 	}
 
-	log.Printf("[OK] %s %s %s orderId=%s", leg, side, symbol, r.Data.OrderId)
 	return r.Data.OrderId, nil
 }
 
-func waitFill(leg Leg, orderID string) (float64, float64, error) {
-	time.Sleep(200 * time.Millisecond) // KuCoin latency
+/* ================= PRIVATE WS ================= */
 
-	path := "/api/v1/fills?orderId=" + orderID
-	req, _ := http.NewRequest("GET", baseURL+path, nil)
-	req.Header = headers("GET", path, "")
+type WSToken struct {
+	Token    string
+	Endpoint string
+}
+
+func getWSToken() WSToken {
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	sig := sign(ts, "POST", "/api/v1/bullet-private", "")
+	req.Header = headers("POST", "/api/v1/bullet-private", "")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("[FAIL] %s fills HTTP error: %v", leg, err)
-		return 0, 0, err
+		log.Fatal(err)
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
+	var r struct {
+		Code string `json:"code"`
+		Data struct {
+			Token           string `json:"token"`
+			InstanceServers []struct {
+				Endpoint string `json:"endpoint"`
+			} `json:"instanceServers"`
+		} `json:"data"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&r)
 
-	var r FillResp
-	_ = json.Unmarshal(raw, &r)
-
-	if len(r.Data.Items) == 0 {
-		log.Printf("[FAIL] %s no fills orderId=%s resp=%s", leg, orderID, raw)
-		return 0, 0, fmt.Errorf("no fills")
+	if len(r.Data.InstanceServers) == 0 {
+		log.Fatal("No WS endpoint")
 	}
 
-	var size, funds float64
-	for _, f := range r.Data.Items {
-		s, _ := strconv.ParseFloat(f.Size, 64)
-		fd, _ := strconv.ParseFloat(f.Funds, 64)
-		size += s
-		funds += fd
+	return WSToken{
+		Token:    r.Data.Token,
+		Endpoint: r.Data.InstanceServers[0].Endpoint,
+	}
+}
+
+func connectPrivateWS() *websocket.Conn {
+	token := getWSToken()
+	url := token.Endpoint + "?token=" + token.Token
+
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	log.Printf("[FILL] %s size=%.8f funds=%.8f", leg, size, funds)
-	return size, funds, nil
+	sub := map[string]interface{}{
+		"id":    strconv.FormatInt(time.Now().UnixNano(), 10),
+		"type":  "subscribe",
+		"topic": "/spotMarket/tradeOrders",
+	}
+	_ = conn.WriteJSON(sub)
+	log.Println("Private WS connected")
+	return conn
 }
 
 /* ================= MAIN ================= */
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-	// LEG 1: USDT → X
-	o1, err := placeMarket(Leg1, sym1, "buy", startUSDT)
+	ws := connectPrivateWS()
+	defer ws.Close()
+
+	// запускаем горутину WS listener
+	done := make(chan struct{})
+	var leg1Size, leg2Size, leg3Size float64
+	var leg1Funds, leg2Funds, leg3Funds float64
+
+	go func() {
+		for {
+			_, msg, err := ws.ReadMessage()
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			var m WSMsg
+			_ = json.Unmarshal(msg, &m)
+			if m.Type != "message" || m.Topic != "/spotMarket/tradeOrders" {
+				continue
+			}
+
+			status := m.Data["status"].(string)
+			if status != "done" {
+				continue
+			}
+
+			symbol := m.Data["symbol"].(string)
+			side := m.Data["side"].(string)
+			size, _ := strconv.ParseFloat(m.Data["filledSize"].(string), 64)
+			funds, _ := strconv.ParseFloat(m.Data["filledFunds"].(string), 64)
+
+			switch step {
+			case StepLeg1:
+				if symbol == sym1 && side == "buy" {
+					leg1Size = size
+					leg1Funds = funds
+					log.Printf("[FILL] LEG1 USDT→X size=%.8f funds=%.8f", size, funds)
+					step = StepLeg2
+				}
+			case StepLeg2:
+				if symbol == sym2 && side == "sell" {
+					leg2Size = size
+					leg2Funds = funds
+					log.Printf("[FILL] LEG2 X→BTC size=%.8f funds=%.8f", size, funds)
+					step = StepLeg3
+				}
+			case StepLeg3:
+				if symbol == sym3 && side == "sell" {
+					leg3Size = size
+					leg3Funds = funds
+					log.Printf("[FILL] LEG3 BTC→USDT size=%.8f funds=%.8f", size, funds)
+					close(done)
+				}
+			}
+		}
+	}()
+
+	// STEP 1
+	step = StepLeg1
+	o1, err := placeMarket(sym1, "buy", startUSDT)
 	if err != nil {
-		log.Println("ABORT AFTER LEG1")
+		log.Println("[FAIL] LEG1 USDT→X", err)
 		return
 	}
+	log.Printf("[OK] LEG1 orderId=%s", o1)
 
-	xQty, _, err := waitFill(Leg1, o1)
+	// ждем WS событие о заполнении
+	<-done
+
+	// STEP 2
+	step = StepLeg2
+	o2, err := placeMarket(sym2, "sell", leg1Size)
 	if err != nil {
-		log.Println("ABORT AFTER LEG1 FILL")
+		log.Println("[FAIL] LEG2 X→BTC", err)
 		return
 	}
+	log.Printf("[OK] LEG2 orderId=%s", o2)
 
-	// LEG 2: X → BTC
-	o2, err := placeMarket(Leg2, sym2, "sell", xQty)
+	<-done
+
+	// STEP 3
+	step = StepLeg3
+	o3, err := placeMarket(sym3, "sell", leg2Funds)
 	if err != nil {
-		log.Println("ABORT AFTER LEG2")
+		log.Println("[FAIL] LEG3 BTC→USDT", err)
 		return
 	}
+	log.Printf("[OK] LEG3 orderId=%s", o3)
 
-	_, btcGot, err := waitFill(Leg2, o2)
-	if err != nil {
-		log.Println("ABORT AFTER LEG2 FILL")
-		return
-	}
+	<-done
 
-	// LEG 3: BTC → USDT
-	o3, err := placeMarket(Leg3, sym3, "sell", btcGot)
-	if err != nil {
-		log.Println("ABORT AFTER LEG3")
-		return
-	}
-
-	_, usdtFinal, err := waitFill(Leg3, o3)
-	if err != nil {
-		log.Println("ABORT AFTER LEG3 FILL")
-		return
-	}
-
-	// RESULT
-	profit := usdtFinal - startUSDT
+	profit := leg3Funds - startUSDT
 	pct := profit / startUSDT * 100
-
 	log.Println("====== RESULT ======")
 	log.Printf("START: %.4f USDT", startUSDT)
-	log.Printf("END:   %.4f USDT", usdtFinal)
+	log.Printf("END:   %.4f USDT", leg3Funds)
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
-}
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/16 02:31:02.168645 START TRIANGLE 11.00 USDT
-2026/01/16 02:31:02.663462 [OK] LEG1 USDT→DASH buy DASH-USDT orderId=696978b6a0031a0007457988
-2026/01/16 02:31:03.278030 [FAIL] LEG1 USDT→DASH no fills orderId=696978b6a0031a0007457988 resp={"code":"200000","data":{"currentPage":1,"pageSize":50,"totalNum":0,"totalPage":0,"items":[]}}
-2026/01/16 02:31:03.278067 ABORT AFTER LEG1 FILL
-
+} 
 
 
 
