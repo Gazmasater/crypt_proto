@@ -303,3 +303,10 @@ func main() {
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
 }
 
+
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/16 01:48:31.442785 START TRIANGLE %!f(int=11) USDT
+2026/01/16 01:48:33.049883 Private WS connected
+2026/01/16 01:48:33.357082 ORDER FAIL buy DASH-USDT resp={"msg":"validation.createOrder.clientOidIsRequired","code":"400100"}
+exit status 1
+
