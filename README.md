@@ -71,23 +71,47 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/16 02:02:04.251466 START TRIANGLE 11.00 USDT
-panic: runtime error: index out of range [0] with length 0
+package main
 
-goroutine 1 [running]:
-main.connectPrivateWS()
-        /home/gaz358/myprog/crypt_proto/test/main.go:185 +0x3d2
-main.main()
-        /home/gaz358/myprog/crypt_proto/test/main.go:201 +0xea
-exit status 2
+import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strconv"
+	"time"
 
+	"github.com/gorilla/websocket"
+)
+
+/* ================= CONFIG ================= */
+
+const (
+	apiKey        = "KUCOIN_API_KEY"
+	apiSecret     = "KUCOIN_API_SECRET"
+	apiPassphrase = "KUCOIN_API_PASSPHRASE"
+
+	baseURL = "https://api.kucoin.com"
+
+	startUSDT = 20.0
+
+	sym1 = "X-USDT"
+	sym2 = "X-BTC"
+	sym3 = "BTC-USDT"
+)
+
+/* ================= TYPES ================= */
 
 type Leg string
 
 const (
-	Leg1 Leg = "LEG1 USDT→DASH"
-	Leg2 Leg = "LEG2 DASH→BTC"
+	Leg1 Leg = "LEG1 USDT→X"
+	Leg2 Leg = "LEG2 X→BTC"
 	Leg3 Leg = "LEG3 BTC→USDT"
 )
 
@@ -102,9 +126,10 @@ type FillResp struct {
 	Code string `json:"code"`
 	Data struct {
 		Items []struct {
-			Size  string `json:"size"`
-			Funds string `json:"funds"`
-			Fee   string `json:"fee"`
+			Size   string `json:"size"`
+			Funds  string `json:"funds"`
+			Fee    string `json:"fee"`
+			Symbol string `json:"symbol"`
 		} `json:"items"`
 	} `json:"data"`
 }
@@ -135,11 +160,10 @@ func headers(method, path, body string) http.Header {
 /* ================= REST ================= */
 
 func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
-	body := map[string]any{
-		"symbol":    symbol,
-		"type":      "market",
-		"side":      side,
-		"clientOid": fmt.Sprintf("%d", time.Now().UnixNano()), // уникальный идентификатор
+	body := map[string]string{
+		"symbol": symbol,
+		"type":   "market",
+		"side":   side,
 	}
 
 	if side == "buy" {
@@ -149,6 +173,7 @@ func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
 	}
 
 	rawBody, _ := json.Marshal(body)
+
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(rawBody))
 	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
 
@@ -209,35 +234,43 @@ func waitFill(leg Leg, orderID string) (float64, float64, error) {
 
 /* ================= PRIVATE WS ================= */
 
+type WSToken struct {
+	Token           string `json:"token"`
+	InstanceServers []struct {
+		Endpoint string `json:"endpoint"`
+	} `json:"instanceServers"`
+}
+
 func connectPrivateWS() *websocket.Conn {
-	// Получение токена KuCoin для приватного WS
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
-	_ = strconv.FormatInt(time.Now().UnixMilli(), 10)
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	sig := sign(ts, "POST", "/api/v1/bullet-private", "")
+
 	req.Header = headers("POST", "/api/v1/bullet-private", "")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Fatal("Private WS token error:", err)
+		log.Fatal("WS token request failed:", err)
 	}
 	defer resp.Body.Close()
 
 	var r struct {
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
+		Code string  `json:"code"`
+		Data WSToken `json:"data"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&r)
+	raw, _ := io.ReadAll(resp.Body)
+	_ = json.Unmarshal(raw, &r)
+
+	if r.Code != "200000" || len(r.Data.InstanceServers) == 0 {
+		log.Fatalf("No Private WS servers returned, response=%s", raw)
+	}
 
 	wsURL := r.Data.InstanceServers[0].Endpoint + "?token=" + r.Data.Token
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
-		log.Fatal("Private WS connect error:", err)
+		log.Fatal("WS connect failed:", err)
 	}
-
-	log.Println("Private WS connected")
+	log.Println("Private WS connected:", wsURL)
 	return conn
 }
 
@@ -247,6 +280,7 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
+	// Подключение Private WS (для уведомлений о статусе ордеров)
 	ws := connectPrivateWS()
 	defer ws.Close()
 
@@ -257,7 +291,7 @@ func main() {
 		return
 	}
 
-	xQty, _, err := waitFill(Leg1, o1)
+	xQty, usdtSpent, err := waitFill(Leg1, o1)
 	if err != nil {
 		log.Println("ABORT AFTER LEG1 FILL")
 		return
@@ -298,4 +332,5 @@ func main() {
 	log.Printf("END:   %.4f USDT", usdtFinal)
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
 }
+
 
