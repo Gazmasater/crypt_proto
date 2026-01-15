@@ -80,6 +80,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -132,23 +133,12 @@ type FillResp struct {
 	} `json:"data"`
 }
 
-type WSToken struct {
-	Token    string
-	Endpoint string
-}
-
 /* ================= AUTH ================= */
 
 func sign(ts, method, path, body string) string {
 	msg := ts + method + path + body
 	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(msg))
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
-}
-
-func signPassphrase() string {
-	mac := hmac.New(sha256.New, []byte(apiSecret))
-	mac.Write([]byte(apiPassphrase))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -160,27 +150,98 @@ func headers(method, path, body string) http.Header {
 	h.Set("KC-API-KEY", apiKey)
 	h.Set("KC-API-SIGN", sig)
 	h.Set("KC-API-TIMESTAMP", ts)
-	h.Set("KC-API-PASSPHRASE", signPassphrase())
+	h.Set("KC-API-PASSPHRASE", apiPassphrase)
 	h.Set("KC-API-KEY-VERSION", "2")
 	h.Set("Content-Type", "application/json")
 	return h
 }
 
-/* ================= PRIVATE WS ================= */
+/* ================= REST ================= */
 
-func getPrivateToken() WSToken {
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	signature := sign(ts, "POST", "/api/v1/bullet-private", "")
-	req.Header.Set("KC-API-KEY", apiKey)
-	req.Header.Set("KC-API-SIGN", signature)
-	req.Header.Set("KC-API-TIMESTAMP", ts)
-	req.Header.Set("KC-API-PASSPHRASE", signPassphrase())
-	req.Header.Set("KC-API-KEY-VERSION", "2")
+func placeMarket(leg Leg, symbol, side string, value float64) (string, error) {
+	body := map[string]any{
+		"symbol":    symbol,
+		"type":      "market",
+		"side":      side,
+		"clientOid": fmt.Sprintf("%d", time.Now().UnixNano()), // уникальный идентификатор
+	}
+
+	if side == "buy" {
+		body["funds"] = fmt.Sprintf("%.8f", value)
+	} else {
+		body["size"] = fmt.Sprintf("%.8f", value)
+	}
+
+	rawBody, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(rawBody))
+	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("[FAIL] %s HTTP error: %v", leg, err)
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	var r OrderResp
+	_ = json.Unmarshal(raw, &r)
+
+	if r.Code != "200000" {
+		log.Printf("[FAIL] %s %s %s value=%.8f resp=%s", leg, side, symbol, value, raw)
+		return "", fmt.Errorf("order rejected")
+	}
+
+	log.Printf("[OK] %s %s %s orderId=%s", leg, side, symbol, r.Data.OrderId)
+	return r.Data.OrderId, nil
+}
+
+func waitFill(leg Leg, orderID string) (float64, float64, error) {
+	time.Sleep(200 * time.Millisecond)
+
+	path := "/api/v1/fills?orderId=" + orderID
+	req, _ := http.NewRequest("GET", baseURL+path, nil)
+	req.Header = headers("GET", path, "")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("[FAIL] %s fills HTTP error: %v", leg, err)
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	var r FillResp
+	_ = json.Unmarshal(raw, &r)
+
+	if len(r.Data.Items) == 0 {
+		log.Printf("[FAIL] %s no fills orderId=%s resp=%s", leg, orderID, raw)
+		return 0, 0, fmt.Errorf("no fills")
+	}
+
+	var size, funds float64
+	for _, f := range r.Data.Items {
+		s, _ := strconv.ParseFloat(f.Size, 64)
+		fd, _ := strconv.ParseFloat(f.Funds, 64)
+		size += s
+		funds += fd
+	}
+
+	log.Printf("[FILL] %s size=%.8f funds=%.8f", leg, size, funds)
+	return size, funds, nil
+}
+
+/* ================= PRIVATE WS ================= */
+
+func connectPrivateWS() *websocket.Conn {
+	// Получение токена KuCoin для приватного WS
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	req.Header = headers("POST", "/api/v1/bullet-private", "")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatal("Private WS token error:", err)
 	}
 	defer resp.Body.Close()
 
@@ -194,26 +255,11 @@ func getPrivateToken() WSToken {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&r)
 
-	return WSToken{
-		Token:    r.Data.Token,
-		Endpoint: r.Data.InstanceServers[0].Endpoint,
-	}
-}
-
-func connectPrivateWS() *websocket.Conn {
-	token := getPrivateToken()
-	url := token.Endpoint + "?token=" + token.Token
-	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	wsURL := r.Data.InstanceServers[0].Endpoint + "?token=" + r.Data.Token
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Private WS connect error:", err)
 	}
-
-	sub := map[string]any{
-		"id":    time.Now().UnixNano(),
-		"type":  "subscribe",
-		"topic": "/spotMarket/tradeOrders",
-	}
-	_ = conn.WriteJSON(sub)
 
 	log.Println("Private WS connected")
 	return conn
@@ -221,79 +267,53 @@ func connectPrivateWS() *websocket.Conn {
 
 /* ================= MAIN ================= */
 
-func placeMarket(symbol, side string, funds float64) string {
-	body := map[string]any{
-		"symbol": symbol,
-		"type":   "market",
-		"side":   side,
-	}
-
-	if side == "buy" {
-		body["funds"] = fmt.Sprintf("%.8f", funds)
-	} else {
-		body["size"] = fmt.Sprintf("%.8f", funds)
-	}
-
-	rawBody, _ := json.Marshal(body)
-
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(rawBody))
-	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Fatalf("ORDER ERROR: %v", err)
-	}
-	defer resp.Body.Close()
-
-	raw, _ := io.ReadAll(resp.Body)
-	var r OrderResp
-	_ = json.Unmarshal(raw, &r)
-
-	if r.Code != "200000" {
-		log.Fatalf("ORDER FAIL %s %s resp=%s", side, symbol, raw)
-	}
-
-	log.Printf("ORDER OK %s %s orderId=%s", side, symbol, r.Data.OrderId)
-	return r.Data.OrderId
-}
-
-func waitFillWS(conn *websocket.Conn, orderID string) (float64, float64) {
-	for {
-		_, msg, _ := conn.ReadMessage()
-		var m map[string]any
-		_ = json.Unmarshal(msg, &m)
-		if m["type"] != "message" {
-			continue
-		}
-		data := m["data"].(map[string]any)
-		if data["orderId"] == orderID && data["status"] == "done" {
-			size, _ := strconv.ParseFloat(data["filledSize"].(string), 64)
-			funds, _ := strconv.ParseFloat(data["filledFunds"].(string), 64)
-			log.Printf("[FILL WS] orderId=%s size=%.8f funds=%.8f", orderID, size, funds)
-			return size, funds
-		}
-	}
-}
-
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
 	ws := connectPrivateWS()
+	defer ws.Close()
 
-	// LEG1
-	o1 := placeMarket(sym1, "buy", startUSDT)
-	xQty, _ := waitFillWS(ws, o1)
+	// ---------- LEG 1 ----------
+	o1, err := placeMarket(Leg1, sym1, "buy", startUSDT)
+	if err != nil {
+		log.Println("ABORT AFTER LEG1")
+		return
+	}
 
-	// LEG2
-	o2 := placeMarket(sym2, "sell", xQty)
-	_, btcGot := waitFillWS(ws, o2)
+	xQty, usdtSpent, err := waitFill(Leg1, o1)
+	if err != nil {
+		log.Println("ABORT AFTER LEG1 FILL")
+		return
+	}
 
-	// LEG3
-	o3 := placeMarket(sym3, "sell", btcGot)
-	_, usdtFinal := waitFillWS(ws, o3)
+	// ---------- LEG 2 ----------
+	o2, err := placeMarket(Leg2, sym2, "sell", xQty)
+	if err != nil {
+		log.Println("ABORT AFTER LEG2")
+		return
+	}
 
-	// RESULT
+	_, btcGot, err := waitFill(Leg2, o2)
+	if err != nil {
+		log.Println("ABORT AFTER LEG2 FILL")
+		return
+	}
+
+	// ---------- LEG 3 ----------
+	o3, err := placeMarket(Leg3, sym3, "sell", btcGot)
+	if err != nil {
+		log.Println("ABORT AFTER LEG3")
+		return
+	}
+
+	_, usdtFinal, err := waitFill(Leg3, o3)
+	if err != nil {
+		log.Println("ABORT AFTER LEG3 FILL")
+		return
+	}
+
+	// ---------- RESULT ----------
 	profit := usdtFinal - startUSDT
 	pct := profit / startUSDT * 100
 
@@ -302,11 +322,4 @@ func main() {
 	log.Printf("END:   %.4f USDT", usdtFinal)
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
 }
-
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/16 01:48:31.442785 START TRIANGLE %!f(int=11) USDT
-2026/01/16 01:48:33.049883 Private WS connected
-2026/01/16 01:48:33.357082 ORDER FAIL buy DASH-USDT resp={"msg":"validation.createOrder.clientOidIsRequired","code":"400100"}
-exit status 1
 
