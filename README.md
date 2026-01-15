@@ -71,41 +71,17 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package main
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/16 02:02:04.251466 START TRIANGLE 11.00 USDT
+panic: runtime error: index out of range [0] with length 0
 
-import (
-	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"strconv"
-	"time"
+goroutine 1 [running]:
+main.connectPrivateWS()
+        /home/gaz358/myprog/crypt_proto/test/main.go:185 +0x3d2
+main.main()
+        /home/gaz358/myprog/crypt_proto/test/main.go:201 +0xea
+exit status 2
 
-	"github.com/gorilla/websocket"
-)
-
-/* ================= CONFIG ================= */
-
-const (
-	apiKey        = "KUCOIN_API_KEY"
-	apiSecret     = "KUCOIN_API_SECRET"
-	apiPassphrase = "KUCOIN_API_PASSPHRASE"
-
-	baseURL = "https://api.kucoin.com"
-
-	startUSDT = 11.0
-
-	sym1 = "DASH-USDT"
-	sym2 = "DASH-BTC"
-	sym3 = "BTC-USDT"
-)
-
-/* ================= TYPES ================= */
 
 type Leg string
 
@@ -323,14 +299,3 @@ func main() {
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
 }
 
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/16 01:56:08.385787 START TRIANGLE 11.00 USDT
-panic: runtime error: index out of range [0] with length 0
-
-goroutine 1 [running]:
-main.connectPrivateWS()
-        /home/gaz358/myprog/crypt_proto/test/main.go:185 +0x3d2
-main.main()
-        /home/gaz358/myprog/crypt_proto/test/main.go:201 +0xea
-exit status 2
