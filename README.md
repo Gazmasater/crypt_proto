@@ -239,3 +239,6 @@ func main() {
 }
 
 
+2026/01/16 01:01:20.902349 ORDER FAIL DASH-USDT: {"code":"400004","msg":"Invalid KC-API-PASSPHRASE"}
+
+
