@@ -74,7 +74,6 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 package main
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -95,12 +94,12 @@ const (
 	apiSecret = "KUCOIN_API_SECRET"
 	apiPass   = "KUCOIN_API_PASSPHRASE"
 
-	baseURL = "https://api.kucoin.com"
-
 	startUSDT = 20.0
 	symbol1   = "X-USDT"
 	symbol2   = "X-BTC"
 	symbol3   = "BTC-USDT"
+	baseURL   = "https://api.kucoin.com"
+	fee       = 0.001
 )
 
 /* ================= STATE ================= */
@@ -115,41 +114,53 @@ const (
 )
 
 var step = Idle
+var lastAmount float64
 
 /* ================= MAIN ================= */
 
 func main() {
 	log.Println("START")
 
-	ws := connectPrivateWS()
-	go readWS(ws)
+	// Получаем Private WS токен
+	wsToken := getPrivateWSToken()
 
-	// старт треугольника
+	// Подключаем WS
+	conn := connectPrivateWS(wsToken)
+
+	// Аутентификация через WS
+	loginPrivateWS(conn)
+	log.Println("Private WS connected & authenticated ✅")
+
+	// Читаем события WS
+	go readWS(conn)
+
+	// Стартуем треугольник
 	step = Buy1
-	placeMarketFunds(symbol1, "buy", startUSDT)
+	lastAmount = startUSDT
+	log.Printf("[STEP 1] Buying %s for %.2f USDT\n", symbol1, startUSDT)
+	placeMarketWS(conn, symbol1, "buy", startUSDT)
 
-	select {} // блокируем main, приложение живёт
+	select {} // блок main
 }
 
 /* ================= PRIVATE WS ================= */
 
-func connectPrivateWS() *websocket.Conn {
-	token := getWSToken()
-
+func connectPrivateWS(token WSToken) *websocket.Conn {
 	url := token.Endpoint + "?token=" + token.Token
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	// Подписка на ордера
 	sub := map[string]any{
-		"id":   time.Now().UnixNano(),
-		"type": "subscribe",
+		"id":    strconv.FormatInt(time.Now().UnixNano(), 10),
+		"type":  "subscribe",
 		"topic": "/spotMarket/tradeOrders",
 	}
-	_ = conn.WriteJSON(sub)
-
-	log.Println("Private WS connected")
+	if err := conn.WriteJSON(sub); err != nil {
+		log.Fatal(err)
+	}
 	return conn
 }
 
@@ -159,92 +170,92 @@ func readWS(conn *websocket.Conn) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		handleOrderEvent(msg)
+		handleOrderEvent(msg, conn)
+	}
+}
+
+func loginPrivateWS(conn *websocket.Conn) {
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	sign := hmacSHA256Base64(ts+"POST"+"/users/self/verify", apiSecret)
+	pass := hmacSHA256Base64(apiPass, apiSecret)
+
+	loginMsg := map[string]any{
+		"id":         strconv.FormatInt(time.Now().UnixNano(), 10),
+		"type":       "login",
+		"clientOid":  strconv.FormatInt(time.Now().UnixNano(), 10),
+		"apiKey":     apiKey,
+		"passphrase": pass,
+		"timestamp":  ts,
+		"signature":  sign,
+	}
+	if err := conn.WriteJSON(loginMsg); err != nil {
+		log.Fatal(err)
 	}
 }
 
 /* ================= WS HANDLER ================= */
 
-func handleOrderEvent(msg []byte) {
+func handleOrderEvent(msg []byte, conn *websocket.Conn) {
 	var m map[string]any
-	_ = json.Unmarshal(msg, &m)
+	if err := json.Unmarshal(msg, &m); err != nil {
+		return
+	}
 
 	if m["type"] != "message" {
 		return
 	}
 
-	data := m["data"].(map[string]any)
-	if data["status"].(string) != "done" {
+	data, ok := m["data"].(map[string]any)
+	if !ok || data["status"].(string) != "done" {
 		return
 	}
 
 	filledSize, _ := strconv.ParseFloat(data["filledSize"].(string), 64)
+	lastPrice, _ := strconv.ParseFloat(data["price"].(string), 64)
 
 	switch step {
 	case Buy1:
+		log.Printf("[STEP 1 DONE] Bought %.8f %s at price %.8f\n", filledSize, symbol1, lastPrice)
 		step = Sell2
-		placeMarketSize(symbol2, "sell", filledSize)
+		log.Printf("[STEP 2] Selling %s for %s\n", symbol2, symbol3)
+		placeMarketWS(conn, symbol2, "sell", filledSize)
 
 	case Sell2:
+		log.Printf("[STEP 2 DONE] Sold %.8f %s at price %.8f\n", filledSize, symbol2, lastPrice)
 		step = Sell3
-		placeMarketSize(symbol3, "sell", filledSize)
+		placeMarketWS(conn, symbol3, "sell", filledSize)
 
 	case Sell3:
-		log.Println("ARB DONE")
+		log.Printf("[STEP 3 DONE] Sold %.8f %s at price %.8f\n", filledSize, symbol3, lastPrice)
+		profit := filledSize - startUSDT
+		profitPct := (profit / startUSDT) * 100
+		log.Printf("[ARB DONE ✅] Profit: %.6f USDT (%.4f%%)\n", profit, profitPct)
 		step = Idle
 	}
 }
 
-/* ================= REST ================= */
+/* ================= MARKET ORDER WS ================= */
 
-func placeMarketFunds(symbol, side string, funds float64) {
-	body := map[string]any{
-		"symbol": symbol,
-		"type":   "market",
-		"side":   side,
-		"funds":  fmt.Sprintf("%.2f", funds),
+func placeMarketWS(conn *websocket.Conn, symbol, side string, size float64) {
+	msg := map[string]any{
+		"id":        strconv.FormatInt(time.Now().UnixNano(), 10),
+		"type":      "order",
+		"clientOid": strconv.FormatInt(time.Now().UnixNano(), 10),
+		"side":      side,
+		"symbol":    symbol,
+		"size":      fmt.Sprintf("%.8f", size),
+		"orderType": "market",
 	}
-	fireREST("/api/v1/orders", body)
-}
-
-func placeMarketSize(symbol, side string, size float64) {
-	body := map[string]any{
-		"symbol": symbol,
-		"type":   "market",
-		"side":   side,
-		"size":   fmt.Sprintf("%.8f", size),
+	if err := conn.WriteJSON(msg); err != nil {
+		log.Println("WS order error:", err)
 	}
-	fireREST("/api/v1/orders", body)
 }
 
-func fireREST(path string, body any) {
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("POST", baseURL+path, bytes.NewBuffer(b))
+/* ================= AUTH HELPERS ================= */
 
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	signature := sign(ts + "POST" + path + string(b))
-
-	req.Header.Set("KC-API-KEY", apiKey)
-	req.Header.Set("KC-API-SIGN", signature)
-	req.Header.Set("KC-API-TIMESTAMP", ts)
-	req.Header.Set("KC-API-PASSPHRASE", passphrase())
-	req.Header.Set("KC-API-KEY-VERSION", "2")
-	req.Header.Set("Content-Type", "application/json")
-
-	go http.DefaultClient.Do(req) // fire & forget
-}
-
-/* ================= AUTH ================= */
-
-func sign(msg string) string {
-	mac := hmac.New(sha256.New, []byte(apiSecret))
+func hmacSHA256Base64(msg, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(msg))
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
-}
-
-func passphrase() string {
-	mac := hmac.New(sha256.New, []byte(apiSecret))
-	mac.Write([]byte(apiPass))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -255,16 +266,16 @@ type WSToken struct {
 	Endpoint string
 }
 
-func getWSToken() WSToken {
+func getPrivateWSToken() WSToken {
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
 
 	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	signature := sign(ts + "POST" + "/api/v1/bullet-private")
+	sign := hmacSHA256Base64(ts+"POST"+"/api/v1/bullet-private", apiSecret)
 
 	req.Header.Set("KC-API-KEY", apiKey)
-	req.Header.Set("KC-API-SIGN", signature)
+	req.Header.Set("KC-API-SIGN", sign)
 	req.Header.Set("KC-API-TIMESTAMP", ts)
-	req.Header.Set("KC-API-PASSPHRASE", passphrase())
+	req.Header.Set("KC-API-PASSPHRASE", hmacSHA256Base64(apiPass, apiSecret))
 	req.Header.Set("KC-API-KEY-VERSION", "2")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -281,7 +292,9 @@ func getWSToken() WSToken {
 			} `json:"instanceServers"`
 		} `json:"data"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&r)
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		log.Fatal(err)
+	}
 
 	return WSToken{
 		Token:    r.Data.Token,
