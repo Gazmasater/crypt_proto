@@ -334,3 +334,55 @@ func main() {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: sig",
+	"source": "compiler",
+	"startLineNumber": 174,
+	"startColumn": 2,
+	"endLineNumber": 174,
+	"endColumn": 5,
+	"modelVersionId": 4,
+	"tags": [
+		1
+	],
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: usdtSpent",
+	"source": "compiler",
+	"startLineNumber": 221,
+	"startColumn": 8,
+	"endLineNumber": 221,
+	"endColumn": 17,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
+
+
