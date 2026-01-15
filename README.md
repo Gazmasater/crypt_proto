@@ -72,48 +72,221 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-Duration: 30.05s, Total samples = 1.99s ( 6.62%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 1130ms, 56.78% of 1990ms total
-Showing top 10 nodes out of 182
-      flat  flat%   sum%        cum   cum%
-     570ms 28.64% 28.64%      570ms 28.64%  internal/runtime/syscall.Syscall6
-     170ms  8.54% 37.19%      170ms  8.54%  runtime.futex
-      70ms  3.52% 40.70%       70ms  3.52%  runtime.typePointers.next
-      60ms  3.02% 43.72%       60ms  3.02%  runtime.memmove
-      50ms  2.51% 46.23%       70ms  3.52%  github.com/tidwall/gjson.parseObject
-      50ms  2.51% 48.74%      160ms  8.04%  runtime.scanobject
-      40ms  2.01% 50.75%       40ms  2.01%  aeshashbody
-      40ms  2.01% 52.76%       90ms  4.52%  runtime.concatstrings
-      40ms  2.01% 54.77%      140ms  7.04%  runtime.mallocgcSmallScanNoHeader
-      40ms  2.01% 56.78%       40ms  2.01%  runtime.nanotime
-(pprof) 
+package main
 
+import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"time"
 
+	"github.com/gorilla/websocket"
+)
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
-Saved profile in /home/gaz358/pprof/pprof.arb.alloc_objects.alloc_space.inuse_objects.inuse_space.006.pb.gz
-File: arb
-Build ID: d8095edd0e7b84fc1bd6776bcad2be691a5b7dcc
-Type: inuse_space
-Time: 2026-01-15 01:11:27 MSK
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 4075.42kB, 100% of 4075.42kB total
-Showing top 10 nodes out of 40
-      flat  flat%   sum%        cum   cum%
-    1539kB 37.76% 37.76%     1539kB 37.76%  runtime.allocm
- 1024.04kB 25.13% 62.89%  1024.04kB 25.13%  crypto/internal/fips140/nistec.NewP384Point (inline)
- 1000.34kB 24.55% 87.44%  1000.34kB 24.55%  main.main
-  512.05kB 12.56%   100%   512.05kB 12.56%  runtime.acquireSudog
-         0     0%   100%  1024.04kB 25.13%  crypto/ecdsa.VerifyASN1
-         0     0%   100%  1024.04kB 25.13%  crypto/ecdsa.verifyFIPS[go.shape.*crypto/internal/fips140/nistec.P384Point]
-         0     0%   100%  1024.04kB 25.13%  crypto/internal/fips140/ecdsa.Verify[go.shape.*crypto/internal/fips140/nistec.P384Point]
-         0     0%   100%  1024.04kB 25.13%  crypto/internal/fips140/ecdsa.verifyGeneric[go.shape.*crypto/internal/fips140/nistec.P384Point]
-         0     0%   100%  1024.04kB 25.13%  crypto/internal/fips140/ecdsa.verify[go.shape.*crypto/internal/fips140/nistec.P384Point] (inline)
-         0     0%   100%  1024.04kB 25.13%  crypto/internal/fips140/nistec.(*P384Point).ScalarBaseMult
-(pprof) 
+/* ================= CONFIG ================= */
 
+const (
+	apiKey    = "KUCOIN_API_KEY"
+	apiSecret = "KUCOIN_API_SECRET"
+	apiPass   = "KUCOIN_API_PASSPHRASE"
+
+	baseURL = "https://api.kucoin.com"
+
+	startUSDT = 20.0
+	symbol1   = "X-USDT"
+	symbol2   = "X-BTC"
+	symbol3   = "BTC-USDT"
+)
+
+/* ================= STATE ================= */
+
+type Step uint8
+
+const (
+	Idle Step = iota
+	Buy1
+	Sell2
+	Sell3
+)
+
+var step = Idle
+
+/* ================= MAIN ================= */
+
+func main() {
+	log.Println("START")
+
+	ws := connectPrivateWS()
+	go readWS(ws)
+
+	// старт треугольника
+	step = Buy1
+	placeMarketFunds(symbol1, "buy", startUSDT)
+
+	select {} // блокируем main, приложение живёт
+}
+
+/* ================= PRIVATE WS ================= */
+
+func connectPrivateWS() *websocket.Conn {
+	token := getWSToken()
+
+	url := token.Endpoint + "?token=" + token.Token
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	sub := map[string]any{
+		"id":   time.Now().UnixNano(),
+		"type": "subscribe",
+		"topic": "/spotMarket/tradeOrders",
+	}
+	_ = conn.WriteJSON(sub)
+
+	log.Println("Private WS connected")
+	return conn
+}
+
+func readWS(conn *websocket.Conn) {
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			log.Fatal(err)
+		}
+		handleOrderEvent(msg)
+	}
+}
+
+/* ================= WS HANDLER ================= */
+
+func handleOrderEvent(msg []byte) {
+	var m map[string]any
+	_ = json.Unmarshal(msg, &m)
+
+	if m["type"] != "message" {
+		return
+	}
+
+	data := m["data"].(map[string]any)
+	if data["status"].(string) != "done" {
+		return
+	}
+
+	filledSize, _ := strconv.ParseFloat(data["filledSize"].(string), 64)
+
+	switch step {
+	case Buy1:
+		step = Sell2
+		placeMarketSize(symbol2, "sell", filledSize)
+
+	case Sell2:
+		step = Sell3
+		placeMarketSize(symbol3, "sell", filledSize)
+
+	case Sell3:
+		log.Println("ARB DONE")
+		step = Idle
+	}
+}
+
+/* ================= REST ================= */
+
+func placeMarketFunds(symbol, side string, funds float64) {
+	body := map[string]any{
+		"symbol": symbol,
+		"type":   "market",
+		"side":   side,
+		"funds":  fmt.Sprintf("%.2f", funds),
+	}
+	fireREST("/api/v1/orders", body)
+}
+
+func placeMarketSize(symbol, side string, size float64) {
+	body := map[string]any{
+		"symbol": symbol,
+		"type":   "market",
+		"side":   side,
+		"size":   fmt.Sprintf("%.8f", size),
+	}
+	fireREST("/api/v1/orders", body)
+}
+
+func fireREST(path string, body any) {
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", baseURL+path, bytes.NewBuffer(b))
+
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	signature := sign(ts + "POST" + path + string(b))
+
+	req.Header.Set("KC-API-KEY", apiKey)
+	req.Header.Set("KC-API-SIGN", signature)
+	req.Header.Set("KC-API-TIMESTAMP", ts)
+	req.Header.Set("KC-API-PASSPHRASE", passphrase())
+	req.Header.Set("KC-API-KEY-VERSION", "2")
+	req.Header.Set("Content-Type", "application/json")
+
+	go http.DefaultClient.Do(req) // fire & forget
+}
+
+/* ================= AUTH ================= */
+
+func sign(msg string) string {
+	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac.Write([]byte(msg))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func passphrase() string {
+	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac.Write([]byte(apiPass))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+/* ================= WS TOKEN ================= */
+
+type WSToken struct {
+	Token    string
+	Endpoint string
+}
+
+func getWSToken() WSToken {
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
+
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	signature := sign(ts + "POST" + "/api/v1/bullet-private")
+
+	req.Header.Set("KC-API-KEY", apiKey)
+	req.Header.Set("KC-API-SIGN", signature)
+	req.Header.Set("KC-API-TIMESTAMP", ts)
+	req.Header.Set("KC-API-PASSPHRASE", passphrase())
+	req.Header.Set("KC-API-KEY-VERSION", "2")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Data struct {
+			Token           string `json:"token"`
+			InstanceServers []struct {
+				Endpoint string `json:"endpoint"`
+			} `json:"instanceServers"`
+		} `json:"data"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&r)
+
+	return WSToken{
+		Token:    r.Data.Token,
+		Endpoint: r.Data.InstanceServers[0].Endpoint,
+	}
+}
 
