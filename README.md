@@ -87,12 +87,30 @@ import (
 	"time"
 )
 
+/* ================= CONFIG ================= */
+
 const (
 	apiKey        = "KUCOIN_API_KEY"
 	apiSecret     = "KUCOIN_API_SECRET"
 	apiPassphrase = "KUCOIN_API_PASSPHRASE"
 
 	baseURL = "https://api.kucoin.com"
+
+	startUSDT = 20.0
+
+	sym1 = "X-USDT"
+	sym2 = "X-BTC"
+	sym3 = "BTC-USDT"
+)
+
+/* ================= TYPES ================= */
+
+type Leg string
+
+const (
+	Leg1 Leg = "LEG1 USDT→X"
+	Leg2 Leg = "LEG2 X→BTC"
+	Leg3 Leg = "LEG3 BTC→USDT"
 )
 
 type OrderResp struct {
@@ -113,6 +131,8 @@ type FillResp struct {
 	} `json:"data"`
 }
 
+/* ================= AUTH ================= */
+
 func sign(ts, method, path, body string) string {
 	msg := ts + method + path + body
 	mac := hmac.New(sha256.New, []byte(apiSecret))
@@ -121,61 +141,74 @@ func sign(ts, method, path, body string) string {
 }
 
 func headers(method, path, body string) http.Header {
-	ts := strconv.FormatInt(time.Now().UnixNano()/1e6, 10)
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	sig := sign(ts, method, path, body)
 
 	h := http.Header{}
 	h.Set("KC-API-KEY", apiKey)
 	h.Set("KC-API-SIGN", sig)
 	h.Set("KC-API-TIMESTAMP", ts)
-	h.Set("KC-API-PASSPHRASE", apiPassphrase)
+	h.Set("KC-API-PASSPHRASE", apiPassphrase) // ПАРОЛЬ API, НЕ торговый
 	h.Set("KC-API-KEY-VERSION", "2")
 	h.Set("Content-Type", "application/json")
 	return h
 }
 
-func placeMarket(symbol, side string, funds float64) string {
-	bodyMap := map[string]any{
+/* ================= REST ================= */
+
+func placeMarket(
+	leg Leg,
+	symbol, side string,
+	value float64,
+) (string, error) {
+
+	body := map[string]string{
 		"symbol": symbol,
-		"side":   side,
 		"type":   "market",
+		"side":   side,
 	}
 
 	if side == "buy" {
-		bodyMap["funds"] = fmt.Sprintf("%.8f", funds)
+		body["funds"] = fmt.Sprintf("%.8f", value)
 	} else {
-		bodyMap["size"] = fmt.Sprintf("%.8f", funds)
+		body["size"] = fmt.Sprintf("%.8f", value)
 	}
 
-	body, _ := json.Marshal(bodyMap)
+	rawBody, _ := json.Marshal(body)
 
 	req, _ := http.NewRequest(
 		"POST",
 		baseURL+"/api/v1/orders",
-		bytes.NewReader(body),
+		bytes.NewReader(rawBody),
 	)
-	req.Header = headers("POST", "/api/v1/orders", string(body))
+	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Fatalf("ORDER ERROR: %v", err)
+		log.Printf("[FAIL] %s HTTP error: %v", leg, err)
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
+
 	var r OrderResp
-	json.Unmarshal(raw, &r)
+	_ = json.Unmarshal(raw, &r)
 
 	if r.Code != "200000" {
-		log.Fatalf("ORDER FAIL %s: %s", symbol, string(raw))
+		log.Printf("[FAIL] %s %s %s value=%.8f resp=%s",
+			leg, side, symbol, value, raw)
+		return "", fmt.Errorf("order rejected")
 	}
 
-	log.Printf("ORDER OK %s %s id=%s", side, symbol, r.Data.OrderId)
-	return r.Data.OrderId
+	log.Printf("[OK] %s %s %s orderId=%s",
+		leg, side, symbol, r.Data.OrderId)
+
+	return r.Data.OrderId, nil
 }
 
-func waitFill(orderID string) (float64, float64) {
-	time.Sleep(200 * time.Millisecond) // KuCoin latency
+func waitFill(leg Leg, orderID string) (float64, float64, error) {
+	time.Sleep(200 * time.Millisecond)
 
 	path := "/api/v1/fills?orderId=" + orderID
 	req, _ := http.NewRequest("GET", baseURL+path, nil)
@@ -183,16 +216,20 @@ func waitFill(orderID string) (float64, float64) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Fatalf("FILL ERROR: %v", err)
+		log.Printf("[FAIL] %s fills HTTP error: %v", leg, err)
+		return 0, 0, err
 	}
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
+
 	var r FillResp
-	json.Unmarshal(raw, &r)
+	_ = json.Unmarshal(raw, &r)
 
 	if len(r.Data.Items) == 0 {
-		log.Fatalf("NO FILLS %s", orderID)
+		log.Printf("[FAIL] %s no fills orderId=%s resp=%s",
+			leg, orderID, raw)
+		return 0, 0, fmt.Errorf("no fills")
 	}
 
 	var size, funds float64
@@ -203,42 +240,67 @@ func waitFill(orderID string) (float64, float64) {
 		funds += fd
 	}
 
-	return size, funds
+	log.Printf("[FILL] %s size=%.8f funds=%.8f",
+		leg, size, funds)
+
+	return size, funds, nil
 }
+
+/* ================= MAIN ================= */
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	startUSDT := 20.0
-	usdt := startUSDT
+	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-	log.Println("START TRIANGLE WITH", usdt, "USDT")
+	// ---------- LEG 1 ----------
+	o1, err := placeMarket(Leg1, sym1, "buy", startUSDT)
+	if err != nil {
+		log.Println("ABORT AFTER LEG1")
+		return
+	}
 
-	// 1) USDT → X
-	o1 := placeMarket("X-USDT", "buy", usdt)
-	xQty, usdtSpent := waitFill(o1)
-	log.Printf("LEG1 OK: bought X=%.8f spent USDT=%.8f", xQty, usdtSpent)
+	xQty, usdtSpent, err := waitFill(Leg1, o1)
+	if err != nil {
+		log.Println("ABORT AFTER LEG1 FILL")
+		return
+	}
 
-	// 2) X → BTC
-	o2 := placeMarket("X-BTC", "sell", xQty)
-	xSold, btcGot := waitFill(o2)
-	log.Printf("LEG2 OK: sold X=%.8f got BTC=%.8f", xSold, btcGot)
+	// ---------- LEG 2 ----------
+	o2, err := placeMarket(Leg2, sym2, "sell", xQty)
+	if err != nil {
+		log.Println("ABORT AFTER LEG2")
+		return
+	}
 
-	// 3) BTC → USDT
-	o3 := placeMarket("BTC-USDT", "sell", btcGot)
-	btcSold, usdtFinal := waitFill(o3)
-	log.Printf("LEG3 OK: sold BTC=%.8f got USDT=%.8f", btcSold, usdtFinal)
+	_, btcGot, err := waitFill(Leg2, o2)
+	if err != nil {
+		log.Println("ABORT AFTER LEG2 FILL")
+		return
+	}
 
+	// ---------- LEG 3 ----------
+	o3, err := placeMarket(Leg3, sym3, "sell", btcGot)
+	if err != nil {
+		log.Println("ABORT AFTER LEG3")
+		return
+	}
+
+	_, usdtFinal, err := waitFill(Leg3, o3)
+	if err != nil {
+		log.Println("ABORT AFTER LEG3 FILL")
+		return
+	}
+
+	// ---------- RESULT ----------
 	profit := usdtFinal - startUSDT
 	pct := profit / startUSDT * 100
 
-	log.Println("------ RESULT ------")
+	log.Println("====== RESULT ======")
 	log.Printf("START: %.4f USDT", startUSDT)
 	log.Printf("END:   %.4f USDT", usdtFinal)
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
 }
 
-
-2026/01/16 01:01:20.902349 ORDER FAIL DASH-USDT: {"code":"400004","msg":"Invalid KC-API-PASSPHRASE"}
 
 
