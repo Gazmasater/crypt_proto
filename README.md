@@ -98,10 +98,10 @@ const (
 
 	baseURL = "https://api.kucoin.com"
 
-	startUSDT = 20.0
+	startUSDT = 11.0
 
-	sym1 = "X-USDT"
-	sym2 = "X-BTC"
+	sym1 = "DASH-USDT"
+	sym2 = "DASH-BTC"
 	sym3 = "BTC-USDT"
 )
 
@@ -110,8 +110,8 @@ const (
 type Leg string
 
 const (
-	Leg1 Leg = "LEG1 USDT→X"
-	Leg2 Leg = "LEG2 X→BTC"
+	Leg1 Leg = "LEG1 USDT→DASH"
+	Leg2 Leg = "LEG2 DASH→BTC"
 	Leg3 Leg = "LEG3 BTC→USDT"
 )
 
@@ -126,9 +126,9 @@ type FillResp struct {
 	Code string `json:"code"`
 	Data struct {
 		Items []struct {
-			Size   string `json:"size"`
-			Funds  string `json:"funds"`
-			Fee    string `json:"fee"`
+			Size  string `json:"size"`
+			Funds string `json:"funds"`
+			Fee   string `json:"fee"`
 		} `json:"items"`
 	} `json:"data"`
 }
@@ -236,7 +236,7 @@ func waitFill(leg Leg, orderID string) (float64, float64, error) {
 func connectPrivateWS() *websocket.Conn {
 	// Получение токена KuCoin для приватного WS
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	_ = strconv.FormatInt(time.Now().UnixMilli(), 10)
 	req.Header = headers("POST", "/api/v1/bullet-private", "")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -281,7 +281,7 @@ func main() {
 		return
 	}
 
-	xQty, usdtSpent, err := waitFill(Leg1, o1)
+	xQty, _, err := waitFill(Leg1, o1)
 	if err != nil {
 		log.Println("ABORT AFTER LEG1 FILL")
 		return
@@ -323,3 +323,14 @@ func main() {
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
 }
 
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/16 01:56:08.385787 START TRIANGLE 11.00 USDT
+panic: runtime error: index out of range [0] with length 0
+
+goroutine 1 [running]:
+main.connectPrivateWS()
+        /home/gaz358/myprog/crypt_proto/test/main.go:185 +0x3d2
+main.main()
+        /home/gaz358/myprog/crypt_proto/test/main.go:201 +0xea
+exit status 2
