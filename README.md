@@ -170,7 +170,6 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	}
 
 	rawBody, _ := json.Marshal(body)
-
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(rawBody))
 	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
 
@@ -254,23 +253,24 @@ func main() {
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
 	ws := connectPrivateWS()
-	defer ws.Close()
 
 	leg1Done := make(chan struct{})
 	leg2Done := make(chan struct{})
 	leg3Done := make(chan struct{})
-	errorChan := make(chan string, 1) // для rejected ордеров
+	errorChan := make(chan string, 1)
 
 	var leg1Size, leg2Funds, leg3Funds float64
 	step := StepIdle
 
 	// WS listener
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
 				log.Println("[WS ERROR]", err)
-				return // безопасно завершаем только эту горутину
+				return
 			}
 
 			var m WSMsg
@@ -323,14 +323,15 @@ func main() {
 	o1, err := placeMarket(sym1, "buy", startUSDT)
 	if err != nil {
 		log.Println("[FAIL] LEG1 USDT→DASH", err)
+		ws.Close()
 		return
 	}
 	log.Printf("[OK] LEG1 orderId=%s", o1)
-
 	select {
 	case <-leg1Done:
 	case errMsg := <-errorChan:
 		log.Println("[ORDER ERROR]", errMsg)
+		ws.Close()
 		return
 	}
 
@@ -339,14 +340,15 @@ func main() {
 	o2, err := placeMarket(sym2, "sell", leg1Size)
 	if err != nil {
 		log.Println("[FAIL] LEG2 DASH→BTC", err)
+		ws.Close()
 		return
 	}
 	log.Printf("[OK] LEG2 orderId=%s", o2)
-
 	select {
 	case <-leg2Done:
 	case errMsg := <-errorChan:
 		log.Println("[ORDER ERROR]", errMsg)
+		ws.Close()
 		return
 	}
 
@@ -355,14 +357,15 @@ func main() {
 	o3, err := placeMarket(sym3, "sell", leg2Funds)
 	if err != nil {
 		log.Println("[FAIL] LEG3 BTC→USDT", err)
+		ws.Close()
 		return
 	}
 	log.Printf("[OK] LEG3 orderId=%s", o3)
-
 	select {
 	case <-leg3Done:
 	case errMsg := <-errorChan:
 		log.Println("[ORDER ERROR]", errMsg)
+		ws.Close()
 		return
 	}
 
@@ -373,13 +376,8 @@ func main() {
 	log.Printf("START: %.4f USDT", startUSDT)
 	log.Printf("END:   %.4f USDT", leg3Funds)
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
+
+	// Закрываем WS после всех шагов
+	ws.Close()
+	<-done
 }
-
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/16 03:42:14.311971 START TRIANGLE 12.00 USDT
-2026/01/16 03:42:16.220121 Private WS connected
-2026/01/16 03:42:16.527170 [FAIL] LEG1 USDT→DASH order rejected
-2026/01/16 03:42:16.527332 [WS ERROR] read tcp 192.168.1.71:54978->108.157.229.57:443: use of closed network connection
-gaz358@gaz358-BOD-WXX9:~/myprog/c
