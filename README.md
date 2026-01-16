@@ -72,10 +72,14 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 func placeMarket(symbol, side string, value float64) (filled float64, err error) {
+	// создаём уникальный clientOid
+	clientOid := uuid.NewString()
+
 	body := map[string]string{
-		"symbol": symbol,
-		"type":   "market",
-		"side":   side,
+		"symbol":    symbol,
+		"type":      "market",
+		"side":      side,
+		"clientOid": clientOid,
 	}
 
 	if side == "buy" {
@@ -85,6 +89,7 @@ func placeMarket(symbol, side string, value float64) (filled float64, err error)
 	}
 
 	rawBody, _ := json.Marshal(body)
+
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(rawBody))
 	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
 
@@ -94,15 +99,15 @@ func placeMarket(symbol, side string, value float64) (filled float64, err error)
 	}
 	defer resp.Body.Close()
 
-	// читаем тело полностью для логирования
 	respBytes, _ := io.ReadAll(resp.Body)
-	
+
 	var r struct {
 		Code string `json:"code"`
-		Msg  string `json:"msg"` // <- здесь сообщение об ошибке
+		Msg  string `json:"msg"`
 		Data struct {
 			DealFunds string `json:"dealFunds"`
 			DealSize  string `json:"dealSize"`
+			OrderId   string `json:"orderId"`
 		} `json:"data"`
 	}
 
@@ -119,11 +124,8 @@ func placeMarket(symbol, side string, value float64) (filled float64, err error)
 	} else {
 		filled, _ = strconv.ParseFloat(r.Data.DealFunds, 64)
 	}
+
+	log.Printf("[OK] %s %s orderId=%s filled=%.8f", side, symbol, r.Data.OrderId, filled)
 	return filled, nil
 }
-
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/16 04:20:58.154715 START TRIANGLE 20.00 USDT
-2026/01/16 04:20:58.704751 [FAIL] LEG1 USDT→DASH order rejected: validation.createOrder.clientOidIsRequired; raw: {"msg":"validation.createOrder.clientOidIsRequired","code":"400100"}
 
