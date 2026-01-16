@@ -357,4 +357,105 @@ func main() {
 } 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: sig",
+	"source": "compiler",
+	"startLineNumber": 132,
+	"startColumn": 2,
+	"endLineNumber": 132,
+	"endColumn": 5,
+	"modelVersionId": 4,
+	"tags": [
+		1
+	],
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: leg2Size",
+	"source": "compiler",
+	"startLineNumber": 192,
+	"startColumn": 16,
+	"endLineNumber": 192,
+	"endColumn": 24,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: leg3Size",
+	"source": "compiler",
+	"startLineNumber": 192,
+	"startColumn": 26,
+	"endLineNumber": 192,
+	"endColumn": 34,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: leg1Funds",
+	"source": "compiler",
+	"startLineNumber": 193,
+	"startColumn": 6,
+	"endLineNumber": 193,
+	"endColumn": 15,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
+
+
+
 
