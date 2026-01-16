@@ -122,3 +122,8 @@ func placeMarket(symbol, side string, value float64) (filled float64, err error)
 	return filled, nil
 }
 
+
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/16 04:20:58.154715 START TRIANGLE 20.00 USDT
+2026/01/16 04:20:58.704751 [FAIL] LEG1 USDT→DASH order rejected: validation.createOrder.clientOidIsRequired; raw: {"msg":"validation.createOrder.clientOidIsRequired","code":"400100"}
+
