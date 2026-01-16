@@ -71,10 +71,74 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-func placeMarket(symbol, side string, value float64) (filled float64, err error) {
-	// создаём уникальный clientOid
-	clientOid := uuid.NewString()
+package main
 
+import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"math"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+/* ================= CONFIG ================= */
+const (
+	apiKey        = "YOUR_API_KEY"
+	apiSecret     = "YOUR_API_SECRET"
+	apiPassphrase = "YOUR_API_PASSPHRASE"
+
+	baseURL   = "https://api.kucoin.com"
+	startUSDT = 12.0
+
+	sym1 = "DASH-USDT"
+	sym2 = "DASH-BTC"
+	sym3 = "BTC-USDT"
+)
+
+/* ================= AUTH ================= */
+func sign(ts, method, path, body string) string {
+	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac.Write([]byte(ts + method + path + body))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func passphrase() string {
+	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac.Write([]byte(apiPassphrase))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func headers(method, path, body string) http.Header {
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	sig := sign(ts, method, path, body)
+	h := http.Header{}
+	h.Set("KC-API-KEY", apiKey)
+	h.Set("KC-API-SIGN", sig)
+	h.Set("KC-API-TIMESTAMP", ts)
+	h.Set("KC-API-PASSPHRASE", passphrase())
+	h.Set("KC-API-KEY-VERSION", "2")
+	h.Set("Content-Type", "application/json")
+	return h
+}
+
+/* ================= UTILS ================= */
+// округление вниз до ближайшего шага
+func roundDown(value, step float64) float64 {
+	return math.Floor(value/step) * step
+}
+
+/* ================= PLACE MARKET ================= */
+func placeMarket(symbol, side string, value float64) (filled float64, err error) {
+	clientOid := uuid.NewString()
 	body := map[string]string{
 		"symbol":    symbol,
 		"type":      "market",
@@ -89,7 +153,6 @@ func placeMarket(symbol, side string, value float64) (filled float64, err error)
 	}
 
 	rawBody, _ := json.Marshal(body)
-
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(rawBody))
 	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
 
@@ -129,6 +192,47 @@ func placeMarket(symbol, side string, value float64) (filled float64, err error)
 	return filled, nil
 }
 
+/* ================= MAIN ================= */
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-2026/01/16 04:27:05.244257 [FAIL] LEG2 DASH→BTC order rejected: The quantity is invalid.; raw: {"msg":"The quantity is invalid.","code":"300000"}
+	// ------------------- STEP 1 -------------------
+	leg1Size, err := placeMarket(sym1, "buy", startUSDT)
+	if err != nil {
+		log.Println("[FAIL] LEG1 USDT→DASH", err)
+		return
+	}
+
+	// получаем шаг для DASH-BTC (например 0.001)
+	stepLeg2 := 0.001
+	leg2Size := roundDown(leg1Size, stepLeg2)
+
+	// ------------------- STEP 2 -------------------
+	leg2Funds, err := placeMarket(sym2, "sell", leg2Size)
+	if err != nil {
+		log.Println("[FAIL] LEG2 DASH→BTC", err)
+		return
+	}
+
+	// получаем шаг для BTC-USDT (например 0.0001)
+	stepLeg3 := 0.0001
+	leg3Size := roundDown(leg2Funds, stepLeg3)
+
+	// ------------------- STEP 3 -------------------
+	leg3Funds, err := placeMarket(sym3, "sell", leg3Size)
+	if err != nil {
+		log.Println("[FAIL] LEG3 BTC→USDT", err)
+		return
+	}
+
+	// ------------------- RESULT -------------------
+	profit := leg3Funds - startUSDT
+	pct := profit / startUSDT * 100
+	log.Println("====== RESULT ======")
+	log.Printf("START: %.4f USDT", startUSDT)
+	log.Printf("END:   %.4f USDT", leg3Funds)
+	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
+}
+
 
