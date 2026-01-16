@@ -216,3 +216,8 @@ func main() {
 	log.Printf("END:   %.4f USDT", leg3Funds)
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
 }
+
+
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/16 04:04:01.516268 START TRIANGLE 12.00 USDT
+2026/01/16 04:04:02.155555 [FAIL] LEG1 USDT→DASH order rejected
