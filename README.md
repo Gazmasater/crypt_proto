@@ -115,12 +115,15 @@ const (
 	StepLeg3
 )
 
-var step = StepIdle
-
 type WSMsg struct {
-	Type string                 `json:"type"`
-	Topic string                `json:"topic"`
-	Data map[string]interface{} `json:"data"`
+	Type  string                 `json:"type"`
+	Topic string                 `json:"topic"`
+	Data  map[string]interface{} `json:"data"`
+}
+
+type WSToken struct {
+	Token    string
+	Endpoint string
 }
 
 /* ================= AUTH ================= */
@@ -194,15 +197,8 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 
 /* ================= PRIVATE WS ================= */
 
-type WSToken struct {
-	Token    string
-	Endpoint string
-}
-
 func getWSToken() WSToken {
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	sig := sign(ts, "POST", "/api/v1/bullet-private", "")
 	req.Header = headers("POST", "/api/v1/bullet-private", "")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -260,11 +256,15 @@ func main() {
 	ws := connectPrivateWS()
 	defer ws.Close()
 
-	// запускаем горутину WS listener
-	done := make(chan struct{})
-	var leg1Size, leg2Size, leg3Size float64
-	var leg1Funds, leg2Funds, leg3Funds float64
+	// Каналы для каждого шага
+	leg1Done := make(chan struct{})
+	leg2Done := make(chan struct{})
+	leg3Done := make(chan struct{})
 
+	var leg1Size, leg2Funds, leg3Funds float64
+	step := StepIdle
+
+	// WS listener
 	go func() {
 		for {
 			_, msg, err := ws.ReadMessage()
@@ -278,13 +278,13 @@ func main() {
 				continue
 			}
 
-			status := m.Data["status"].(string)
-			if status != "done" {
+			status, ok := m.Data["status"].(string)
+			if !ok || status != "done" {
 				continue
 			}
 
-			symbol := m.Data["symbol"].(string)
-			side := m.Data["side"].(string)
+			symbol, _ := m.Data["symbol"].(string)
+			side, _ := m.Data["side"].(string)
 			size, _ := strconv.ParseFloat(m.Data["filledSize"].(string), 64)
 			funds, _ := strconv.ParseFloat(m.Data["filledFunds"].(string), 64)
 
@@ -292,23 +292,22 @@ func main() {
 			case StepLeg1:
 				if symbol == sym1 && side == "buy" {
 					leg1Size = size
-					leg1Funds = funds
 					log.Printf("[FILL] LEG1 USDT→X size=%.8f funds=%.8f", size, funds)
 					step = StepLeg2
+					close(leg1Done)
 				}
 			case StepLeg2:
 				if symbol == sym2 && side == "sell" {
-					leg2Size = size
 					leg2Funds = funds
 					log.Printf("[FILL] LEG2 X→BTC size=%.8f funds=%.8f", size, funds)
 					step = StepLeg3
+					close(leg2Done)
 				}
 			case StepLeg3:
 				if symbol == sym3 && side == "sell" {
-					leg3Size = size
 					leg3Funds = funds
 					log.Printf("[FILL] LEG3 BTC→USDT size=%.8f funds=%.8f", size, funds)
-					close(done)
+					close(leg3Done)
 				}
 			}
 		}
@@ -322,9 +321,7 @@ func main() {
 		return
 	}
 	log.Printf("[OK] LEG1 orderId=%s", o1)
-
-	// ждем WS событие о заполнении
-	<-done
+	<-leg1Done
 
 	// STEP 2
 	step = StepLeg2
@@ -334,8 +331,7 @@ func main() {
 		return
 	}
 	log.Printf("[OK] LEG2 orderId=%s", o2)
-
-	<-done
+	<-leg2Done
 
 	// STEP 3
 	step = StepLeg3
@@ -345,116 +341,16 @@ func main() {
 		return
 	}
 	log.Printf("[OK] LEG3 orderId=%s", o3)
+	<-leg3Done
 
-	<-done
-
+	// Итог
 	profit := leg3Funds - startUSDT
 	pct := profit / startUSDT * 100
 	log.Println("====== RESULT ======")
 	log.Printf("START: %.4f USDT", startUSDT)
 	log.Printf("END:   %.4f USDT", leg3Funds)
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
-} 
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UnusedVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UnusedVar"
-		}
-	},
-	"severity": 8,
-	"message": "declared and not used: sig",
-	"source": "compiler",
-	"startLineNumber": 132,
-	"startColumn": 2,
-	"endLineNumber": 132,
-	"endColumn": 5,
-	"modelVersionId": 4,
-	"tags": [
-		1
-	],
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UnusedVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UnusedVar"
-		}
-	},
-	"severity": 8,
-	"message": "declared and not used: leg2Size",
-	"source": "compiler",
-	"startLineNumber": 192,
-	"startColumn": 16,
-	"endLineNumber": 192,
-	"endColumn": 24,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UnusedVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UnusedVar"
-		}
-	},
-	"severity": 8,
-	"message": "declared and not used: leg3Size",
-	"source": "compiler",
-	"startLineNumber": 192,
-	"startColumn": 26,
-	"endLineNumber": 192,
-	"endColumn": 34,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UnusedVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UnusedVar"
-		}
-	},
-	"severity": 8,
-	"message": "declared and not used: leg1Funds",
-	"source": "compiler",
-	"startLineNumber": 193,
-	"startColumn": 6,
-	"endLineNumber": 193,
-	"endColumn": 15,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
+}
 
 
 
