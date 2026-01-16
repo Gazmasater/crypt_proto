@@ -256,10 +256,10 @@ func main() {
 	ws := connectPrivateWS()
 	defer ws.Close()
 
-	// Каналы для каждого шага
 	leg1Done := make(chan struct{})
 	leg2Done := make(chan struct{})
 	leg3Done := make(chan struct{})
+	errorChan := make(chan string, 1) // для rejected ордеров
 
 	var leg1Size, leg2Funds, leg3Funds float64
 	step := StepIdle
@@ -269,7 +269,8 @@ func main() {
 		for {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
-				log.Fatal(err)
+				log.Println("[WS ERROR]", err)
+				return // безопасно завершаем только эту горутину
 			}
 
 			var m WSMsg
@@ -278,36 +279,40 @@ func main() {
 				continue
 			}
 
-			status, ok := m.Data["status"].(string)
-			if !ok || status != "done" {
-				continue
-			}
-
+			status, _ := m.Data["status"].(string)
 			symbol, _ := m.Data["symbol"].(string)
 			side, _ := m.Data["side"].(string)
 			size, _ := strconv.ParseFloat(m.Data["filledSize"].(string), 64)
 			funds, _ := strconv.ParseFloat(m.Data["filledFunds"].(string), 64)
 
-			switch step {
-			case StepLeg1:
-				if symbol == sym1 && side == "buy" {
-					leg1Size = size
-					log.Printf("[FILL] LEG1 USDT→DASH size=%.8f funds=%.8f", size, funds)
-					step = StepLeg2
-					close(leg1Done)
+			if status == "done" {
+				switch step {
+				case StepLeg1:
+					if symbol == sym1 && side == "buy" {
+						leg1Size = size
+						log.Printf("[FILL] LEG1 USDT→DASH size=%.8f funds=%.8f", size, funds)
+						step = StepLeg2
+						close(leg1Done)
+					}
+				case StepLeg2:
+					if symbol == sym2 && side == "sell" {
+						leg2Funds = funds
+						log.Printf("[FILL] LEG2 DASH→BTC size=%.8f funds=%.8f", size, funds)
+						step = StepLeg3
+						close(leg2Done)
+					}
+				case StepLeg3:
+					if symbol == sym3 && side == "sell" {
+						leg3Funds = funds
+						log.Printf("[FILL] LEG3 BTC→USDT size=%.8f funds=%.8f", size, funds)
+						close(leg3Done)
+					}
 				}
-			case StepLeg2:
-				if symbol == sym2 && side == "sell" {
-					leg2Funds = funds
-					log.Printf("[FILL] LEG2 DASH→BTC size=%.8f funds=%.8f", size, funds)
-					step = StepLeg3
-					close(leg2Done)
-				}
-			case StepLeg3:
-				if symbol == sym3 && side == "sell" {
-					leg3Funds = funds
-					log.Printf("[FILL] LEG3 BTC→USDT size=%.8f funds=%.8f", size, funds)
-					close(leg3Done)
+			} else if status == "rejected" {
+				log.Printf("[REJECTED] %s %s", symbol, side)
+				select {
+				case errorChan <- fmt.Sprintf("%s %s rejected", symbol, side):
+				default:
 				}
 			}
 		}
@@ -321,7 +326,13 @@ func main() {
 		return
 	}
 	log.Printf("[OK] LEG1 orderId=%s", o1)
-	<-leg1Done
+
+	select {
+	case <-leg1Done:
+	case errMsg := <-errorChan:
+		log.Println("[ORDER ERROR]", errMsg)
+		return
+	}
 
 	// STEP 2
 	step = StepLeg2
@@ -331,7 +342,13 @@ func main() {
 		return
 	}
 	log.Printf("[OK] LEG2 orderId=%s", o2)
-	<-leg2Done
+
+	select {
+	case <-leg2Done:
+	case errMsg := <-errorChan:
+		log.Println("[ORDER ERROR]", errMsg)
+		return
+	}
 
 	// STEP 3
 	step = StepLeg3
@@ -341,7 +358,13 @@ func main() {
 		return
 	}
 	log.Printf("[OK] LEG3 orderId=%s", o3)
-	<-leg3Done
+
+	select {
+	case <-leg3Done:
+	case errMsg := <-errorChan:
+		log.Println("[ORDER ERROR]", errMsg)
+		return
+	}
 
 	// Итог
 	profit := leg3Funds - startUSDT
@@ -351,10 +374,5 @@ func main() {
 	log.Printf("END:   %.4f USDT", leg3Funds)
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
 }
-
-
-
-2026/01/16 03:31:58.017819 read tcp 192.168.1.71:52106->108.157.229.104:443: use of closed network connection
-exit status 1
 
 
