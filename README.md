@@ -129,3 +129,6 @@ func placeMarket(symbol, side string, value float64) (filled float64, err error)
 	return filled, nil
 }
 
+
+2026/01/16 04:27:05.244257 [FAIL] LEG2 DASH→BTC order rejected: The quantity is invalid.; raw: {"msg":"The quantity is invalid.","code":"300000"}
+
