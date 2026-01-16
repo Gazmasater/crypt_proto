@@ -170,6 +170,7 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	}
 
 	rawBody, _ := json.Marshal(body)
+
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(rawBody))
 	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
 
@@ -233,7 +234,9 @@ func connectPrivateWS() *websocket.Conn {
 
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Println("[WS CONNECT ERROR]", err)
+		time.Sleep(2 * time.Second)
+		return connectPrivateWS()
 	}
 
 	sub := map[string]interface{}{
@@ -253,6 +256,7 @@ func main() {
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
 	ws := connectPrivateWS()
+	defer ws.Close()
 
 	leg1Done := make(chan struct{})
 	leg2Done := make(chan struct{})
@@ -262,15 +266,17 @@ func main() {
 	var leg1Size, leg2Funds, leg3Funds float64
 	step := StepIdle
 
-	// WS listener
-	done := make(chan struct{})
+	var orderIDs = map[Step]string{} // храним ID каждого шага
+
+	// WS listener с авто-переподключением
 	go func() {
-		defer close(done)
 		for {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
-				log.Println("[WS ERROR]", err)
-				return
+				log.Println("[WS ERROR]", err, "- reconnecting...")
+				ws.Close()
+				ws = connectPrivateWS()
+				continue
 			}
 
 			var m WSMsg
@@ -279,39 +285,37 @@ func main() {
 				continue
 			}
 
+			orderID, _ := m.Data["orderId"].(string)
 			status, _ := m.Data["status"].(string)
-			symbol, _ := m.Data["symbol"].(string)
-			side, _ := m.Data["side"].(string)
 			size, _ := strconv.ParseFloat(m.Data["filledSize"].(string), 64)
 			funds, _ := strconv.ParseFloat(m.Data["filledFunds"].(string), 64)
+
+			// проверяем, что это наш ордер
+			if stepOrderID, ok := orderIDs[step]; !ok || orderID != stepOrderID {
+				continue
+			}
 
 			if status == "done" {
 				switch step {
 				case StepLeg1:
-					if symbol == sym1 && side == "buy" {
-						leg1Size = size
-						log.Printf("[FILL] LEG1 USDT→DASH size=%.8f funds=%.8f", size, funds)
-						step = StepLeg2
-						close(leg1Done)
-					}
+					leg1Size = size
+					log.Printf("[FILL] LEG1 USDT→DASH size=%.8f funds=%.8f", size, funds)
+					step = StepLeg2
+					close(leg1Done)
 				case StepLeg2:
-					if symbol == sym2 && side == "sell" {
-						leg2Funds = funds
-						log.Printf("[FILL] LEG2 DASH→BTC size=%.8f funds=%.8f", size, funds)
-						step = StepLeg3
-						close(leg2Done)
-					}
+					leg2Funds = funds
+					log.Printf("[FILL] LEG2 DASH→BTC size=%.8f funds=%.8f", size, funds)
+					step = StepLeg3
+					close(leg2Done)
 				case StepLeg3:
-					if symbol == sym3 && side == "sell" {
-						leg3Funds = funds
-						log.Printf("[FILL] LEG3 BTC→USDT size=%.8f funds=%.8f", size, funds)
-						close(leg3Done)
-					}
+					leg3Funds = funds
+					log.Printf("[FILL] LEG3 BTC→USDT size=%.8f funds=%.8f", size, funds)
+					close(leg3Done)
 				}
 			} else if status == "rejected" {
-				log.Printf("[REJECTED] %s %s", symbol, side)
+				log.Printf("[REJECTED] step=%d orderId=%s", step, orderID)
 				select {
-				case errorChan <- fmt.Sprintf("%s %s rejected", symbol, side):
+				case errorChan <- fmt.Sprintf("order rejected step=%d", step):
 				default:
 				}
 			}
@@ -323,15 +327,15 @@ func main() {
 	o1, err := placeMarket(sym1, "buy", startUSDT)
 	if err != nil {
 		log.Println("[FAIL] LEG1 USDT→DASH", err)
-		ws.Close()
 		return
 	}
+	orderIDs[StepLeg1] = o1
 	log.Printf("[OK] LEG1 orderId=%s", o1)
+
 	select {
 	case <-leg1Done:
 	case errMsg := <-errorChan:
 		log.Println("[ORDER ERROR]", errMsg)
-		ws.Close()
 		return
 	}
 
@@ -340,15 +344,15 @@ func main() {
 	o2, err := placeMarket(sym2, "sell", leg1Size)
 	if err != nil {
 		log.Println("[FAIL] LEG2 DASH→BTC", err)
-		ws.Close()
 		return
 	}
+	orderIDs[StepLeg2] = o2
 	log.Printf("[OK] LEG2 orderId=%s", o2)
+
 	select {
 	case <-leg2Done:
 	case errMsg := <-errorChan:
 		log.Println("[ORDER ERROR]", errMsg)
-		ws.Close()
 		return
 	}
 
@@ -357,15 +361,15 @@ func main() {
 	o3, err := placeMarket(sym3, "sell", leg2Funds)
 	if err != nil {
 		log.Println("[FAIL] LEG3 BTC→USDT", err)
-		ws.Close()
 		return
 	}
+	orderIDs[StepLeg3] = o3
 	log.Printf("[OK] LEG3 orderId=%s", o3)
+
 	select {
 	case <-leg3Done:
 	case errMsg := <-errorChan:
 		log.Println("[ORDER ERROR]", errMsg)
-		ws.Close()
 		return
 	}
 
@@ -376,8 +380,4 @@ func main() {
 	log.Printf("START: %.4f USDT", startUSDT)
 	log.Printf("END:   %.4f USDT", leg3Funds)
 	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
-
-	// Закрываем WS после всех шагов
-	ws.Close()
-	<-done
 }
