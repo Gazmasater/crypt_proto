@@ -94,19 +94,24 @@ func placeMarket(symbol, side string, value float64) (filled float64, err error)
 	}
 	defer resp.Body.Close()
 
+	// читаем тело полностью для логирования
+	respBytes, _ := io.ReadAll(resp.Body)
+	
 	var r struct {
 		Code string `json:"code"`
+		Msg  string `json:"msg"` // <- здесь сообщение об ошибке
 		Data struct {
-			DealFunds string `json:"dealFunds"` // сколько реально использовалось
+			DealFunds string `json:"dealFunds"`
 			DealSize  string `json:"dealSize"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return 0, err
+
+	if err := json.Unmarshal(respBytes, &r); err != nil {
+		return 0, fmt.Errorf("decode error: %v; raw: %s", err, string(respBytes))
 	}
 
 	if r.Code != "200000" {
-		return 0, fmt.Errorf("order rejected")
+		return 0, fmt.Errorf("order rejected: %s; raw: %s", r.Msg, string(respBytes))
 	}
 
 	if side == "buy" {
@@ -117,7 +122,3 @@ func placeMarket(symbol, side string, value float64) (filled float64, err error)
 	return filled, nil
 }
 
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/16 04:04:01.516268 START TRIANGLE 12.00 USDT
-2026/01/16 04:04:02.155555 [FAIL] LEG1 USDT→DASH order rejected
