@@ -84,8 +84,6 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 /* ================= CONFIG ================= */
@@ -103,28 +101,6 @@ const (
 	sym2 = "DASH-BTC"
 	sym3 = "BTC-USDT"
 )
-
-/* ================= TYPES ================= */
-
-type Step int
-
-const (
-	StepIdle Step = iota
-	StepLeg1
-	StepLeg2
-	StepLeg3
-)
-
-type WSMsg struct {
-	Type  string                 `json:"type"`
-	Topic string                 `json:"topic"`
-	Data  map[string]interface{} `json:"data"`
-}
-
-type WSToken struct {
-	Token    string
-	Endpoint string
-}
 
 /* ================= AUTH ================= */
 
@@ -154,9 +130,9 @@ func headers(method, path, body string) http.Header {
 	return h
 }
 
-/* ================= REST ================= */
+/* ================= PLACE MARKET ================= */
 
-func placeMarket(symbol, side string, value float64) (string, error) {
+func placeMarket(symbol, side string, value float64) (filled float64, err error) {
 	body := map[string]string{
 		"symbol": symbol,
 		"type":   "market",
@@ -170,83 +146,36 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	}
 
 	rawBody, _ := json.Marshal(body)
-
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(rawBody))
 	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 	defer resp.Body.Close()
 
 	var r struct {
 		Code string `json:"code"`
 		Data struct {
-			OrderId string `json:"orderId"`
+			DealFunds string `json:"dealFunds"` // сколько реально использовалось
+			DealSize  string `json:"dealSize"`
 		} `json:"data"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&r)
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return 0, err
+	}
 
 	if r.Code != "200000" {
-		return "", fmt.Errorf("order rejected")
+		return 0, fmt.Errorf("order rejected")
 	}
 
-	return r.Data.OrderId, nil
-}
-
-/* ================= PRIVATE WS ================= */
-
-func getWSToken() WSToken {
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
-	req.Header = headers("POST", "/api/v1/bullet-private", "")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Fatal(err)
+	if side == "buy" {
+		filled, _ = strconv.ParseFloat(r.Data.DealSize, 64)
+	} else {
+		filled, _ = strconv.ParseFloat(r.Data.DealFunds, 64)
 	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Code string `json:"code"`
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&r)
-
-	if len(r.Data.InstanceServers) == 0 {
-		log.Fatal("No WS endpoint")
-	}
-
-	return WSToken{
-		Token:    r.Data.Token,
-		Endpoint: r.Data.InstanceServers[0].Endpoint,
-	}
-}
-
-func connectPrivateWS() *websocket.Conn {
-	token := getWSToken()
-	url := token.Endpoint + "?token=" + token.Token
-
-	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-		log.Println("[WS CONNECT ERROR]", err)
-		time.Sleep(2 * time.Second)
-		return connectPrivateWS()
-	}
-
-	sub := map[string]interface{}{
-		"id":    strconv.FormatInt(time.Now().UnixNano(), 10),
-		"type":  "subscribe",
-		"topic": "/spotMarket/tradeOrders",
-	}
-	_ = conn.WriteJSON(sub)
-	log.Println("Private WS connected")
-	return conn
+	return filled, nil
 }
 
 /* ================= MAIN ================= */
@@ -255,123 +184,29 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-	ws := connectPrivateWS()
-	defer ws.Close()
-
-	leg1Done := make(chan struct{})
-	leg2Done := make(chan struct{})
-	leg3Done := make(chan struct{})
-	errorChan := make(chan string, 1)
-
-	var leg1Size, leg2Funds, leg3Funds float64
-	step := StepIdle
-
-	var orderIDs = map[Step]string{} // храним ID каждого шага
-
-	// WS listener с авто-переподключением
-	go func() {
-		for {
-			_, msg, err := ws.ReadMessage()
-			if err != nil {
-				log.Println("[WS ERROR]", err, "- reconnecting...")
-				ws.Close()
-				ws = connectPrivateWS()
-				continue
-			}
-
-			var m WSMsg
-			_ = json.Unmarshal(msg, &m)
-			if m.Type != "message" || m.Topic != "/spotMarket/tradeOrders" {
-				continue
-			}
-
-			orderID, _ := m.Data["orderId"].(string)
-			status, _ := m.Data["status"].(string)
-			size, _ := strconv.ParseFloat(m.Data["filledSize"].(string), 64)
-			funds, _ := strconv.ParseFloat(m.Data["filledFunds"].(string), 64)
-
-			// проверяем, что это наш ордер
-			if stepOrderID, ok := orderIDs[step]; !ok || orderID != stepOrderID {
-				continue
-			}
-
-			if status == "done" {
-				switch step {
-				case StepLeg1:
-					leg1Size = size
-					log.Printf("[FILL] LEG1 USDT→DASH size=%.8f funds=%.8f", size, funds)
-					step = StepLeg2
-					close(leg1Done)
-				case StepLeg2:
-					leg2Funds = funds
-					log.Printf("[FILL] LEG2 DASH→BTC size=%.8f funds=%.8f", size, funds)
-					step = StepLeg3
-					close(leg2Done)
-				case StepLeg3:
-					leg3Funds = funds
-					log.Printf("[FILL] LEG3 BTC→USDT size=%.8f funds=%.8f", size, funds)
-					close(leg3Done)
-				}
-			} else if status == "rejected" {
-				log.Printf("[REJECTED] step=%d orderId=%s", step, orderID)
-				select {
-				case errorChan <- fmt.Sprintf("order rejected step=%d", step):
-				default:
-				}
-			}
-		}
-	}()
-
-	// STEP 1
-	step = StepLeg1
-	o1, err := placeMarket(sym1, "buy", startUSDT)
+	// LEG1: USDT → DASH
+	leg1Size, err := placeMarket(sym1, "buy", startUSDT)
 	if err != nil {
 		log.Println("[FAIL] LEG1 USDT→DASH", err)
 		return
 	}
-	orderIDs[StepLeg1] = o1
-	log.Printf("[OK] LEG1 orderId=%s", o1)
+	log.Printf("[OK] LEG1 filled %.8f DASH", leg1Size)
 
-	select {
-	case <-leg1Done:
-	case errMsg := <-errorChan:
-		log.Println("[ORDER ERROR]", errMsg)
-		return
-	}
-
-	// STEP 2
-	step = StepLeg2
-	o2, err := placeMarket(sym2, "sell", leg1Size)
+	// LEG2: DASH → BTC
+	leg2Funds, err := placeMarket(sym2, "sell", leg1Size)
 	if err != nil {
 		log.Println("[FAIL] LEG2 DASH→BTC", err)
 		return
 	}
-	orderIDs[StepLeg2] = o2
-	log.Printf("[OK] LEG2 orderId=%s", o2)
+	log.Printf("[OK] LEG2 filled %.8f BTC", leg2Funds)
 
-	select {
-	case <-leg2Done:
-	case errMsg := <-errorChan:
-		log.Println("[ORDER ERROR]", errMsg)
-		return
-	}
-
-	// STEP 3
-	step = StepLeg3
-	o3, err := placeMarket(sym3, "sell", leg2Funds)
+	// LEG3: BTC → USDT
+	leg3Funds, err := placeMarket(sym3, "sell", leg2Funds)
 	if err != nil {
 		log.Println("[FAIL] LEG3 BTC→USDT", err)
 		return
 	}
-	orderIDs[StepLeg3] = o3
-	log.Printf("[OK] LEG3 orderId=%s", o3)
-
-	select {
-	case <-leg3Done:
-	case errMsg := <-errorChan:
-		log.Println("[ORDER ERROR]", errMsg)
-		return
-	}
+	log.Printf("[OK] LEG3 filled %.8f USDT", leg3Funds)
 
 	// Итог
 	profit := leg3Funds - startUSDT
