@@ -91,16 +91,16 @@ import (
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "KUCOIN_API_KEY"
-	apiSecret     = "KUCOIN_API_SECRET"
-	apiPassphrase = "KUCOIN_API_PASSPHRASE"
+	apiKey        = "696935c42a6dcd00013273f2"
+	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
+	apiPassphrase = "Gazmaster_358"
 
 	baseURL = "https://api.kucoin.com"
 
-	startUSDT = 20.0
+	startUSDT = 12.0
 
-	sym1 = "X-USDT"
-	sym2 = "X-BTC"
+	sym1 = "DASH-USDT"
+	sym2 = "DASH-BTC"
 	sym3 = "BTC-USDT"
 )
 
@@ -292,14 +292,14 @@ func main() {
 			case StepLeg1:
 				if symbol == sym1 && side == "buy" {
 					leg1Size = size
-					log.Printf("[FILL] LEG1 USDT→X size=%.8f funds=%.8f", size, funds)
+					log.Printf("[FILL] LEG1 USDT→DASH size=%.8f funds=%.8f", size, funds)
 					step = StepLeg2
 					close(leg1Done)
 				}
 			case StepLeg2:
 				if symbol == sym2 && side == "sell" {
 					leg2Funds = funds
-					log.Printf("[FILL] LEG2 X→BTC size=%.8f funds=%.8f", size, funds)
+					log.Printf("[FILL] LEG2 DASH→BTC size=%.8f funds=%.8f", size, funds)
 					step = StepLeg3
 					close(leg2Done)
 				}
@@ -317,7 +317,7 @@ func main() {
 	step = StepLeg1
 	o1, err := placeMarket(sym1, "buy", startUSDT)
 	if err != nil {
-		log.Println("[FAIL] LEG1 USDT→X", err)
+		log.Println("[FAIL] LEG1 USDT→DASH", err)
 		return
 	}
 	log.Printf("[OK] LEG1 orderId=%s", o1)
@@ -327,7 +327,7 @@ func main() {
 	step = StepLeg2
 	o2, err := placeMarket(sym2, "sell", leg1Size)
 	if err != nil {
-		log.Println("[FAIL] LEG2 X→BTC", err)
+		log.Println("[FAIL] LEG2 DASH→BTC", err)
 		return
 	}
 	log.Printf("[OK] LEG2 orderId=%s", o2)
@@ -353,13 +353,13 @@ func main() {
 }
 
 
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/16 03:09:44.999436 START TRIANGLE 11.00 USDT
-2026/01/16 03:09:46.538631 Private WS connected
-2026/01/16 03:09:46.845775 [FAIL] LEG1 USDT→X order rejected
-2026/01/16 03:09:46.845940 read tcp 192.168.1.71:44830->108.157.229.104:443: use of closed network connection
-exit status 1
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/16 03:19:53.600096 START TRIANGLE 12.00 USDT
+2026/01/16 03:19:55.067541 Private WS connected
+2026/01/16 03:19:55.359608 [FAIL] LEG1 USDT→DASH order rejected
+2026/01/16 03:19:55.359811 read tcp 192.168.1.71:43968->108.157.229.104:443: use of closed network connection
+exit status 1
 
 
 
