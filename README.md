@@ -236,3 +236,9 @@ func main() {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/16 04:37:55.162871 START TRIANGLE 12.00 USDT
+2026/01/16 04:37:55.871028 [OK] buy DASH-USDT orderId=696996738333910007e03fec filled=0.00000000
+2026/01/16 04:37:56.177800 [FAIL] LEG2 DASH→BTC order rejected: The quantity is invalid.; raw: {"msg":"The quantity is invalid.","code":"300000"}
+
+
