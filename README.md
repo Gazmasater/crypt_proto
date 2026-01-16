@@ -353,5 +353,13 @@ func main() {
 }
 
 
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/16 03:09:44.999436 START TRIANGLE 11.00 USDT
+2026/01/16 03:09:46.538631 Private WS connected
+2026/01/16 03:09:46.845775 [FAIL] LEG1 USDT→X order rejected
+2026/01/16 03:09:46.845940 read tcp 192.168.1.71:44830->108.157.229.104:443: use of closed network connection
+exit status 1
+
+
 
 
