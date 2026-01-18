@@ -323,4 +323,10 @@ func getBalance(currency string) (float64, error) {
 }
 
 
+2026/01/18 15:59:55.301546 START TRIANGLE 12.00 USDT
+2026/01/18 15:59:56.416630 LEG1 USDT→DASH | DASH=0.150600 | api=705.463733ms | total=1.114948957s
+2026/01/18 15:59:56.826180 LEG2 SELL failed:order rejected: The quantity is invalid.
+exit status 1
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$
+
 
