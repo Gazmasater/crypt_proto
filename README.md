@@ -121,10 +121,11 @@ import (
 )
 
 /* ================= CONFIG ================= */
+
 const (
 	apiKey        = "YOUR_API_KEY"
 	apiSecret     = "YOUR_API_SECRET"
-	apiPassphrase = "YOUR_PASSPHRASE"
+	apiPassphrase = "YOUR_API_PASSPHRASE" // Для v2 используем как есть
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -138,21 +139,11 @@ const (
 	step3 = 0.00001
 )
 
-/* ================= UTILS ================= */
-func roundDown(v, step float64) float64 {
-	return math.Floor(v/step) * step
-}
-
 /* ================= AUTH ================= */
+
 func sign(ts, method, path, body string) string {
 	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(ts + method + path + body))
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
-}
-
-func passphrase() string {
-	mac := hmac.New(sha256.New, []byte(apiPassphrase))
-	mac.Write([]byte(apiPassphrase))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -162,152 +153,20 @@ func headers(method, path, body string) http.Header {
 	h.Set("KC-API-KEY", apiKey)
 	h.Set("KC-API-SIGN", sign(ts, method, path, body))
 	h.Set("KC-API-TIMESTAMP", ts)
-	h.Set("KC-API-PASSPHRASE", passphrase())
+	h.Set("KC-API-PASSPHRASE", apiPassphrase) // v2 — просто passphrase
 	h.Set("KC-API-KEY-VERSION", "2")
 	h.Set("Content-Type", "application/json")
 	return h
 }
 
-/* ================= GET WS TOKEN ================= */
-func getWSToken() (string, string, error) {
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-public", nil)
-	req.Header = headers("POST", "/api/v1/bullet-public", "")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
+/* ================= UTILS ================= */
 
-	body, _ := io.ReadAll(resp.Body)
-	var r struct {
-		Code string `json:"code"`
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return "", "", err
-	}
-	if len(r.Data.InstanceServers) == 0 {
-		return "", "", fmt.Errorf("no WS endpoints")
-	}
-	return r.Data.Token, r.Data.InstanceServers[0].Endpoint, nil
+func roundDown(v, step float64) float64 {
+	return math.Floor(v/step) * step
 }
 
-/* ================= MAIN ================= */
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
+/* ================= API ================= */
 
-	token, endpoint, err := getWSToken()
-	if err != nil {
-		log.Fatal("WS token error:", err)
-	}
-
-	wsURL := fmt.Sprintf("%s?token=%s&[connectId]=%s", endpoint, token, uuid.NewString())
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		log.Fatal("WS connect error:", err)
-	}
-	defer conn.Close()
-
-	// Heartbeat каждые 30 секунд
-	go func() {
-		t := time.NewTicker(30 * time.Second)
-		defer t.Stop()
-		for range t.C {
-			conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"ping","type":"ping"}`))
-		}
-	}()
-
-	// Подписка на ордера
-	subscribeOrder := func(symbol string) {
-		req := map[string]interface{}{
-			"id":       uuid.NewString(),
-			"type":     "subscribe",
-			"topic":    fmt.Sprintf("/spotMarket/tradeOrders:%s", symbol),
-			"response": true,
-		}
-		raw, _ := json.Marshal(req)
-		conn.WriteMessage(websocket.TextMessage, raw)
-	}
-
-	subscribeOrder(sym1)
-	subscribeOrder(sym2)
-	subscribeOrder(sym3)
-
-	// Канал для fill
-	type Fill struct {
-		OrderID string
-		Size    float64
-	}
-	fillCh := make(chan Fill)
-
-	// WS reader
-	go func() {
-		for {
-			_, message, err := conn.ReadMessage()
-			if err != nil {
-				log.Println("WS read error:", err)
-				return
-			}
-			var resp map[string]interface{}
-			json.Unmarshal(message, &resp)
-			if resp["type"] == "message" {
-				data := resp["data"].(map[string]interface{})
-				status, ok := data["status"].(string)
-				if ok && (status == "done" || status == "filled") {
-					orderID := data["orderId"].(string)
-					filledSize, _ := strconv.ParseFloat(data["filledSize"].(string), 64)
-					fillCh <- Fill{OrderID: orderID, Size: filledSize}
-				}
-			}
-		}
-	}()
-
-	/* ================= EXECUTE TRIANGLE ================= */
-	totalStart := time.Now()
-
-	// LEG1 USDT → DASH
-	order1, err := placeMarket(sym1, "buy", startUSDT)
-	if err != nil {
-		log.Fatal("LEG1 order failed:", err)
-	}
-	log.Printf("LEG1 order sent, waiting for fill... | OrderID=%s", order1)
-	fill1 := <-fillCh
-	dash := roundDown(fill1.Size, step1)
-	log.Printf("LEG1 OK | DASH=%.6f", dash)
-
-	// LEG2 DASH → BTC
-	order2, err := placeMarket(sym2, "sell", dash)
-	if err != nil {
-		log.Fatal("LEG2 order failed:", err)
-	}
-	log.Printf("LEG2 order sent, waiting for fill... | OrderID=%s", order2)
-	fill2 := <-fillCh
-	btc := roundDown(fill2.Size, step2)
-	log.Printf("LEG2 OK | BTC=%.8f", btc)
-
-	// LEG3 BTC → USDT
-	order3, err := placeMarket(sym3, "sell", btc)
-	if err != nil {
-		log.Fatal("LEG3 order failed:", err)
-	}
-	log.Printf("LEG3 order sent, waiting for fill... | OrderID=%s", order3)
-	fill3 := <-fillCh
-	usdt := roundDown(fill3.Size, step3)
-	log.Printf("LEG3 OK | USDT=%.4f", usdt)
-
-	totalTime := time.Since(totalStart)
-	log.Println("====== TRIANGLE SUMMARY ======")
-	log.Printf("TOTAL TIME: %s", totalTime)
-	log.Printf("PNL: %.6f USDT", usdt-startUSDT)
-}
-
-/* ================= PLACE ORDER ================= */
 func placeMarket(symbol, side string, value float64) (string, error) {
 	body := map[string]string{
 		"symbol":    symbol,
@@ -320,6 +179,7 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	} else {
 		body["size"] = fmt.Sprintf("%.8f", value)
 	}
+
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
 	req.Header = headers("POST", "/api/v1/orders", string(raw))
@@ -347,10 +207,107 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	return r.Data.OrderId, nil
 }
 
+/* ================= MAIN ================= */
 
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/19 00:28:24.157282 START TRIANGLE 12.00 USDT
-2026/01/19 00:28:25.784042 LEG1 order failed:order rejected: Invalid KC-API-PASSPHRASE
-exit status 1
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	totalStart := time.Now()
+	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
+
+	// WebSocket для отслеживания fills
+	wsToken, wsURL := getWSToken()
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		log.Fatal("WS connect error:", err)
+	}
+	defer conn.Close()
+	go heartbeat(conn)
+
+	var dash, btc, usdt float64
+
+	// LEG1: USDT → DASH
+	order1, err := placeMarket(sym1, "buy", startUSDT)
+	if err != nil {
+		log.Fatal("LEG1 order failed:", err)
+	}
+	dash = waitFill(conn, order1, step1)
+	log.Printf("LEG1 OK | DASH=%.6f", dash)
+
+	// LEG2: DASH → BTC
+	order2, err := placeMarket(sym2, "sell", dash)
+	if err != nil {
+		log.Fatal("LEG2 order failed:", err)
+	}
+	btc = waitFill(conn, order2, step2)
+	log.Printf("LEG2 OK | BTC=%.8f", btc)
+
+	// LEG3: BTC → USDT
+	order3, err := placeMarket(sym3, "sell", btc)
+	if err != nil {
+		log.Fatal("LEG3 order failed:", err)
+	}
+	usdt = waitFill(conn, order3, step3)
+	log.Printf("LEG3 OK | USDT=%.6f", usdt)
+
+	log.Printf("====== TRIANGLE SUMMARY ======")
+	log.Printf("PNL: %.6f USDT", usdt-startUSDT)
+	log.Printf("TOTAL TIME: %s", time.Since(totalStart))
+}
+
+/* ================= WebSocket helpers ================= */
+
+func getWSToken() (token, url string) {
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-public", nil)
+	req.Header = headers("POST", "/api/v1/bullet-public", "")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Code string `json:"code"`
+		Data struct {
+			Token string `json:"token"`
+			InstanceServers []struct {
+				Endpoint string `json:"endpoint"`
+			} `json:"instanceServers"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(b, &r); err != nil {
+		log.Fatal(err)
+	}
+	token = r.Data.Token
+	url = r.Data.InstanceServers[0].Endpoint + "?token=" + token
+	return
+}
+
+func heartbeat(conn *websocket.Conn) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"id":1,"type":"ping"}`))
+	}
+}
+
+func waitFill(conn *websocket.Conn, orderID string, step float64) float64 {
+	for {
+		_, msg, _ := conn.ReadMessage()
+		var evt struct {
+			Type string `json:"type"`
+			Data struct {
+				OrderId string `json:"orderId"`
+				Filled  string `json:"filledSize"`
+			} `json:"data"`
+		}
+		json.Unmarshal(msg, &evt)
+		if evt.Type == "order.done" && evt.Data.OrderId == orderID {
+			val, _ := strconv.ParseFloat(evt.Data.Filled, 64)
+			return roundDown(val, step)
+		}
+	}
+}
+
 
 
