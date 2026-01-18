@@ -139,7 +139,7 @@ const (
 	step2 = 0.00001
 	step3 = 0.01
 
-	orderTimeout = 3 * time.Second
+	orderTimeout = 6 * time.Second
 	safetyMargin = 0.999 // учитываем комиссию 0.1%
 )
 
@@ -171,14 +171,14 @@ func headers(method, path, body string) http.Header {
 
 /* ================= REST ================= */
 
-func placeMarketWithOid(symbol, side string, value float64, clientOid string) error {
+func placeMarketREST(symbol, side string, value float64) (float64, error) {
+	clientOid := uuid.NewString()
 	body := map[string]string{
 		"symbol":    symbol,
 		"type":      "market",
 		"side":      side,
 		"clientOid": clientOid,
 	}
-
 	if side == "buy" {
 		body["funds"] = fmt.Sprintf("%.8f", value)
 	} else {
@@ -191,24 +191,25 @@ func placeMarketWithOid(symbol, side string, value float64, clientOid string) er
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 
 	var r struct {
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
+		Data struct {
+			FilledSize string `json:"filledSize"`
+		} `json:"data"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return err
+		return 0, err
 	}
-
 	if r.Code != "200000" {
-		return fmt.Errorf("order rejected: %s", r.Msg)
+		return 0, fmt.Errorf("order rejected: %s", r.Msg)
 	}
-
-	return nil
+	filled, _ := strconv.ParseFloat(r.Data.FilledSize, 64)
+	return filled, nil
 }
 
 /* ================= WEBSOCKET ================= */
@@ -216,7 +217,6 @@ func placeMarketWithOid(symbol, side string, value float64, clientOid string) er
 func getPrivateWSURL() (string, error) {
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
 	req.Header = headers("POST", "/api/v1/bullet-private", "")
-
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
@@ -232,11 +232,9 @@ func getPrivateWSURL() (string, error) {
 			} `json:"instanceServers"`
 		} `json:"data"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return "", err
 	}
-
 	return r.Data.InstanceServers[0].Endpoint + "?token=" + r.Data.Token, nil
 }
 
@@ -280,11 +278,19 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("START TRIANGLE", startUSDT)
 
+	// ===== LEG 1 через REST (быстро) =====
+	dash, err := placeMarketREST(sym1, "buy", startUSDT)
+	if err != nil {
+		log.Fatal("LEG1 error:", err)
+	}
+	dash = roundDown(dash, step1)
+	log.Println("LEG1 OK", dash)
+
+	// ===== LEG2 и LEG3 через WS =====
 	wsURL, err := getPrivateWSURL()
 	if err != nil {
 		log.Fatal("WS token error:", err)
 	}
-
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		log.Fatal("WS connect error:", err)
@@ -319,7 +325,6 @@ func main() {
 			if err != nil {
 				log.Fatal("WS read:", err)
 			}
-
 			var evt struct {
 				Topic string `json:"topic"`
 				Data  struct {
@@ -328,11 +333,9 @@ func main() {
 					FilledSize string `json:"filledSize"`
 				} `json:"data"`
 			}
-
 			if json.Unmarshal(msg, &evt) != nil {
 				continue
 			}
-
 			if evt.Topic == "/spotMarket/tradeOrders" && evt.Data.Type == "done" {
 				v, _ := strconv.ParseFloat(evt.Data.FilledSize, 64)
 				router.Resolve(evt.Data.ClientOid, v)
@@ -340,72 +343,43 @@ func main() {
 		}
 	}()
 
-	// ===== LEG 1 =====
-	oid1 := uuid.NewString()
-	ch1 := router.Register(oid1)
-	if err := placeMarketWithOid(sym1, "buy", startUSDT, oid1); err != nil {
-		log.Fatal("LEG1 error:", err)
-	}
-	ctx1, cancel1 := context.WithTimeout(context.Background(), orderTimeout)
-	defer cancel1()
-
-	var dash float64
-	select {
-	case v := <-ch1:
-		dash = roundDown(v, step1)
-	case <-ctx1.Done():
-		log.Fatal("LEG1 timeout")
-	}
-	log.Println("LEG1 OK", dash)
-
 	// ===== LEG 2 =====
 	oid2 := uuid.NewString()
 	ch2 := router.Register(oid2)
 	if err := placeMarketWithOid(sym2, "sell", dash, oid2); err != nil {
 		log.Fatal("LEG2 error:", err)
 	}
+
 	ctx2, cancel2 := context.WithTimeout(context.Background(), orderTimeout)
 	defer cancel2()
-
 	var btc float64
 	select {
 	case v := <-ch2:
-		btc = roundDown(v, step2)
+		btc = roundDown(v*safetyMargin, step2)
 	case <-ctx2.Done():
 		log.Fatal("LEG2 timeout")
 	}
 	log.Println("LEG2 OK", btc)
 
 	// ===== LEG 3 =====
-	// учитываем комиссию и остаток
-	btcForLeg3 := roundDown(btc*safetyMargin, step2)
-	if btcForLeg3 < step2 {
+	if btc < step2 {
 		log.Fatal("LEG3 skipped, not enough BTC")
 	}
-
 	oid3 := uuid.NewString()
 	ch3 := router.Register(oid3)
-	if err := placeMarketWithOid(sym3, "sell", btcForLeg3, oid3); err != nil {
+	if err := placeMarketWithOid(sym3, "sell", btc, oid3); err != nil {
 		log.Fatal("LEG3 error:", err)
 	}
-
 	ctx3, cancel3 := context.WithTimeout(context.Background(), orderTimeout)
 	defer cancel3()
-
 	var usdt float64
 	select {
 	case v := <-ch3:
-		usdt = roundDown(v, step3)
+		usdt = roundDown(v*safetyMargin, step3)
 	case <-ctx3.Done():
 		log.Fatal("LEG3 timeout")
 	}
 	log.Println("LEG3 OK", usdt)
 	log.Println("PNL:", usdt-startUSDT)
 }
-
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/19 02:29:34.232556 START TRIANGLE 12
-2026/01/19 02:29:39.212632 LEG1 timeout
-exit status 1
 
