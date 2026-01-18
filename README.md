@@ -139,7 +139,7 @@ const (
 	step2 = 0.0001
 	step3 = 0.00001
 
-	orderTimeout = 3 * time.Second
+	orderTimeout = 5 * time.Second
 )
 
 /* ================= AUTH ================= */
@@ -198,7 +198,6 @@ func placeMarketWithOid(symbol, side string, value float64, clientOid string) er
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return err
 	}
@@ -206,7 +205,6 @@ func placeMarketWithOid(symbol, side string, value float64, clientOid string) er
 	if r.Code != "200000" {
 		return fmt.Errorf("order rejected: %s", r.Msg)
 	}
-
 	return nil
 }
 
@@ -253,7 +251,7 @@ func NewOrderRouter() *OrderRouter {
 func (r *OrderRouter) Register(oid string) chan float64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	ch := make(chan float64, 1)
+	ch := make(chan float64, 10) // буфер 10, чтобы не потерять fill
 	r.wait[oid] = ch
 	return ch
 }
@@ -263,7 +261,6 @@ func (r *OrderRouter) Resolve(oid string, filled float64) {
 	defer r.mu.Unlock()
 	if ch, ok := r.wait[oid]; ok {
 		ch <- filled
-		delete(r.wait, oid)
 	}
 }
 
@@ -290,7 +287,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	// heartbeat
+	// Heartbeat
 	go func() {
 		t := time.NewTicker(25 * time.Second)
 		defer t.Stop()
@@ -299,7 +296,7 @@ func main() {
 		}
 	}()
 
-	// subscribe
+	// Subscribe to private orders
 	sub := map[string]interface{}{
 		"id":             uuid.NewString(),
 		"type":           "subscribe",
@@ -332,7 +329,10 @@ func main() {
 				continue
 			}
 
-			if evt.Topic == "/spotMarket/tradeOrders" && evt.Data.Type == "done" {
+			// учитываем все fill-события
+			if evt.Topic == "/spotMarket/tradeOrders" &&
+				(evt.Data.Type == "done" || evt.Data.Type == "match") {
+
 				v, _ := strconv.ParseFloat(evt.Data.FilledSize, 64)
 				router.Resolve(evt.Data.ClientOid, v)
 			}
@@ -391,16 +391,10 @@ func main() {
 	case <-ctx3.Done():
 		log.Fatal("LEG3 timeout")
 	}
+
 	log.Println("LEG3 OK", usdt)
 	log.Println("PNL:", usdt-startUSDT)
 }
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/19 02:06:57.346573 START TRIANGLE 12
-2026/01/19 02:07:02.289995 LEG1 timeout
-exit status 1
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ 
 
 
 
