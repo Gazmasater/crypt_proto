@@ -118,10 +118,11 @@ import (
 
 /* ================= CONFIG ================= */
 
+// ⚠️ РЕКОМЕНДУЮ ВЫНЕСТИ В ENV
 const (
-	apiKey        = "696935c42a6dcd00013273f2"
-	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
-	apiPassphrase = "Gazmaster_358"
+	apiKey        = "YOUR_API_KEY"
+	apiSecret     = "YOUR_API_SECRET"
+	apiPassphrase = "YOUR_API_PASSPHRASE"
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -130,10 +131,9 @@ const (
 	sym2 = "DASH-BTC"
 	sym3 = "BTC-USDT"
 
-	// Шаги ордеров для треугольника
-	step1 = 0.0001   // DASH-USDT
-	step2 = 0.0001   // DASH-BTC
-	step3 = 0.00001  // BTC-USDT
+	// шаги (ты уже проверил — корректные)
+	stepDash = 0.0001
+	stepBTC  = 0.00001
 )
 
 /* ================= AUTH ================= */
@@ -144,19 +144,20 @@ func sign(ts, method, path, body string) string {
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func passphrase() string {
-	mac := hmac.New(sha256.New, []byte(apiPassphrase))
+func buildPassphrase() string {
+	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(apiPassphrase))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func headers(method, path, body string) http.Header {
 	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+
 	h := http.Header{}
 	h.Set("KC-API-KEY", apiKey)
 	h.Set("KC-API-SIGN", sign(ts, method, path, body))
 	h.Set("KC-API-TIMESTAMP", ts)
-	h.Set("KC-API-PASSPHRASE", passphrase())
+	h.Set("KC-API-PASSPHRASE", buildPassphrase())
 	h.Set("KC-API-KEY-VERSION", "2")
 	h.Set("Content-Type", "application/json")
 	return h
@@ -168,10 +169,10 @@ func roundDown(v, step float64) float64 {
 	return math.Floor(v/step) * step
 }
 
-/* ================= SYMBOL PRICES ================= */
+/* ================= MARKET DATA ================= */
 
 func getLastPrice(symbol string) (float64, error) {
-	resp, err := http.Get(fmt.Sprintf("%s/api/v1/market/orderbook/level1?symbol=%s", baseURL, symbol))
+	resp, err := http.Get(baseURL + "/api/v1/market/orderbook/level1?symbol=" + symbol)
 	if err != nil {
 		return 0, err
 	}
@@ -183,147 +184,127 @@ func getLastPrice(symbol string) (float64, error) {
 			Price string `json:"price"`
 		} `json:"data"`
 	}
+
 	body, _ := io.ReadAll(resp.Body)
 	if err := json.Unmarshal(body, &r); err != nil {
 		return 0, err
 	}
 	if r.Code != "200000" {
-		return 0, fmt.Errorf("failed to get last price for %s", symbol)
+		return 0, fmt.Errorf("price fetch failed")
 	}
+
 	return strconv.ParseFloat(r.Data.Price, 64)
 }
 
-/* ================= MAIN ================= */
+/* ================= ORDERS ================= */
 
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	totalStart := time.Now()
-	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
-
-	var dash, btc, usdt float64
-	var leg1Time, leg2Time, leg3Time time.Duration
-
-	/* ================= LEG 1: USDT → DASH ================= */
-	{
-		legStart := time.Now()
-		lastPrice1, err := getLastPrice(sym1)
-		if err != nil {
-			log.Fatal("LEG1 get price failed:", err)
-		}
-		dash = startUSDT / lastPrice1
-		dash = roundDown(dash, step1)
-
-		_, err = placeMarket(sym1, "buy", startUSDT)
-		if err != nil {
-			log.Fatal("LEG1 BUY failed:", err)
-		}
-
-		leg1Time = time.Since(legStart)
-		log.Printf("LEG1 USDT→DASH | DASH=%.6f | total=%s", dash, leg1Time)
-	}
-
-	/* ================= LEG 2: DASH → BTC ================= */
-	{
-		legStart := time.Now()
-		if dash < step2 {
-			log.Fatalf("LEG2 skipped | DASH below min step: %.6f", dash)
-		}
-		dashToSell := roundDown(dash, step2)
-		lastPrice2, err := getLastPrice(sym2)
-		if err != nil {
-			log.Fatal("LEG2 get price failed:", err)
-		}
-		btc = dashToSell * lastPrice2
-		btc = roundDown(btc, step3)
-
-		_, err = placeMarket(sym2, "sell", dashToSell)
-		if err != nil {
-			log.Fatal("LEG2 SELL failed:", err)
-		}
-
-		leg2Time = time.Since(legStart)
-		log.Printf("LEG2 DASH→BTC | BTC=%.8f | total=%s", btc, leg2Time)
-	}
-
-	/* ================= LEG 3: BTC → USDT ================= */
-	{
-		legStart := time.Now()
-		if btc < step3 {
-			log.Printf("LEG3 skipped | BTC below min step: %.8f", btc)
-		} else {
-			btcToSell := roundDown(btc, step3)
-			_, err := placeMarket(sym3, "sell", btcToSell)
-			if err != nil {
-				log.Fatal("LEG3 SELL failed:", err)
-			}
-			price3, err := getLastPrice(sym3)
-			if err != nil {
-				log.Fatal("LEG3 get price failed:", err)
-			}
-			usdt = btcToSell * price3
-			usdt = roundDown(usdt, 0.0001)
-			log.Printf("LEG3 BTC→USDT | BTC sold=%.8f | USDT≈%.4f", btcToSell, usdt)
-		}
-
-		leg3Time = time.Since(legStart)
-	}
-
-	/* ================= SUMMARY ================= */
-	totalTime := time.Since(totalStart)
-	log.Println("====== TRIANGLE SUMMARY ======")
-	log.Printf("LEG1 time: %s", leg1Time)
-	log.Printf("LEG2 time: %s", leg2Time)
-	log.Printf("LEG3 time: %s", leg3Time)
-	log.Printf("TOTAL time: %s", totalTime)
-	log.Printf("PNL ≈ %.6f USDT", usdt-startUSDT)
-}
-
-/* ================= API FUNCTIONS ================= */
-
-func placeMarket(symbol, side string, value float64) (string, error) {
+func placeMarket(symbol, side string, value float64) error {
 	body := map[string]string{
 		"symbol":    symbol,
 		"type":      "market",
 		"side":      side,
 		"clientOid": uuid.NewString(),
 	}
+
 	if side == "buy" {
 		body["funds"] = fmt.Sprintf("%.8f", value)
 	} else {
 		body["size"] = fmt.Sprintf("%.8f", value)
 	}
+
 	raw, _ := json.Marshal(body)
+
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
 	req.Header = headers("POST", "/api/v1/orders", string(raw))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer resp.Body.Close()
 
 	var r struct {
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
-		Data struct {
-			OrderId string `json:"orderId"`
-		} `json:"data"`
 	}
+
 	b, _ := io.ReadAll(resp.Body)
 	if err := json.Unmarshal(b, &r); err != nil {
-		return "", err
+		return err
 	}
+
 	if r.Code != "200000" {
-		return "", fmt.Errorf("order rejected: %s", r.Msg)
+		return fmt.Errorf("order rejected: %s", r.Msg)
 	}
-	return r.Data.OrderId, nil
+
+	return nil
 }
 
+/* ================= MAIN ================= */
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/18 19:47:07.492556 START TRIANGLE 12.00 USDT
-2026/01/18 19:47:08.316658 LEG1 BUY failed:order rejected: Invalid KC-API-PASSPHRASE
-exit status 1
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
+	start := time.Now()
+
+	/* ===== LEG 1: USDT → DASH ===== */
+
+	price1, err := getLastPrice(sym1)
+	if err != nil {
+		log.Fatal("price1 failed:", err)
+	}
+
+	dash := roundDown(startUSDT/price1, stepDash)
+	if dash < stepDash {
+		log.Fatal("LEG1 below step")
+	}
+
+	if err := placeMarket(sym1, "buy", startUSDT); err != nil {
+		log.Fatal("LEG1 BUY failed:", err)
+	}
+
+	log.Printf("LEG1 USDT→DASH | DASH=%.6f", dash)
+
+	/* ===== LEG 2: DASH → BTC ===== */
+
+	price2, err := getLastPrice(sym2)
+	if err != nil {
+		log.Fatal("price2 failed:", err)
+	}
+
+	btc := roundDown(dash*price2, stepBTC)
+	if btc < stepBTC {
+		log.Fatal("LEG2 below step")
+	}
+
+	if err := placeMarket(sym2, "sell", dash); err != nil {
+		log.Fatal("LEG2 SELL failed:", err)
+	}
+
+	log.Printf("LEG2 DASH→BTC | BTC=%.8f", btc)
+
+	/* ===== LEG 3: BTC → USDT ===== */
+
+	price3, err := getLastPrice(sym3)
+	if err != nil {
+		log.Fatal("price3 failed:", err)
+	}
+
+	usdt := roundDown(btc*price3, 0.0001)
+
+	if err := placeMarket(sym3, "sell", btc); err != nil {
+		log.Fatal("LEG3 SELL failed:", err)
+	}
+
+	log.Printf("LEG3 BTC→USDT | USDT≈%.4f", usdt)
+
+	/* ===== SUMMARY ===== */
+
+	log.Println("====== SUMMARY ======")
+	log.Printf("TOTAL TIME: %s", time.Since(start))
+	log.Printf("PNL: %.6f USDT", usdt-startUSDT)
+}
 
 
 
