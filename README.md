@@ -130,10 +130,10 @@ const (
 	sym2 = "DASH-BTC"
 	sym3 = "BTC-USDT"
 
-	// Шаги ордеров для треугольника (получены через Postman или API)
-	step1 = 0.0001  // DASH-USDT
-	step2 = 0.0001  // DASH-BTC
-	step3 = 0.00001 // BTC-USDT
+	// Шаги ордеров для треугольника
+	step1 = 0.0001   // DASH-USDT
+	step2 = 0.0001   // DASH-BTC
+	step3 = 0.00001  // BTC-USDT
 )
 
 /* ================= AUTH ================= */
@@ -145,7 +145,7 @@ func sign(ts, method, path, body string) string {
 }
 
 func passphrase() string {
-	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac := hmac.New(sha256.New, []byte(apiPassphrase))
 	mac.Write([]byte(apiPassphrase))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
@@ -168,6 +168,31 @@ func roundDown(v, step float64) float64 {
 	return math.Floor(v/step) * step
 }
 
+/* ================= SYMBOL PRICES ================= */
+
+func getLastPrice(symbol string) (float64, error) {
+	resp, err := http.Get(fmt.Sprintf("%s/api/v1/market/orderbook/level1?symbol=%s", baseURL, symbol))
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Code string `json:"code"`
+		Data struct {
+			Price string `json:"price"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &r); err != nil {
+		return 0, err
+	}
+	if r.Code != "200000" {
+		return 0, fmt.Errorf("failed to get last price for %s", symbol)
+	}
+	return strconv.ParseFloat(r.Data.Price, 64)
+}
+
 /* ================= MAIN ================= */
 
 func main() {
@@ -181,16 +206,14 @@ func main() {
 	/* ================= LEG 1: USDT → DASH ================= */
 	{
 		legStart := time.Now()
+		lastPrice1, _ := getLastPrice(sym1)
+		dash = startUSDT / lastPrice1       // приблизительное количество DASH
+		dash = roundDown(dash, step1)
+
 		_, err := placeMarket(sym1, "buy", startUSDT)
 		if err != nil {
 			log.Fatal("LEG1 BUY failed:", err)
 		}
-
-		dash, err := getBalance("DASH")
-		if err != nil || dash < step1 {
-			log.Fatal("LEG1 balance failed or below step")
-		}
-		dash = roundDown(dash, step1)
 
 		leg1Time = time.Since(legStart)
 		log.Printf("LEG1 USDT→DASH | DASH=%.6f | total=%s", dash, leg1Time)
@@ -202,18 +225,15 @@ func main() {
 		if dash < step2 {
 			log.Fatalf("LEG2 skipped | DASH below min step: %.6f", dash)
 		}
-		dash = roundDown(dash, step2)
+		dashToSell := roundDown(dash, step2)
+		lastPrice2, _ := getLastPrice(sym2)
+		btc = dashToSell * lastPrice2
+		btc = roundDown(btc, step3)
 
-		_, err := placeMarket(sym2, "sell", dash)
+		_, err := placeMarket(sym2, "sell", dashToSell)
 		if err != nil {
 			log.Fatal("LEG2 SELL failed:", err)
 		}
-
-		btc, err := getBalance("BTC")
-		if err != nil || btc < step3 {
-			log.Fatal("LEG2 balance failed or BTC below min step")
-		}
-		btc = roundDown(btc, step3)
 
 		leg2Time = time.Since(legStart)
 		log.Printf("LEG2 DASH→BTC | BTC=%.8f | total=%s", btc, leg2Time)
@@ -230,12 +250,12 @@ func main() {
 			if err != nil {
 				log.Fatal("LEG3 SELL failed:", err)
 			}
-			log.Printf("LEG3 BTC→USDT | BTC sold=%.8f", btcToSell)
+			usdt = btcToSell * getLastPrice(sym3) // приблизительный USDT
+			usdt = roundDown(usdt, 0.0001)
+			log.Printf("LEG3 BTC→USDT | BTC sold=%.8f | USDT≈%.4f", btcToSell, usdt)
 		}
 
-		usdt, _ = getBalance("USDT")
 		leg3Time = time.Since(legStart)
-		log.Printf("LEG3 BTC→USDT | USDT=%.4f | total=%s", usdt, leg3Time)
 	}
 
 	/* ================= SUMMARY ================= */
@@ -245,7 +265,7 @@ func main() {
 	log.Printf("LEG2 time: %s", leg2Time)
 	log.Printf("LEG3 time: %s", leg3Time)
 	log.Printf("TOTAL time: %s", totalTime)
-	log.Printf("PNL: %.6f USDT", usdt-startUSDT)
+	log.Printf("PNL ≈ %.6f USDT", usdt-startUSDT)
 }
 
 /* ================= API FUNCTIONS ================= */
@@ -289,42 +309,6 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	return r.Data.OrderId, nil
 }
 
-func getBalance(currency string) (float64, error) {
-	req, _ := http.NewRequest("GET", baseURL+"/api/v1/accounts", nil)
-	req.Header = headers("GET", "/api/v1/accounts", "")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Code string `json:"code"`
-		Data []struct {
-			Currency  string `json:"currency"`
-			Type      string `json:"type"`
-			Available string `json:"available"`
-		} `json:"data"`
-	}
-	body, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(body, &r); err != nil {
-		return 0, err
-	}
-
-	for _, acc := range r.Data {
-		if acc.Currency == currency && acc.Type == "trade" {
-			return strconv.ParseFloat(acc.Available, 64)
-		}
-	}
-	return 0, fmt.Errorf("balance %s not found", currency)
-}
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/18 19:28:08.045527 START TRIANGLE 12.00 USDT
-2026/01/18 19:28:09.147994 LEG1 USDT→DASH | DASH=0.140400 | total=1.102340872s
-2026/01/18 19:28:09.148061 LEG2 skipped | DASH below min step: 0.000000
-exit status 1
 
 
 
