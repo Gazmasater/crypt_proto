@@ -89,6 +89,14 @@ gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/step$ go run .
+2026/01/18 19:28:47 Getting steps for triangle: USDT → DASH → BTC → USDT
+====== TRADING STEPS ======
+DASH-USDT step: 0.00010000
+DASH-BTC step: 0.00010000
+BTC-USDT step: 0.00001000
+
+
 package main
 
 import (
@@ -123,9 +131,9 @@ const (
 	sym3 = "BTC-USDT"
 
 	// Шаги ордеров для треугольника (получены через Postman или API)
-	step1 = 0.001   // DASH-USDT
-	step2 = 0.001   // DASH-BTC
-	step3 = 0.0001  // BTC-USDT
+	step1 = 0.0001  // DASH-USDT
+	step2 = 0.0001  // DASH-BTC
+	step3 = 0.00001 // BTC-USDT
 )
 
 /* ================= AUTH ================= */
@@ -312,89 +320,12 @@ func getBalance(currency string) (float64, error) {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/18 19:28:08.045527 START TRIANGLE 12.00 USDT
+2026/01/18 19:28:09.147994 LEG1 USDT→DASH | DASH=0.140400 | total=1.102340872s
+2026/01/18 19:28:09.148061 LEG2 skipped | DASH below min step: 0.000000
+exit status 1
 
-
-
-
-package main
-
-import (
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-)
-
-/* ================= CONFIG ================= */
-
-const (
-	baseURL = "https://api.kucoin.com"
-
-	sym1 = "DASH-USDT"
-	sym2 = "DASH-BTC"
-	sym3 = "BTC-USDT"
-)
-
-/* ================= SYMBOL INFO ================= */
-
-type SymbolInfo struct {
-	Symbol      string  `json:"symbol"`
-	BaseMinSize float64 `json:"baseMinSize,string"`
-	BaseMaxSize float64 `json:"baseMaxSize,string"`
-	QuoteMinSize float64 `json:"quoteMinSize,string"`
-}
-
-func getStep(symbol string) (float64, error) {
-	resp, err := http.Get(baseURL + "/api/v1/symbols/" + symbol)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, err
-	}
-
-	var r struct {
-		Code string     `json:"code"`
-		Data SymbolInfo `json:"data"`
-	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return 0, err
-	}
-
-	if r.Code != "200000" {
-		return 0, fmt.Errorf("failed to get symbol info for %s", symbol)
-	}
-
-	return r.Data.BaseMinSize, nil
-}
-
-/* ================= MAIN ================= */
-
-func main() {
-	log.Println("Getting steps for triangle: USDT → DASH → BTC → USDT")
-
-	step1, err := getStep(sym1)
-	if err != nil {
-		log.Fatal(err)
-	}
-	step2, err := getStep(sym2)
-	if err != nil {
-		log.Fatal(err)
-	}
-	step3, err := getStep(sym3)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println("====== TRADING STEPS ======")
-	fmt.Printf("%s step: %.8f\n", sym1, step1)
-	fmt.Printf("%s step: %.8f\n", sym2, step2)
-	fmt.Printf("%s step: %.8f\n", sym3, step3)
-}
 
 
 
