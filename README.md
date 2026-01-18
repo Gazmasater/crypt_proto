@@ -384,6 +384,21 @@ func main() {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"severity": 8,
+	"message": "expected ':', found newline",
+	"source": "syntax",
+	"startLineNumber": 243,
+	"startColumn": 37,
+	"endLineNumber": 243,
+	"endColumn": 37,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
+
+
 
 
 
