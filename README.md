@@ -124,9 +124,9 @@ import (
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "YOUR_API_KEY"
-	apiSecret     = "YOUR_API_SECRET"
-	apiPassphrase = "YOUR_API_PASSPHRASE"
+	apiKey        = "696935c42a6dcd00013273f2"
+	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
+	apiPassphrase = "Gazmaster_358"
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -395,6 +395,10 @@ func main() {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/19 01:56:47.245030 START TRIANGLE 12
+2026/01/19 01:56:52.484994 LEG1 timeout
+exit status 1
 
 
 
