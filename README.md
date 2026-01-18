@@ -397,4 +397,11 @@ func main() {
 }
 
 
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/19 02:14:53.963535 START TRIANGLE 12
+2026/01/19 02:14:55.964485 LEG1 OK 0.1487
+2026/01/19 02:14:56.267326 LEG2 OK 0.1487
+2026/01/19 02:14:56.574491 LEG3 error:order rejected: Balance insufficient!
+exit status 1
+
 
