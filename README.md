@@ -206,11 +206,14 @@ func main() {
 	/* ================= LEG 1: USDT → DASH ================= */
 	{
 		legStart := time.Now()
-		lastPrice1, _ := getLastPrice(sym1)
-		dash = startUSDT / lastPrice1       // приблизительное количество DASH
+		lastPrice1, err := getLastPrice(sym1)
+		if err != nil {
+			log.Fatal("LEG1 get price failed:", err)
+		}
+		dash = startUSDT / lastPrice1
 		dash = roundDown(dash, step1)
 
-		_, err := placeMarket(sym1, "buy", startUSDT)
+		_, err = placeMarket(sym1, "buy", startUSDT)
 		if err != nil {
 			log.Fatal("LEG1 BUY failed:", err)
 		}
@@ -226,11 +229,14 @@ func main() {
 			log.Fatalf("LEG2 skipped | DASH below min step: %.6f", dash)
 		}
 		dashToSell := roundDown(dash, step2)
-		lastPrice2, _ := getLastPrice(sym2)
+		lastPrice2, err := getLastPrice(sym2)
+		if err != nil {
+			log.Fatal("LEG2 get price failed:", err)
+		}
 		btc = dashToSell * lastPrice2
 		btc = roundDown(btc, step3)
 
-		_, err := placeMarket(sym2, "sell", dashToSell)
+		_, err = placeMarket(sym2, "sell", dashToSell)
 		if err != nil {
 			log.Fatal("LEG2 SELL failed:", err)
 		}
@@ -250,7 +256,11 @@ func main() {
 			if err != nil {
 				log.Fatal("LEG3 SELL failed:", err)
 			}
-			usdt = btcToSell * getLastPrice(sym3) // приблизительный USDT
+			price3, err := getLastPrice(sym3)
+			if err != nil {
+				log.Fatal("LEG3 get price failed:", err)
+			}
+			usdt = btcToSell * price3
 			usdt = roundDown(usdt, 0.0001)
 			log.Printf("LEG3 BTC→USDT | BTC sold=%.8f | USDT≈%.4f", btcToSell, usdt)
 		}
@@ -308,34 +318,6 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	}
 	return r.Data.OrderId, nil
 }
-
-
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "TooManyValues",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "TooManyValues"
-		}
-	},
-	"severity": 8,
-	"message": "multiple-value getLastPrice(sym3) (value of type (float64, error)) in single-value context",
-	"source": "compiler",
-	"startLineNumber": 154,
-	"startColumn": 23,
-	"endLineNumber": 154,
-	"endColumn": 41,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
-
 
 
 
