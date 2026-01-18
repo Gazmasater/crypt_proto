@@ -118,20 +118,20 @@ import (
 
 /* ================= CONFIG ================= */
 
-// ⚠️ РЕКОМЕНДУЮ ВЫНЕСТИ В ENV
 const (
 	apiKey        = "YOUR_API_KEY"
 	apiSecret     = "YOUR_API_SECRET"
 	apiPassphrase = "YOUR_API_PASSPHRASE"
 
-	baseURL   = "https://api.kucoin.com"
+	baseURL = "https://api.kucoin.com"
+
 	startUSDT = 12.0
 
 	sym1 = "DASH-USDT"
 	sym2 = "DASH-BTC"
 	sym3 = "BTC-USDT"
 
-	// шаги (ты уже проверил — корректные)
+	// шаги (зафиксированы)
 	stepDash = 0.0001
 	stepBTC  = 0.00001
 )
@@ -144,7 +144,7 @@ func sign(ts, method, path, body string) string {
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func buildPassphrase() string {
+func passphrase() string {
 	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(apiPassphrase))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
@@ -152,12 +152,11 @@ func buildPassphrase() string {
 
 func headers(method, path, body string) http.Header {
 	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-
 	h := http.Header{}
 	h.Set("KC-API-KEY", apiKey)
 	h.Set("KC-API-SIGN", sign(ts, method, path, body))
 	h.Set("KC-API-TIMESTAMP", ts)
-	h.Set("KC-API-PASSPHRASE", buildPassphrase())
+	h.Set("KC-API-PASSPHRASE", passphrase())
 	h.Set("KC-API-KEY-VERSION", "2")
 	h.Set("Content-Type", "application/json")
 	return h
@@ -169,36 +168,9 @@ func roundDown(v, step float64) float64 {
 	return math.Floor(v/step) * step
 }
 
-/* ================= MARKET DATA ================= */
-
-func getLastPrice(symbol string) (float64, error) {
-	resp, err := http.Get(baseURL + "/api/v1/market/orderbook/level1?symbol=" + symbol)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Code string `json:"code"`
-		Data struct {
-			Price string `json:"price"`
-		} `json:"data"`
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(body, &r); err != nil {
-		return 0, err
-	}
-	if r.Code != "200000" {
-		return 0, fmt.Errorf("price fetch failed")
-	}
-
-	return strconv.ParseFloat(r.Data.Price, 64)
-}
-
 /* ================= ORDERS ================= */
 
-func placeMarket(symbol, side string, value float64) error {
+func placeMarket(symbol, side string, value float64) (string, error) {
 	body := map[string]string{
 		"symbol":    symbol,
 		"type":      "market",
@@ -219,99 +191,108 @@ func placeMarket(symbol, side string, value float64) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	var r struct {
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
+		Data struct {
+			OrderId string `json:"orderId"`
+		} `json:"data"`
 	}
 
 	b, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(b, &r); err != nil {
-		return err
-	}
+	json.Unmarshal(b, &r)
 
 	if r.Code != "200000" {
-		return fmt.Errorf("order rejected: %s", r.Msg)
+		return "", fmt.Errorf("order rejected: %s", r.Msg)
 	}
 
-	return nil
+	return r.Data.OrderId, nil
+}
+
+/* ================= WAIT FILL ================= */
+
+func waitFilled(orderId string) (dealSize, dealFunds float64, err error) {
+	for {
+		req, _ := http.NewRequest("GET", baseURL+"/api/v1/orders/"+orderId, nil)
+		req.Header = headers("GET", "/api/v1/orders/"+orderId, "")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0, 0, err
+		}
+		defer resp.Body.Close()
+
+		var r struct {
+			Code string `json:"code"`
+			Data struct {
+				IsActive   bool   `json:"isActive"`
+				DealSize  string `json:"dealSize"`
+				DealFunds string `json:"dealFunds"`
+			} `json:"data"`
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		json.Unmarshal(body, &r)
+
+		if !r.Data.IsActive {
+			size, _ := strconv.ParseFloat(r.Data.DealSize, 64)
+			funds, _ := strconv.ParseFloat(r.Data.DealFunds, 64)
+			return size, funds, nil
+		}
+
+		time.Sleep(15 * time.Millisecond)
+	}
 }
 
 /* ================= MAIN ================= */
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
-	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 	start := time.Now()
 
+	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
+
 	/* ===== LEG 1: USDT → DASH ===== */
-
-	price1, err := getLastPrice(sym1)
+	oid1, err := placeMarket(sym1, "buy", startUSDT)
 	if err != nil {
-		log.Fatal("price1 failed:", err)
+		log.Fatal("LEG1 failed:", err)
 	}
 
-	dash := roundDown(startUSDT/price1, stepDash)
-	if dash < stepDash {
-		log.Fatal("LEG1 below step")
-	}
+	dash, _, _ := waitFilled(oid1)
+	dash = roundDown(dash, stepDash)
 
-	if err := placeMarket(sym1, "buy", startUSDT); err != nil {
-		log.Fatal("LEG1 BUY failed:", err)
-	}
-
-	log.Printf("LEG1 USDT→DASH | DASH=%.6f", dash)
+	log.Printf("LEG1 OK | DASH=%.6f", dash)
 
 	/* ===== LEG 2: DASH → BTC ===== */
-
-	price2, err := getLastPrice(sym2)
+	oid2, err := placeMarket(sym2, "sell", dash)
 	if err != nil {
-		log.Fatal("price2 failed:", err)
+		log.Fatal("LEG2 failed:", err)
 	}
 
-	btc := roundDown(dash*price2, stepBTC)
-	if btc < stepBTC {
-		log.Fatal("LEG2 below step")
-	}
+	_, btc, _ := waitFilled(oid2)
+	btc = roundDown(btc, stepBTC)
 
-	if err := placeMarket(sym2, "sell", dash); err != nil {
-		log.Fatal("LEG2 SELL failed:", err)
-	}
-
-	log.Printf("LEG2 DASH→BTC | BTC=%.8f", btc)
+	log.Printf("LEG2 OK | BTC=%.8f", btc)
 
 	/* ===== LEG 3: BTC → USDT ===== */
-
-	price3, err := getLastPrice(sym3)
+	oid3, err := placeMarket(sym3, "sell", btc)
 	if err != nil {
-		log.Fatal("price3 failed:", err)
+		log.Fatal("LEG3 failed:", err)
 	}
 
-	usdt := roundDown(btc*price3, 0.0001)
+	_, usdt, _ := waitFilled(oid3)
 
-	if err := placeMarket(sym3, "sell", btc); err != nil {
-		log.Fatal("LEG3 SELL failed:", err)
-	}
-
-	log.Printf("LEG3 BTC→USDT | USDT≈%.4f", usdt)
-
-	/* ===== SUMMARY ===== */
+	log.Printf("LEG3 OK | USDT=%.6f", usdt)
 
 	log.Println("====== SUMMARY ======")
-	log.Printf("TOTAL TIME: %s", time.Since(start))
 	log.Printf("PNL: %.6f USDT", usdt-startUSDT)
+	log.Printf("TOTAL TIME: %s", time.Since(start))
 }
 
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/18 20:07:56.449715 START TRIANGLE 12.00 USDT
-2026/01/18 20:07:58.236574 LEG1 USDT→DASH | DASH=0.137000
-2026/01/18 20:07:59.055617 LEG2 SELL failed:order rejected: Balance insufficient!
-exit status 1
 
 
 
