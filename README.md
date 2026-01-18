@@ -312,5 +312,30 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "TooManyValues",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "TooManyValues"
+		}
+	},
+	"severity": 8,
+	"message": "multiple-value getLastPrice(sym3) (value of type (float64, error)) in single-value context",
+	"source": "compiler",
+	"startLineNumber": 154,
+	"startColumn": 23,
+	"endLineNumber": 154,
+	"endColumn": 41,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
+
+
 
 
