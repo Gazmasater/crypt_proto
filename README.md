@@ -123,9 +123,9 @@ import (
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "YOUR_API_KEY"
-	apiSecret     = "YOUR_API_SECRET"
-	apiPassphrase = "YOUR_API_PASSPHRASE" // Для v2 используем как есть
+	apiKey        = "696935c42a6dcd00013273f2"
+	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
+	apiPassphrase = "Gazmaster_358" // Для v2 используем как есть
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -215,7 +215,7 @@ func main() {
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
 	// WebSocket для отслеживания fills
-	wsToken, wsURL := getWSToken()
+	_, wsURL := getWSToken()
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		log.Fatal("WS connect error:", err)
@@ -268,7 +268,7 @@ func getWSToken() (token, url string) {
 	var r struct {
 		Code string `json:"code"`
 		Data struct {
-			Token string `json:"token"`
+			Token           string `json:"token"`
 			InstanceServers []struct {
 				Endpoint string `json:"endpoint"`
 			} `json:"instanceServers"`
