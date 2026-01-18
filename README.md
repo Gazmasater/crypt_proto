@@ -124,9 +124,9 @@ import (
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "YOUR_API_KEY"
-	apiSecret     = "YOUR_API_SECRET"
-	apiPassphrase = "YOUR_API_PASSPHRASE"
+	apiKey        = "696935c42a6dcd00013273f2"
+	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
+	apiPassphrase = "Gazmaster_358"
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -139,8 +139,8 @@ const (
 	step2 = 0.00001
 	step3 = 0.01
 
-	orderTimeout  = 3 * time.Second
-	safetyMargin  = 0.998 // учитываем комиссию 0.2%
+	orderTimeout = 3 * time.Second
+	safetyMargin = 0.999 // учитываем комиссию 0.1%
 )
 
 /* ================= AUTH ================= */
@@ -402,4 +402,10 @@ func main() {
 	log.Println("LEG3 OK", usdt)
 	log.Println("PNL:", usdt-startUSDT)
 }
+
+
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/19 02:29:34.232556 START TRIANGLE 12
+2026/01/19 02:29:39.212632 LEG1 timeout
+exit status 1
 
