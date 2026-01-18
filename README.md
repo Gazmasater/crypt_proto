@@ -310,4 +310,14 @@ func waitFill(conn *websocket.Conn, orderID string, step float64) float64 {
 }
 
 
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/19 00:36:06.717736 START TRIANGLE 12.00 USDT
+2026/01/19 00:36:08.811645 LEG1 order failed:order rejected: Invalid KC-API-PASSPHRASE
+exit status 1
+gaz358@gaz358-BOD-W
+
+
+
+
+
 
