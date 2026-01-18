@@ -124,9 +124,9 @@ import (
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "696935c42a6dcd00013273f2"
-	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
-	apiPassphrase = "Gazmaster_358"
+	apiKey        = "YOUR_API_KEY"
+	apiSecret     = "YOUR_API_SECRET"
+	apiPassphrase = "YOUR_API_PASSPHRASE"
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -170,9 +170,7 @@ func headers(method, path, body string) http.Header {
 
 /* ================= REST ================= */
 
-func placeMarket(symbol, side string, value float64) (string, error) {
-	clientOid := uuid.NewString()
-
+func placeMarketWithOid(symbol, side string, value float64, clientOid string) error {
 	body := map[string]string{
 		"symbol":    symbol,
 		"type":      "market",
@@ -187,13 +185,12 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	}
 
 	raw, _ := json.Marshal(body)
-
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
 	req.Header = headers("POST", "/api/v1/orders", string(raw))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -203,14 +200,14 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", err
+		return err
 	}
 
 	if r.Code != "200000" {
-		return "", fmt.Errorf("order rejected: %s", r.Msg)
+		return fmt.Errorf("order rejected: %s", r.Msg)
 	}
 
-	return clientOid, nil
+	return nil
 }
 
 /* ================= WEBSOCKET ================= */
@@ -342,13 +339,15 @@ func main() {
 		}
 	}()
 
-	/* ===== LEG 1 ===== */
-	c1, _ := placeMarket(sym1, "buy", startUSDT)
-	ch1 := router.Register(c1)
+	// ===== LEG 1 =====
+	oid1 := uuid.NewString()
+	ch1 := router.Register(oid1)
+	if err := placeMarketWithOid(sym1, "buy", startUSDT, oid1); err != nil {
+		log.Fatal("LEG1 error:", err)
+	}
 
 	ctx1, cancel1 := context.WithTimeout(context.Background(), orderTimeout)
 	defer cancel1()
-
 	var dash float64
 	select {
 	case v := <-ch1:
@@ -358,13 +357,15 @@ func main() {
 	}
 	log.Println("LEG1 OK", dash)
 
-	/* ===== LEG 2 ===== */
-	c2, _ := placeMarket(sym2, "sell", dash)
-	ch2 := router.Register(c2)
+	// ===== LEG 2 =====
+	oid2 := uuid.NewString()
+	ch2 := router.Register(oid2)
+	if err := placeMarketWithOid(sym2, "sell", dash, oid2); err != nil {
+		log.Fatal("LEG2 error:", err)
+	}
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), orderTimeout)
 	defer cancel2()
-
 	var btc float64
 	select {
 	case v := <-ch2:
@@ -374,13 +375,15 @@ func main() {
 	}
 	log.Println("LEG2 OK", btc)
 
-	/* ===== LEG 3 ===== */
-	c3, _ := placeMarket(sym3, "sell", btc)
-	ch3 := router.Register(c3)
+	// ===== LEG 3 =====
+	oid3 := uuid.NewString()
+	ch3 := router.Register(oid3)
+	if err := placeMarketWithOid(sym3, "sell", btc, oid3); err != nil {
+		log.Fatal("LEG3 error:", err)
+	}
 
 	ctx3, cancel3 := context.WithTimeout(context.Background(), orderTimeout)
 	defer cancel3()
-
 	var usdt float64
 	select {
 	case v := <-ch3:
@@ -388,18 +391,9 @@ func main() {
 	case <-ctx3.Done():
 		log.Fatal("LEG3 timeout")
 	}
-
 	log.Println("LEG3 OK", usdt)
 	log.Println("PNL:", usdt-startUSDT)
 }
-
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/19 01:56:47.245030 START TRIANGLE 12
-2026/01/19 01:56:52.484994 LEG1 timeout
-exit status 1
-
 
 
 
