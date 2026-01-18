@@ -162,49 +162,75 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	startUSDT := 12.0
-	log.Printf("START %.2f USDT", startUSDT)
+	start := time.Now()
 
-	// -------- LEG 1: USDT → DASH --------
+	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
+
+	// ================= LEG 1 =================
+	t1 := time.Now()
+
 	_, err := placeMarket("DASH-USDT", "buy", startUSDT)
 	if err != nil {
-		log.Fatal("LEG1 failed:", err)
+		log.Fatal("LEG1 BUY failed:", err)
 	}
 
 	time.Sleep(50 * time.Millisecond)
 
-	dash, _ := getBalance("DASH")
-	log.Printf("DASH balance: %.8f", dash)
-
-	if dash <= 0 {
-		log.Fatal("DASH not received")
+	dash, err := getBalance("DASH")
+	if err != nil || dash <= 0 {
+		log.Fatal("LEG1 balance failed:", err)
 	}
 
-	// -------- LEG 2: DASH → BTC --------
+	dur1 := time.Since(t1)
+	log.Printf("LEG1 USDT→DASH done | DASH=%.6f | time=%s", dash, dur1)
+
+	// ================= LEG 2 =================
+	t2 := time.Now()
+
 	dash = roundDown(dash, 0.001)
 
 	_, err = placeMarket("DASH-BTC", "sell", dash)
 	if err != nil {
-		log.Fatal("LEG2 failed:", err)
+		log.Fatal("LEG2 SELL failed:", err)
 	}
 
 	time.Sleep(50 * time.Millisecond)
 
-	btc, _ := getBalance("BTC")
-	log.Printf("BTC balance: %.8f", btc)
+	btc, err := getBalance("BTC")
+	if err != nil || btc <= 0 {
+		log.Fatal("LEG2 balance failed:", err)
+	}
 
-	// -------- LEG 3: BTC → USDT --------
+	dur2 := time.Since(t2)
+	log.Printf("LEG2 DASH→BTC done | BTC=%.8f | time=%s", btc, dur2)
+
+	// ================= LEG 3 =================
+	t3 := time.Now()
+
 	btc = roundDown(btc, 0.0001)
 
-	_, err = placeMarket("BTC-USDT", "sell", btc)
-	if err != nil {
-		log.Fatal("LEG3 failed:", err)
+	if btc >= 0.0001 {
+		_, err = placeMarket("BTC-USDT", "sell", btc)
+		if err != nil {
+			log.Fatal("LEG3 SELL failed:", err)
+		}
+	} else {
+		log.Printf("LEG3 skipped | BTC dust=%.8f", btc)
 	}
 
 	time.Sleep(50 * time.Millisecond)
 
-	usdt, _ := getBalance("USDT")
+	usdt, err := getBalance("USDT")
+	if err != nil {
+		log.Fatal("LEG3 balance failed:", err)
+	}
+
+	dur3 := time.Since(t3)
+	total := time.Since(start)
+
 	log.Println("====== RESULT ======")
-	log.Printf("END USDT: %.4f", usdt)
-	log.Printf("PNL: %.4f", usdt-startUSDT)
+	log.Printf("LEG3 BTC→USDT done | USDT=%.4f | time=%s", usdt, dur3)
+	log.Printf("TOTAL TRIANGLE TIME: %s", total)
+	log.Printf("PNL: %.6f USDT", usdt-startUSDT)
 }
 
