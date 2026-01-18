@@ -383,3 +383,27 @@ func main() {
 	log.Println("PNL:", usdt-startUSDT)
 }
 
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: placeMarketWithOid",
+	"source": "compiler",
+	"startLineNumber": 247,
+	"startColumn": 12,
+	"endLineNumber": 247,
+	"endColumn": 30,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
