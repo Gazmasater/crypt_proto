@@ -124,9 +124,9 @@ import (
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "696935c42a6dcd00013273f2"
-	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
-	apiPassphrase = "Gazmaster_358"
+	apiKey        = "YOUR_API_KEY"
+	apiSecret     = "YOUR_API_SECRET"
+	apiPassphrase = "YOUR_API_PASSPHRASE"
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -150,7 +150,7 @@ func sign(ts, method, path, body string) string {
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func passphrase() string {
+func signPassphrase() string {
 	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(apiPassphrase))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
@@ -162,7 +162,7 @@ func headers(method, path, body string) http.Header {
 	h.Set("KC-API-KEY", apiKey)
 	h.Set("KC-API-SIGN", sign(ts, method, path, body))
 	h.Set("KC-API-TIMESTAMP", ts)
-	h.Set("KC-API-PASSPHRASE", passphrase())
+	h.Set("KC-API-PASSPHRASE", signPassphrase())
 	h.Set("KC-API-KEY-VERSION", "2")
 	h.Set("Content-Type", "application/json")
 	return h
@@ -171,11 +171,13 @@ func headers(method, path, body string) http.Header {
 /* ================= REST ================= */
 
 func placeMarket(symbol, side string, value float64) (string, error) {
+	clientOid := uuid.NewString()
+
 	body := map[string]string{
 		"symbol":    symbol,
 		"type":      "market",
 		"side":      side,
-		"clientOid": uuid.NewString(),
+		"clientOid": clientOid,
 	}
 
 	if side == "buy" {
@@ -185,6 +187,7 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	}
 
 	raw, _ := json.Marshal(body)
+
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
 	req.Header = headers("POST", "/api/v1/orders", string(raw))
 
@@ -197,9 +200,6 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	var r struct {
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
-		Data struct {
-			OrderId string `json:"orderId"`
-		} `json:"data"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
@@ -210,7 +210,7 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 		return "", fmt.Errorf("order rejected: %s", r.Msg)
 	}
 
-	return r.Data.OrderId, nil
+	return clientOid, nil
 }
 
 /* ================= WEBSOCKET ================= */
@@ -245,38 +245,38 @@ func getPrivateWSURL() (string, error) {
 /* ================= ORDER ROUTER ================= */
 
 type OrderRouter struct {
-	mu    sync.Mutex
-	wait  map[string]chan float64
+	mu   sync.Mutex
+	wait map[string]chan float64
 }
 
 func NewOrderRouter() *OrderRouter {
-	return &OrderRouter{
-		wait: make(map[string]chan float64),
-	}
+	return &OrderRouter{wait: make(map[string]chan float64)}
 }
 
-func (r *OrderRouter) Register(orderID string) chan float64 {
+func (r *OrderRouter) Register(clientOid string) chan float64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ch := make(chan float64, 1)
-	r.wait[orderID] = ch
+	r.wait[clientOid] = ch
 	return ch
 }
 
-func (r *OrderRouter) Resolve(orderID string, filled float64) {
+func (r *OrderRouter) Resolve(clientOid string, filled float64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if ch, ok := r.wait[orderID]; ok {
+	if ch, ok := r.wait[clientOid]; ok {
 		ch <- filled
-		delete(r.wait, orderID)
+		delete(r.wait, clientOid)
 	}
 }
 
-/* ================= MAIN ================= */
+/* ================= UTILS ================= */
 
 func roundDown(v, step float64) float64 {
 	return math.Floor(v/step) * step
 }
+
+/* ================= MAIN ================= */
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -293,9 +293,18 @@ func main() {
 	}
 	defer conn.Close()
 
+	// heartbeat
+	go func() {
+		t := time.NewTicker(25 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping"}`))
+		}
+	}()
+
 	// subscribe
 	sub := map[string]interface{}{
-		"id":             "1",
+		"id":             uuid.NewString(),
 		"type":           "subscribe",
 		"topic":          "/spotMarket/tradeOrders",
 		"privateChannel": true,
@@ -305,6 +314,7 @@ func main() {
 
 	router := NewOrderRouter()
 
+	// WS reader
 	go func() {
 		for {
 			_, msg, err := conn.ReadMessage()
@@ -316,8 +326,8 @@ func main() {
 				Type  string `json:"type"`
 				Topic string `json:"topic"`
 				Data  struct {
-					OrderId    string `json:"orderId"`
 					Type       string `json:"type"`
+					ClientOid string `json:"clientOid"`
 					FilledSize string `json:"filledSize"`
 				} `json:"data"`
 			}
@@ -328,53 +338,51 @@ func main() {
 
 			if evt.Topic == "/spotMarket/tradeOrders" && evt.Data.Type == "done" {
 				val, _ := strconv.ParseFloat(evt.Data.FilledSize, 64)
-				router.Resolve(evt.Data.OrderId, val)
+				router.Resolve(evt.Data.ClientOid, val)
 			}
 		}
 	}()
 
-	// ===== LEG 1 =====
-	o1, _ := placeMarket(sym1, "buy", startUSDT)
-	ch1 := router.Register(o1)
+	/* ===== LEG 1 ===== */
+	c1, _ := placeMarket(sym1, "buy", startUSDT)
+	ch1 := router.Register(c1)
 
 	ctx1, cancel1 := context.WithTimeout(context.Background(), orderTimeout)
 	defer cancel1()
 
 	var dash float64
 	select {
-	case dash = roundDown(<-ch1, step1)
+	case dash = roundDown(<-ch1, step1):
 	case <-ctx1.Done():
 		log.Fatal("LEG1 timeout")
 	}
-
 	log.Println("LEG1 OK", dash)
 
-	// ===== LEG 2 =====
-	o2, _ := placeMarket(sym2, "sell", dash)
-	ch2 := router.Register(o2)
+	/* ===== LEG 2 ===== */
+	c2, _ := placeMarket(sym2, "sell", dash)
+	ch2 := router.Register(c2)
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), orderTimeout)
 	defer cancel2()
 
 	var btc float64
 	select {
-	case btc = roundDown(<-ch2, step2)
+	case btc = roundDown(<-ch2, step2):
 	case <-ctx2.Done():
 		log.Fatal("LEG2 timeout")
 	}
-
 	log.Println("LEG2 OK", btc)
 
-	// ===== LEG 3 =====
-	o3, _ := placeMarket(sym3, "sell", btc)
-	ch3 := router.Register(o3)
+	/* ===== LEG 3 ===== */
+	c3, _ := placeMarket(sym3, "sell", btc)
+	ch3 := router.Register(c3)
 
 	ctx3, cancel3 := context.WithTimeout(context.Background(), orderTimeout)
 	defer cancel3()
 
 	var usdt float64
 	select {
-	case usdt = roundDown(<-ch3, step3)
+	case usdt = roundDown(<-ch3, step3):
 	case <-ctx3.Done():
 		log.Fatal("LEG3 timeout")
 	}
@@ -382,21 +390,6 @@ func main() {
 	log.Println("LEG3 OK", usdt)
 	log.Println("PNL:", usdt-startUSDT)
 }
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"severity": 8,
-	"message": "expected ':', found newline",
-	"source": "syntax",
-	"startLineNumber": 243,
-	"startColumn": 37,
-	"endLineNumber": 243,
-	"endColumn": 37,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
 
 
 
