@@ -140,13 +140,52 @@ func roundDown(v, step float64) float64 {
 	return math.Floor(v/step) * step
 }
 
+/* ================= SYMBOL INFO ================= */
+
+type SymbolInfo struct {
+	Symbol       string  `json:"symbol"`
+	BaseMinSize  float64 `json:"baseMinSize,string"`
+	BaseMaxSize  float64 `json:"baseMaxSize,string"`
+	QuoteMinSize float64 `json:"quoteMinSize,string"`
+}
+
+func getSymbolStep(symbol string) (float64, error) {
+	req, _ := http.NewRequest("GET", baseURL+"/api/v1/symbols/"+symbol, nil)
+	req.Header = headers("GET", "/api/v1/symbols/"+symbol, "")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Code string     `json:"code"`
+		Data SymbolInfo `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &r); err != nil {
+		return 0, err
+	}
+
+	if r.Code != "200000" {
+		return 0, fmt.Errorf("failed to get symbol info")
+	}
+
+	return r.Data.BaseMinSize, nil
+}
+
 /* ================= MAIN ================= */
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
 	totalStart := time.Now()
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
+
+	// Получаем шаги для каждой пары
+	step1, _ := getSymbolStep(sym1) // DASH-USDT
+	step2, _ := getSymbolStep(sym2) // DASH-BTC
+	step3, _ := getSymbolStep(sym3) // BTC-USDT
 
 	var dash, btc, usdt float64
 	var leg1Time, leg2Time, leg3Time time.Duration
@@ -154,83 +193,61 @@ func main() {
 	/* ================= LEG 1: USDT → DASH ================= */
 	{
 		legStart := time.Now()
-
-		apiStart := time.Now()
 		_, err := placeMarket(sym1, "buy", startUSDT)
-		apiDur := time.Since(apiStart)
 		if err != nil {
 			log.Fatal("LEG1 BUY failed:", err)
 		}
 
-		dash, err := getBalance("DASH")
-		if err != nil || dash <= 0 {
-			log.Fatal("LEG1 balance failed:", err)
+		dash, err = getBalance("DASH")
+		if err != nil || dash < step1 {
+			log.Fatal("LEG1 balance failed or below step")
 		}
+		dash = roundDown(dash, step1)
 
 		leg1Time = time.Since(legStart)
-		log.Printf(
-			"LEG1 USDT→DASH | DASH=%.6f | api=%s | total=%s",
-			dash, apiDur, leg1Time,
-		)
+		log.Printf("LEG1 USDT→DASH | DASH=%.6f | total=%s", dash, leg1Time)
 	}
 
 	/* ================= LEG 2: DASH → BTC ================= */
 	{
 		legStart := time.Now()
+		if dash < step2 {
+			log.Fatalf("LEG2 skipped | DASH below min step: %.6f", dash)
+		}
+		dash = roundDown(dash, step2)
 
-		// округление по шагу DASH-BTC
-		const stepDash = 0.001
-		dash = roundDown(dash, stepDash)
-
-		apiStart := time.Now()
 		_, err := placeMarket(sym2, "sell", dash)
-		apiDur := time.Since(apiStart)
 		if err != nil {
 			log.Fatal("LEG2 SELL failed:", err)
 		}
 
-		btc, err := getBalance("BTC")
-		if err != nil || btc <= 0 {
-			log.Fatal("LEG2 balance failed:", err)
+		btc, err = getBalance("BTC")
+		if err != nil || btc < step3 {
+			log.Fatal("LEG2 balance failed or BTC below min step")
 		}
+		btc = roundDown(btc, step3)
 
 		leg2Time = time.Since(legStart)
-		log.Printf(
-			"LEG2 DASH→BTC | BTC=%.8f | api=%s | total=%s",
-			btc, apiDur, leg2Time,
-		)
+		log.Printf("LEG2 DASH→BTC | BTC=%.8f | total=%s", btc, leg2Time)
 	}
 
 	/* ================= LEG 3: BTC → USDT ================= */
 	{
 		legStart := time.Now()
-
-		const stepBTC = 0.00001
-		const minSizeBTC = 0.00001
-
-		if btc >= minSizeBTC {
-			btcToSell := roundDown(btc, stepBTC)
-
-			apiStart := time.Now()
+		if btc < step3 {
+			log.Printf("LEG3 skipped | BTC below min step: %.8f", btc)
+		} else {
+			btcToSell := roundDown(btc, step3)
 			_, err := placeMarket(sym3, "sell", btcToSell)
-			apiDur := time.Since(apiStart)
 			if err != nil {
 				log.Fatal("LEG3 SELL failed:", err)
 			}
-
-			log.Printf("LEG3 BTC→USDT | BTC sold=%.8f | api time=%s", btcToSell, apiDur)
-		} else {
-			log.Printf("LEG3 skipped | BTC below minimum=%.8f", btc)
+			log.Printf("LEG3 BTC→USDT | BTC sold=%.8f", btcToSell)
 		}
 
 		usdt, _ = getBalance("USDT")
-		balDur := time.Since(legStart)
-
 		leg3Time = time.Since(legStart)
-		log.Printf(
-			"LEG3 BTC→USDT | USDT=%.4f | total=%s | balance fetch=%s",
-			usdt, leg3Time, balDur,
-		)
+		log.Printf("LEG3 BTC→USDT | USDT=%.4f | total=%s", usdt, leg3Time)
 	}
 
 	/* ================= SUMMARY ================= */
@@ -252,13 +269,11 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 		"side":      side,
 		"clientOid": uuid.NewString(),
 	}
-
 	if side == "buy" {
 		body["funds"] = fmt.Sprintf("%.8f", value)
 	} else {
 		body["size"] = fmt.Sprintf("%.8f", value)
 	}
-
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
 	req.Header = headers("POST", "/api/v1/orders", string(raw))
@@ -276,23 +291,19 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 			OrderId string `json:"orderId"`
 		} `json:"data"`
 	}
-
 	b, _ := io.ReadAll(resp.Body)
 	if err := json.Unmarshal(b, &r); err != nil {
 		return "", err
 	}
-
 	if r.Code != "200000" {
 		return "", fmt.Errorf("order rejected: %s", r.Msg)
 	}
-
 	return r.Data.OrderId, nil
 }
 
 func getBalance(currency string) (float64, error) {
 	req, _ := http.NewRequest("GET", baseURL+"/api/v1/accounts", nil)
 	req.Header = headers("GET", "/api/v1/accounts", "")
-
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, err
@@ -307,7 +318,6 @@ func getBalance(currency string) (float64, error) {
 			Available string `json:"available"`
 		} `json:"data"`
 	}
-
 	body, _ := io.ReadAll(resp.Body)
 	if err := json.Unmarshal(body, &r); err != nil {
 		return 0, err
@@ -318,15 +328,8 @@ func getBalance(currency string) (float64, error) {
 			return strconv.ParseFloat(acc.Available, 64)
 		}
 	}
-
 	return 0, fmt.Errorf("balance %s not found", currency)
 }
 
-
-2026/01/18 15:59:55.301546 START TRIANGLE 12.00 USDT
-2026/01/18 15:59:56.416630 LEG1 USDT→DASH | DASH=0.150600 | api=705.463733ms | total=1.114948957s
-2026/01/18 15:59:56.826180 LEG2 SELL failed:order rejected: The quantity is invalid.
-exit status 1
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$
 
 
