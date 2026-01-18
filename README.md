@@ -71,79 +71,47 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package main
+func getBalance(currency string) (float64, error) {
+	req, _ := http.NewRequest("GET", baseURL+"/api/v1/accounts", nil)
+	req.Header = headers("GET", "/api/v1/accounts", "")
 
-import (
-	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"math"
-	"net/http"
-	"strconv"
-	"time"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
 
-	"github.com/google/uuid"
-)
+	var r struct {
+		Code string `json:"code"`
+		Data []struct {
+			Currency  string `json:"currency"`
+			Type      string `json:"type"`
+			Available string `json:"available"`
+		} `json:"data"`
+	}
 
-/* ================= CONFIG ================= */
-const (
-	apiKey        = "696935c42a6dcd00013273f2"
-	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
-	apiPassphrase = "Gazmaster_358"
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &r); err != nil {
+		return 0, err
+	}
 
-	baseURL   = "https://api.kucoin.com"
-	startUSDT = 12.0
+	for _, acc := range r.Data {
+		if acc.Currency == currency && acc.Type == "trade" {
+			return strconv.ParseFloat(acc.Available, 64)
+		}
+	}
 
-	sym1 = "DASH-USDT"
-	sym2 = "DASH-BTC"
-	sym3 = "BTC-USDT"
-)
-
-/* ================= AUTH ================= */
-func sign(ts, method, path, body string) string {
-	mac := hmac.New(sha256.New, []byte(apiSecret))
-	mac.Write([]byte(ts + method + path + body))
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	return 0, fmt.Errorf("balance %s not found", currency)
 }
 
-func passphrase() string {
-	mac := hmac.New(sha256.New, []byte(apiSecret))
-	mac.Write([]byte(apiPassphrase))
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
-}
 
-func headers(method, path, body string) http.Header {
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	sig := sign(ts, method, path, body)
-	h := http.Header{}
-	h.Set("KC-API-KEY", apiKey)
-	h.Set("KC-API-SIGN", sig)
-	h.Set("KC-API-TIMESTAMP", ts)
-	h.Set("KC-API-PASSPHRASE", passphrase())
-	h.Set("KC-API-KEY-VERSION", "2")
-	h.Set("Content-Type", "application/json")
-	return h
-}
 
-/* ================= UTILS ================= */
-// округление вниз до ближайшего шага
-func roundDown(value, step float64) float64 {
-	return math.Floor(value/step) * step
-}
-
-/* ================= PLACE MARKET ================= */
-func placeMarket(symbol, side string, value float64) (filled float64, err error) {
-	clientOid := uuid.NewString()
+func placeMarket(symbol, side string, value float64) (string, error) {
 	body := map[string]string{
 		"symbol":    symbol,
 		"type":      "market",
 		"side":      side,
-		"clientOid": clientOid,
+		"clientOid": uuid.NewString(),
 	}
 
 	if side == "buy" {
@@ -152,91 +120,91 @@ func placeMarket(symbol, side string, value float64) (filled float64, err error)
 		body["size"] = fmt.Sprintf("%.8f", value)
 	}
 
-	rawBody, _ := json.Marshal(body)
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(rawBody))
-	req.Header = headers("POST", "/api/v1/orders", string(rawBody))
+	raw, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
+	req.Header = headers("POST", "/api/v1/orders", string(raw))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	defer resp.Body.Close()
-
-	respBytes, _ := io.ReadAll(resp.Body)
 
 	var r struct {
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
 		Data struct {
-			DealFunds string `json:"dealFunds"`
-			DealSize  string `json:"dealSize"`
-			OrderId   string `json:"orderId"`
+			OrderId string `json:"orderId"`
 		} `json:"data"`
 	}
 
-	if err := json.Unmarshal(respBytes, &r); err != nil {
-		return 0, fmt.Errorf("decode error: %v; raw: %s", err, string(respBytes))
+	b, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(b, &r); err != nil {
+		return "", err
 	}
 
 	if r.Code != "200000" {
-		return 0, fmt.Errorf("order rejected: %s; raw: %s", r.Msg, string(respBytes))
+		return "", fmt.Errorf("order rejected: %s", r.Msg)
 	}
 
-	if side == "buy" {
-		filled, _ = strconv.ParseFloat(r.Data.DealSize, 64)
-	} else {
-		filled, _ = strconv.ParseFloat(r.Data.DealFunds, 64)
-	}
-
-	log.Printf("[OK] %s %s orderId=%s filled=%.8f", side, symbol, r.Data.OrderId, filled)
-	return filled, nil
+	return r.Data.OrderId, nil
 }
 
-/* ================= MAIN ================= */
+
+
+func roundDown(v, step float64) float64 {
+	return math.Floor(v/step) * step
+}
+
+
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-	// ------------------- STEP 1 -------------------
-	leg1Size, err := placeMarket(sym1, "buy", startUSDT)
+	startUSDT := 12.0
+	log.Printf("START %.2f USDT", startUSDT)
+
+	// -------- LEG 1: USDT → DASH --------
+	_, err := placeMarket("DASH-USDT", "buy", startUSDT)
 	if err != nil {
-		log.Println("[FAIL] LEG1 USDT→DASH", err)
-		return
+		log.Fatal("LEG1 failed:", err)
 	}
 
-	// получаем шаг для DASH-BTC (например 0.001)
-	stepLeg2 := 0.001
-	leg2Size := roundDown(leg1Size, stepLeg2)
+	time.Sleep(50 * time.Millisecond)
 
-	// ------------------- STEP 2 -------------------
-	leg2Funds, err := placeMarket(sym2, "sell", leg2Size)
-	if err != nil {
-		log.Println("[FAIL] LEG2 DASH→BTC", err)
-		return
+	dash, _ := getBalance("DASH")
+	log.Printf("DASH balance: %.8f", dash)
+
+	if dash <= 0 {
+		log.Fatal("DASH not received")
 	}
 
-	// получаем шаг для BTC-USDT (например 0.0001)
-	stepLeg3 := 0.0001
-	leg3Size := roundDown(leg2Funds, stepLeg3)
+	// -------- LEG 2: DASH → BTC --------
+	dash = roundDown(dash, 0.001)
 
-	// ------------------- STEP 3 -------------------
-	leg3Funds, err := placeMarket(sym3, "sell", leg3Size)
+	_, err = placeMarket("DASH-BTC", "sell", dash)
 	if err != nil {
-		log.Println("[FAIL] LEG3 BTC→USDT", err)
-		return
+		log.Fatal("LEG2 failed:", err)
 	}
 
-	// ------------------- RESULT -------------------
-	profit := leg3Funds - startUSDT
-	pct := profit / startUSDT * 100
+	time.Sleep(50 * time.Millisecond)
+
+	btc, _ := getBalance("BTC")
+	log.Printf("BTC balance: %.8f", btc)
+
+	// -------- LEG 3: BTC → USDT --------
+	btc = roundDown(btc, 0.0001)
+
+	_, err = placeMarket("BTC-USDT", "sell", btc)
+	if err != nil {
+		log.Fatal("LEG3 failed:", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	usdt, _ := getBalance("USDT")
 	log.Println("====== RESULT ======")
-	log.Printf("START: %.4f USDT", startUSDT)
-	log.Printf("END:   %.4f USDT", leg3Funds)
-	log.Printf("PNL:   %.6f USDT (%.4f%%)", profit, pct)
+	log.Printf("END USDT: %.4f", usdt)
+	log.Printf("PNL: %.4f", usdt-startUSDT)
 }
 
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/18 14:51:11.869234 START TRIANGLE 12.00 USDT
-2026/01/18 14:51:12.675455 [OK] buy DASH-USDT orderId=696cc9300b211e000751f6e8 filled=0.00000000
-2026/01/18 14:51:13.084875 [FAIL] LEG2 DASH→BTC order rejected: The quantity is invalid.; raw: {"msg":"The quantity is invalid.","code":"300000"}
