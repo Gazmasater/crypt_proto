@@ -97,6 +97,8 @@ DASH-BTC step: 0.00010000
 BTC-USDT step: 0.00001000
 
 
+
+
 package main
 
 import (
@@ -112,11 +114,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
 /* ================= CONFIG ================= */
+
 const (
 	apiKey        = "YOUR_API_KEY"
 	apiSecret     = "YOUR_API_SECRET"
@@ -125,17 +128,19 @@ const (
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
 
+	// Пары треугольника
 	sym1 = "DASH-USDT"
 	sym2 = "DASH-BTC"
 	sym3 = "BTC-USDT"
 
-	// Шаги ордеров (можно получать через API)
+	// Шаги ордеров (можно получить через REST /symbols)
 	step1 = 0.0001
 	step2 = 0.0001
 	step3 = 0.00001
 )
 
 /* ================= AUTH ================= */
+
 func sign(ts, method, path, body string) string {
 	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(ts + method + path + body))
@@ -160,8 +165,9 @@ func headers(method, path, body string) http.Header {
 	return h
 }
 
-/* ================= GET PRIVATE WS TOKEN ================= */
-type BulletPrivateResp struct {
+/* ================= PRIVATE WS TOKEN ================= */
+
+type BulletResp struct {
 	Code string `json:"code"`
 	Data struct {
 		Token           string `json:"token"`
@@ -174,63 +180,80 @@ type BulletPrivateResp struct {
 func getPrivateWSToken() (string, string, error) {
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
 	req.Header = headers("POST", "/api/v1/bullet-private", "")
-
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", "", err
 	}
 	defer resp.Body.Close()
 
-	var r BulletPrivateResp
+	var r BulletResp
 	body, _ := io.ReadAll(resp.Body)
 	if err := json.Unmarshal(body, &r); err != nil {
 		return "", "", err
 	}
+
 	if r.Code != "200000" || len(r.Data.InstanceServers) == 0 {
-		return "", "", fmt.Errorf("failed to get private ws token")
+		return "", "", fmt.Errorf("failed to get WS token")
 	}
 
-	return r.Data.InstanceServers[0].Endpoint, r.Data.Token, nil
+	return r.Data.Token, r.Data.InstanceServers[0].Endpoint, nil
 }
 
-/* ================= WEBSOCKET ================= */
-type WSMessage struct {
-	Type  string `json:"type"`
-	Topic string `json:"topic"`
-	Data  struct {
-		OrderId    string `json:"orderId"`
-		Status     string `json:"status"`
-		FilledSize string `json:"filledSize"`
-	} `json:"data"`
-}
+/* ================= WS HANDLER ================= */
 
-func connectWS(endpoint, token string) (*websocket.Conn, error) {
-	wsURL := fmt.Sprintf("%s?token=%s", endpoint, token)
-	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+func connectWS(token, endpoint string) (*websocket.Conn, error) {
+	wsURL := endpoint + "?token=" + token
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	return c, nil
+	return conn, nil
 }
 
-func subscribeOrders(c *websocket.Conn) error {
-	msg := map[string]interface{}{
-		"id":       uuid.NewString(),
-		"type":     "subscribe",
-		"topic":    "/spotMarket/tradeOrders",
-		"response": true,
+func subscribeOrders(ws *websocket.Conn) error {
+	sub := map[string]interface{}{
+		"type":           "subscribe",
+		"topic":          "/spotMarket/tradeOrders",
+		"privateChannel": true,
+		"response":       true,
 	}
-	raw, _ := json.Marshal(msg)
-	return c.WriteMessage(websocket.TextMessage, raw)
+	return ws.WriteJSON(sub)
 }
 
-/* ================= PLACE ORDER ================= */
+func heartbeat(ws *websocket.Conn) {
+	t := time.NewTicker(30 * time.Second)
+	go func() {
+		for range t.C {
+			ws.WriteJSON(map[string]string{"id": uuid.NewString(), "type": "ping"})
+		}
+	}()
+}
+
+func waitForFill(ws *websocket.Conn, clientOid string) {
+	for {
+		var msg map[string]interface{}
+		if err := ws.ReadJSON(&msg); err != nil {
+			log.Println("WS read error:", err)
+			continue
+		}
+		if data, ok := msg["data"].(map[string]interface{}); ok {
+			if data["clientOid"] == clientOid && data["status"] == "done" {
+				log.Printf("Order %s filled", clientOid)
+				return
+			}
+		}
+	}
+}
+
+/* ================= API PLACE ORDER ================= */
+
 func placeMarket(symbol, side string, value float64) (string, error) {
+	clientOid := uuid.NewString()
 	body := map[string]string{
 		"symbol":    symbol,
 		"type":      "market",
 		"side":      side,
-		"clientOid": uuid.NewString(),
+		"clientOid": clientOid,
 	}
 	if side == "buy" {
 		body["funds"] = fmt.Sprintf("%.8f", value)
@@ -261,87 +284,110 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	if r.Code != "200000" {
 		return "", fmt.Errorf("order rejected: %s", r.Msg)
 	}
-	return r.Data.OrderId, nil
+	return clientOid, nil
 }
 
-/* ================= WAIT FOR FILL ================= */
-func waitForFill(c *websocket.Conn, orderId string) error {
-	for {
-		_, msg, err := c.ReadMessage()
-		if err != nil {
-			return err
-		}
-		var m WSMessage
-		if err := json.Unmarshal(msg, &m); err != nil {
-			continue
-		}
-		if m.Type == "message" && m.Topic == "/spotMarket/tradeOrders" && m.Data.OrderId == orderId && m.Data.Status == "done" {
-			return nil
+/* ================= GET BALANCE ================= */
+
+func getBalance(currency string) (float64, error) {
+	req, _ := http.NewRequest("GET", baseURL+"/api/v1/accounts", nil)
+	req.Header = headers("GET", "/api/v1/accounts", "")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Code string `json:"code"`
+		Data []struct {
+			Currency  string `json:"currency"`
+			Type      string `json:"type"`
+			Available string `json:"available"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &r); err != nil {
+		return 0, err
+	}
+
+	for _, acc := range r.Data {
+		if acc.Currency == currency && acc.Type == "trade" {
+			return strconv.ParseFloat(acc.Available, 64)
 		}
 	}
+	return 0, fmt.Errorf("balance %s not found", currency)
+}
+
+/* ================= UTILS ================= */
+
+func roundDown(v, step float64) float64 {
+	if step == 0 {
+		return v
+	}
+	return float64(int(v/step)) * step
 }
 
 /* ================= MAIN ================= */
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-	endpoint, token, err := getPrivateWSToken()
+	// Получаем private WS токен
+	token, endpoint, err := getPrivateWSToken()
 	if err != nil {
-		log.Fatal("Get WS token failed:", err)
+		log.Fatal("Failed to get WS token:", err)
 	}
 
-	wsConn, err := connectWS(endpoint, token)
+	ws, err := connectWS(token, endpoint)
 	if err != nil {
-		log.Fatal("WS connect failed:", err)
+		log.Fatal("WS connect error:", err)
 	}
-	defer wsConn.Close()
+	defer ws.Close()
 
-	if err := subscribeOrders(wsConn); err != nil {
-		log.Fatal("Subscribe failed:", err)
+	heartbeat(ws)
+	if err := subscribeOrders(ws); err != nil {
+		log.Fatal("WS subscribe error:", err)
 	}
 
-	// LEG1: USDT → DASH
-	order1, err := placeMarket(sym1, "buy", startUSDT)
+	/* ================= LEG 1: USDT → DASH ================= */
+	leg1Oid, err := placeMarket(sym1, "buy", startUSDT)
 	if err != nil {
 		log.Fatal("LEG1 BUY failed:", err)
 	}
 	log.Println("LEG1 order sent, waiting for fill...")
-	if err := waitForFill(wsConn, order1); err != nil {
-		log.Fatal(err)
-	}
-	log.Println("LEG1 filled ✅")
+	waitForFill(ws, leg1Oid)
+	dash, _ := getBalance("DASH")
+	dash = roundDown(dash, step1)
+	log.Printf("LEG1 OK | DASH=%.6f", dash)
 
-	// LEG2: DASH → BTC
-	order2, err := placeMarket(sym2, "sell", 0.1365) // пример значения
+	/* ================= LEG 2: DASH → BTC ================= */
+	leg2Oid, err := placeMarket(sym2, "sell", dash)
 	if err != nil {
 		log.Fatal("LEG2 SELL failed:", err)
 	}
 	log.Println("LEG2 order sent, waiting for fill...")
-	if err := waitForFill(wsConn, order2); err != nil {
-		log.Fatal(err)
-	}
-	log.Println("LEG2 filled ✅")
+	waitForFill(ws, leg2Oid)
+	btc, _ := getBalance("BTC")
+	btc = roundDown(btc, step2)
+	log.Printf("LEG2 OK | BTC=%.8f", btc)
 
-	// LEG3: BTC → USDT
-	order3, err := placeMarket(sym3, "sell", 0.00012) // пример значения
+	/* ================= LEG 3: BTC → USDT ================= */
+	leg3Oid, err := placeMarket(sym3, "sell", btc)
 	if err != nil {
 		log.Fatal("LEG3 SELL failed:", err)
 	}
 	log.Println("LEG3 order sent, waiting for fill...")
-	if err := waitForFill(wsConn, order3); err != nil {
-		log.Fatal(err)
-	}
-	log.Println("LEG3 filled ✅")
+	waitForFill(ws, leg3Oid)
+	usdt, _ := getBalance("USDT")
+	usdt = roundDown(usdt, step3)
+	log.Printf("LEG3 OK | USDT=%.6f", usdt)
 
-	log.Println("TRIANGLE COMPLETE ✅")
+	/* ================= SUMMARY ================= */
+	log.Println("====== SUMMARY ======")
+	log.Printf("PNL: %.6f USDT", usdt-startUSDT)
 }
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/18 23:44:00.789617 START TRIANGLE 12.00 USDT
-2026/01/18 23:44:03.205033 LEG1 order sent, waiting for fill...
-
 
 
 
