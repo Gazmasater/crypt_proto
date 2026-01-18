@@ -124,9 +124,9 @@ import (
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "696935c42a6dcd00013273f2"
-	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
-	apiPassphrase = "Gazmaster_358"
+	apiKey        = "YOUR_API_KEY"
+	apiSecret     = "YOUR_API_SECRET"
+	apiPassphrase = "YOUR_API_PASSPHRASE"
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -136,10 +136,11 @@ const (
 	sym3 = "BTC-USDT"
 
 	step1 = 0.0001
-	step2 = 0.0001
-	step3 = 0.00001
+	step2 = 0.00001
+	step3 = 0.01
 
-	orderTimeout = 5 * time.Second
+	orderTimeout  = 3 * time.Second
+	safetyMargin  = 0.998 // учитываем комиссию 0.2%
 )
 
 /* ================= AUTH ================= */
@@ -198,6 +199,7 @@ func placeMarketWithOid(symbol, side string, value float64, clientOid string) er
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
 	}
+
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return err
 	}
@@ -205,6 +207,7 @@ func placeMarketWithOid(symbol, side string, value float64, clientOid string) er
 	if r.Code != "200000" {
 		return fmt.Errorf("order rejected: %s", r.Msg)
 	}
+
 	return nil
 }
 
@@ -251,7 +254,7 @@ func NewOrderRouter() *OrderRouter {
 func (r *OrderRouter) Register(oid string) chan float64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	ch := make(chan float64, 10) // буфер 10, чтобы не потерять fill
+	ch := make(chan float64, 1)
 	r.wait[oid] = ch
 	return ch
 }
@@ -261,6 +264,7 @@ func (r *OrderRouter) Resolve(oid string, filled float64) {
 	defer r.mu.Unlock()
 	if ch, ok := r.wait[oid]; ok {
 		ch <- filled
+		delete(r.wait, oid)
 	}
 }
 
@@ -287,7 +291,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	// Heartbeat
+	// heartbeat
 	go func() {
 		t := time.NewTicker(25 * time.Second)
 		defer t.Stop()
@@ -296,7 +300,7 @@ func main() {
 		}
 	}()
 
-	// Subscribe to private orders
+	// subscribe
 	sub := map[string]interface{}{
 		"id":             uuid.NewString(),
 		"type":           "subscribe",
@@ -329,10 +333,7 @@ func main() {
 				continue
 			}
 
-			// учитываем все fill-события
-			if evt.Topic == "/spotMarket/tradeOrders" &&
-				(evt.Data.Type == "done" || evt.Data.Type == "match") {
-
+			if evt.Topic == "/spotMarket/tradeOrders" && evt.Data.Type == "done" {
 				v, _ := strconv.ParseFloat(evt.Data.FilledSize, 64)
 				router.Resolve(evt.Data.ClientOid, v)
 			}
@@ -345,9 +346,9 @@ func main() {
 	if err := placeMarketWithOid(sym1, "buy", startUSDT, oid1); err != nil {
 		log.Fatal("LEG1 error:", err)
 	}
-
 	ctx1, cancel1 := context.WithTimeout(context.Background(), orderTimeout)
 	defer cancel1()
+
 	var dash float64
 	select {
 	case v := <-ch1:
@@ -363,9 +364,9 @@ func main() {
 	if err := placeMarketWithOid(sym2, "sell", dash, oid2); err != nil {
 		log.Fatal("LEG2 error:", err)
 	}
-
 	ctx2, cancel2 := context.WithTimeout(context.Background(), orderTimeout)
 	defer cancel2()
+
 	var btc float64
 	select {
 	case v := <-ch2:
@@ -376,14 +377,21 @@ func main() {
 	log.Println("LEG2 OK", btc)
 
 	// ===== LEG 3 =====
+	// учитываем комиссию и остаток
+	btcForLeg3 := roundDown(btc*safetyMargin, step2)
+	if btcForLeg3 < step2 {
+		log.Fatal("LEG3 skipped, not enough BTC")
+	}
+
 	oid3 := uuid.NewString()
 	ch3 := router.Register(oid3)
-	if err := placeMarketWithOid(sym3, "sell", btc, oid3); err != nil {
+	if err := placeMarketWithOid(sym3, "sell", btcForLeg3, oid3); err != nil {
 		log.Fatal("LEG3 error:", err)
 	}
 
 	ctx3, cancel3 := context.WithTimeout(context.Background(), orderTimeout)
 	defer cancel3()
+
 	var usdt float64
 	select {
 	case v := <-ch3:
@@ -391,17 +399,7 @@ func main() {
 	case <-ctx3.Done():
 		log.Fatal("LEG3 timeout")
 	}
-
 	log.Println("LEG3 OK", usdt)
 	log.Println("PNL:", usdt-startUSDT)
 }
-
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/19 02:14:53.963535 START TRIANGLE 12
-2026/01/19 02:14:55.964485 LEG1 OK 0.1487
-2026/01/19 02:14:56.267326 LEG2 OK 0.1487
-2026/01/19 02:14:56.574491 LEG3 error:order rejected: Balance insufficient!
-exit status 1
-
 
