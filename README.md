@@ -114,6 +114,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -141,6 +142,8 @@ const (
 	orderTimeout = 3 * time.Second
 )
 
+/* ================= AUTH ================= */
+
 func sign(ts, method, path, body string) string {
 	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(ts + method + path + body))
@@ -164,6 +167,8 @@ func headers(method, path, body string) http.Header {
 	h.Set("Content-Type", "application/json")
 	return h
 }
+
+/* ================= REST ================= */
 
 func placeMarket(symbol, side string, value float64) (string, error) {
 	body := map[string]string{
@@ -197,18 +202,27 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 		} `json:"data"`
 	}
 
-	json.NewDecoder(resp.Body).Decode(&r)
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return "", err
+	}
+
 	if r.Code != "200000" {
 		return "", fmt.Errorf("order rejected: %s", r.Msg)
 	}
+
 	return r.Data.OrderId, nil
 }
 
-func getPrivateWS() string {
+/* ================= WEBSOCKET ================= */
+
+func getPrivateWSURL() (string, error) {
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
 	req.Header = headers("POST", "/api/v1/bullet-private", "")
 
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
 	defer resp.Body.Close()
 
 	var r struct {
@@ -220,221 +234,154 @@ func getPrivateWS() string {
 			} `json:"instanceServers"`
 		} `json:"data"`
 	}
-	json.NewDecoder(resp.Body).Decode(&r)
 
-	return r.Data.InstanceServers[0].Endpoint + "?token=" + r.Data.Token
-}
-
-func wsLogin(conn *websocket.Conn) {
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	signStr := ts + "GET" + "/users/self/verify"
-
-	mac := hmac.New(sha256.New, []byte(apiSecret))
-	mac.Write([]byte(signStr))
-	sign := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	login := map[string]string{
-		"id":         "login",
-		"type":       "login",
-		"apiKey":     apiKey,
-		"passphrase": passphrase(),
-		"timestamp":  ts,
-		"sign":       sign,
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return "", err
 	}
 
-	raw, _ := json.Marshal(login)
-	conn.WriteMessage(websocket.TextMessage, raw)
+	return r.Data.InstanceServers[0].Endpoint + "?token=" + r.Data.Token, nil
+}
 
-	_, msg, _ := conn.ReadMessage()
-	if !bytes.Contains(msg, []byte(`"success":true`)) {
-		log.Fatal("WS login failed:", string(msg))
+/* ================= ORDER ROUTER ================= */
+
+type OrderRouter struct {
+	mu    sync.Mutex
+	wait  map[string]chan float64
+}
+
+func NewOrderRouter() *OrderRouter {
+	return &OrderRouter{
+		wait: make(map[string]chan float64),
 	}
 }
 
-type OrderEvent struct {
-	OrderID string
-	Filled  float64
+func (r *OrderRouter) Register(orderID string) chan float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ch := make(chan float64, 1)
+	r.wait[orderID] = ch
+	return ch
 }
 
-func wsReader(conn *websocket.Conn, out chan<- OrderEvent) {
-	for {
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			log.Fatal("WS read error:", err)
-		}
-
-		var evt struct {
-			Type string `json:"type"`
-			Data struct {
-				OrderId    string `json:"orderId"`
-				FilledSize string `json:"filledSize"`
-			} `json:"data"`
-		}
-
-		if json.Unmarshal(msg, &evt) != nil {
-			continue
-		}
-
-		if evt.Type == "order.done" {
-			val, _ := strconv.ParseFloat(evt.Data.FilledSize, 64)
-			out <- OrderEvent{
-				OrderID: evt.Data.OrderId,
-				Filled:  val,
-			}
-		}
+func (r *OrderRouter) Resolve(orderID string, filled float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ch, ok := r.wait[orderID]; ok {
+		ch <- filled
+		delete(r.wait, orderID)
 	}
 }
 
-func waitOrder(ctx context.Context, ch <-chan OrderEvent, orderID string, step float64) (float64, error) {
-	for {
-		select {
-		case evt := <-ch:
-			if evt.OrderID == orderID {
-				return math.Floor(evt.Filled/step) * step, nil
-			}
-		case <-ctx.Done():
-			return 0, fmt.Errorf("order %s timeout", orderID)
-		}
-	}
+/* ================= MAIN ================= */
+
+func roundDown(v, step float64) float64 {
+	return math.Floor(v/step) * step
 }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("START TRIANGLE", startUSDT)
 
-	wsURL := getPrivateWS()
-	conn, _, _ := websocket.DefaultDialer.Dial(wsURL, nil)
+	wsURL, err := getPrivateWSURL()
+	if err != nil {
+		log.Fatal("WS token error:", err)
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		log.Fatal("WS connect error:", err)
+	}
 	defer conn.Close()
 
-	wsLogin(conn)
-
-	sub := `{"id":"1","type":"subscribe","topic":"/spot/tradeOrders","privateChannel":true}`
-	conn.WriteMessage(websocket.TextMessage, []byte(sub))
-
-	events := make(chan OrderEvent, 16)
-	go wsReader(conn, events)
-
-	// LEG1
-	o1, _ := placeMarket(sym1, "buy", startUSDT)
-	ctx1, _ := context.WithTimeout(context.Background(), orderTimeout)
-	dash, err := waitOrder(ctx1, events, o1, step1)
-	if err != nil {
-		log.Fatal(err)
+	// subscribe
+	sub := map[string]interface{}{
+		"id":             "1",
+		"type":           "subscribe",
+		"topic":          "/spotMarket/tradeOrders",
+		"privateChannel": true,
 	}
+	raw, _ := json.Marshal(sub)
+	conn.WriteMessage(websocket.TextMessage, raw)
+
+	router := NewOrderRouter()
+
+	go func() {
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				log.Fatal("WS read:", err)
+			}
+
+			var evt struct {
+				Type  string `json:"type"`
+				Topic string `json:"topic"`
+				Data  struct {
+					OrderId    string `json:"orderId"`
+					Type       string `json:"type"`
+					FilledSize string `json:"filledSize"`
+				} `json:"data"`
+			}
+
+			if json.Unmarshal(msg, &evt) != nil {
+				continue
+			}
+
+			if evt.Topic == "/spotMarket/tradeOrders" && evt.Data.Type == "done" {
+				val, _ := strconv.ParseFloat(evt.Data.FilledSize, 64)
+				router.Resolve(evt.Data.OrderId, val)
+			}
+		}
+	}()
+
+	// ===== LEG 1 =====
+	o1, _ := placeMarket(sym1, "buy", startUSDT)
+	ch1 := router.Register(o1)
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), orderTimeout)
+	defer cancel1()
+
+	var dash float64
+	select {
+	case dash = roundDown(<-ch1, step1)
+	case <-ctx1.Done():
+		log.Fatal("LEG1 timeout")
+	}
+
 	log.Println("LEG1 OK", dash)
 
-	// LEG2
+	// ===== LEG 2 =====
 	o2, _ := placeMarket(sym2, "sell", dash)
-	ctx2, _ := context.WithTimeout(context.Background(), orderTimeout)
-	btc, err := waitOrder(ctx2, events, o2, step2)
-	if err != nil {
-		log.Fatal(err)
+	ch2 := router.Register(o2)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), orderTimeout)
+	defer cancel2()
+
+	var btc float64
+	select {
+	case btc = roundDown(<-ch2, step2)
+	case <-ctx2.Done():
+		log.Fatal("LEG2 timeout")
 	}
+
 	log.Println("LEG2 OK", btc)
 
-	// LEG3
+	// ===== LEG 3 =====
 	o3, _ := placeMarket(sym3, "sell", btc)
-	ctx3, _ := context.WithTimeout(context.Background(), orderTimeout)
-	usdt, err := waitOrder(ctx3, events, o3, step3)
-	if err != nil {
-		log.Fatal(err)
+	ch3 := router.Register(o3)
+
+	ctx3, cancel3 := context.WithTimeout(context.Background(), orderTimeout)
+	defer cancel3()
+
+	var usdt float64
+	select {
+	case usdt = roundDown(<-ch3, step3)
+	case <-ctx3.Done():
+		log.Fatal("LEG3 timeout")
 	}
 
+	log.Println("LEG3 OK", usdt)
 	log.Println("PNL:", usdt-startUSDT)
 }
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "default",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/go/analysis/passes/httpresponse",
-			"scheme": "https",
-			"authority": "pkg.go.dev"
-		}
-	},
-	"severity": 4,
-	"message": "using resp before checking for errors",
-	"source": "httpresponse",
-	"startLineNumber": 110,
-	"startColumn": 8,
-	"endLineNumber": 110,
-	"endColumn": 12,
-	"modelVersionId": 64,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "default",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/go/analysis/passes/lostcancel",
-			"scheme": "https",
-			"authority": "pkg.go.dev"
-		}
-	},
-	"severity": 4,
-	"message": "the cancel function returned by context.WithTimeout should be called, not discarded, to avoid a context leak",
-	"source": "lostcancel",
-	"startLineNumber": 217,
-	"startColumn": 8,
-	"endLineNumber": 217,
-	"endColumn": 9,
-	"modelVersionId": 64,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "default",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/go/analysis/passes/lostcancel",
-			"scheme": "https",
-			"authority": "pkg.go.dev"
-		}
-	},
-	"severity": 4,
-	"message": "the cancel function returned by context.WithTimeout should be called, not discarded, to avoid a context leak",
-	"source": "lostcancel",
-	"startLineNumber": 226,
-	"startColumn": 8,
-	"endLineNumber": 226,
-	"endColumn": 9,
-	"modelVersionId": 64,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "default",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/go/analysis/passes/lostcancel",
-			"scheme": "https",
-			"authority": "pkg.go.dev"
-		}
-	},
-	"severity": 4,
-	"message": "the cancel function returned by context.WithTimeout should be called, not discarded, to avoid a context leak",
-	"source": "lostcancel",
-	"startLineNumber": 235,
-	"startColumn": 8,
-	"endLineNumber": 235,
-	"endColumn": 9,
-	"modelVersionId": 64,
-	"origin": "extHost1"
-}]
 
 
 
