@@ -253,20 +253,20 @@ func NewOrderRouter() *OrderRouter {
 	return &OrderRouter{wait: make(map[string]chan float64)}
 }
 
-func (r *OrderRouter) Register(clientOid string) chan float64 {
+func (r *OrderRouter) Register(oid string) chan float64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ch := make(chan float64, 1)
-	r.wait[clientOid] = ch
+	r.wait[oid] = ch
 	return ch
 }
 
-func (r *OrderRouter) Resolve(clientOid string, filled float64) {
+func (r *OrderRouter) Resolve(oid string, filled float64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if ch, ok := r.wait[clientOid]; ok {
+	if ch, ok := r.wait[oid]; ok {
 		ch <- filled
-		delete(r.wait, clientOid)
+		delete(r.wait, oid)
 	}
 }
 
@@ -323,11 +323,10 @@ func main() {
 			}
 
 			var evt struct {
-				Type  string `json:"type"`
 				Topic string `json:"topic"`
 				Data  struct {
 					Type       string `json:"type"`
-					ClientOid string `json:"clientOid"`
+					ClientOid  string `json:"clientOid"`
 					FilledSize string `json:"filledSize"`
 				} `json:"data"`
 			}
@@ -337,8 +336,8 @@ func main() {
 			}
 
 			if evt.Topic == "/spotMarket/tradeOrders" && evt.Data.Type == "done" {
-				val, _ := strconv.ParseFloat(evt.Data.FilledSize, 64)
-				router.Resolve(evt.Data.ClientOid, val)
+				v, _ := strconv.ParseFloat(evt.Data.FilledSize, 64)
+				router.Resolve(evt.Data.ClientOid, v)
 			}
 		}
 	}()
@@ -352,7 +351,8 @@ func main() {
 
 	var dash float64
 	select {
-	case dash = roundDown(<-ch1, step1):
+	case v := <-ch1:
+		dash = roundDown(v, step1)
 	case <-ctx1.Done():
 		log.Fatal("LEG1 timeout")
 	}
@@ -367,7 +367,8 @@ func main() {
 
 	var btc float64
 	select {
-	case btc = roundDown(<-ch2, step2):
+	case v := <-ch2:
+		btc = roundDown(v, step2)
 	case <-ctx2.Done():
 		log.Fatal("LEG2 timeout")
 	}
@@ -382,7 +383,8 @@ func main() {
 
 	var usdt float64
 	select {
-	case usdt = roundDown(<-ch3, step3):
+	case v := <-ch3:
+		usdt = roundDown(v, step3)
 	case <-ctx3.Done():
 		log.Fatal("LEG3 timeout")
 	}
@@ -390,160 +392,6 @@ func main() {
 	log.Println("LEG3 OK", usdt)
 	log.Println("PNL:", usdt-startUSDT)
 }
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UnusedVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UnusedVar"
-		}
-	},
-	"severity": 8,
-	"message": "declared and not used: ch1",
-	"source": "compiler",
-	"startLineNumber": 246,
-	"startColumn": 2,
-	"endLineNumber": 246,
-	"endColumn": 5,
-	"modelVersionId": 3,
-	"tags": [
-		1
-	],
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "InvalidSelectCase",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "InvalidSelectCase"
-		}
-	},
-	"severity": 8,
-	"message": "select case must be send or receive (possibly with assignment)",
-	"source": "compiler",
-	"startLineNumber": 253,
-	"startColumn": 7,
-	"endLineNumber": 253,
-	"endColumn": 37,
-	"modelVersionId": 3,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UnusedVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UnusedVar"
-		}
-	},
-	"severity": 8,
-	"message": "declared and not used: ch2",
-	"source": "compiler",
-	"startLineNumber": 261,
-	"startColumn": 2,
-	"endLineNumber": 261,
-	"endColumn": 5,
-	"modelVersionId": 3,
-	"tags": [
-		1
-	],
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "InvalidSelectCase",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "InvalidSelectCase"
-		}
-	},
-	"severity": 8,
-	"message": "select case must be send or receive (possibly with assignment)",
-	"source": "compiler",
-	"startLineNumber": 268,
-	"startColumn": 7,
-	"endLineNumber": 268,
-	"endColumn": 36,
-	"modelVersionId": 3,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UnusedVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UnusedVar"
-		}
-	},
-	"severity": 8,
-	"message": "declared and not used: ch3",
-	"source": "compiler",
-	"startLineNumber": 276,
-	"startColumn": 2,
-	"endLineNumber": 276,
-	"endColumn": 5,
-	"modelVersionId": 3,
-	"tags": [
-		1
-	],
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "InvalidSelectCase",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "InvalidSelectCase"
-		}
-	},
-	"severity": 8,
-	"message": "select case must be send or receive (possibly with assignment)",
-	"source": "compiler",
-	"startLineNumber": 283,
-	"startColumn": 7,
-	"endLineNumber": 283,
-	"endColumn": 37,
-	"modelVersionId": 3,
-	"origin": "extHost1"
-}]
 
 
 
