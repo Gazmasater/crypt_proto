@@ -123,6 +123,13 @@ func subscribeOrders(conn *websocket.Conn) {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/19 01:01:58.312725 START TRIANGLE 12.00 USDT
+2026/01/19 01:02:00.107816 WS subscription response: {"id":"17kcoHoc9Mu","type":"welcome"}
+2026/01/19 01:02:00.547263 LEG1 order failed:order rejected: Balance insufficient!
+exit status 1
+
+
 
 
 
