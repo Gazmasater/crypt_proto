@@ -112,31 +112,30 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/google/uuid"
 )
 
 /* ================= CONFIG ================= */
-
 const (
 	apiKey        = "YOUR_API_KEY"
 	apiSecret     = "YOUR_API_SECRET"
 	apiPassphrase = "YOUR_API_PASSPHRASE"
 
-	baseURL     = "https://api.kucoin.com"
-	startUSDT   = 12.0
-	sym1        = "DASH-USDT"
-	sym2        = "DASH-BTC"
-	sym3        = "BTC-USDT"
+	baseURL   = "https://api.kucoin.com"
+	startUSDT = 12.0
 
-	// Шаги ордеров (можно взять через getSymbolStep или константы)
+	sym1 = "DASH-USDT"
+	sym2 = "DASH-BTC"
+	sym3 = "BTC-USDT"
+
+	// Шаги ордеров (можно получать через API)
 	step1 = 0.0001
 	step2 = 0.0001
 	step3 = 0.00001
 )
 
 /* ================= AUTH ================= */
-
 func sign(ts, method, path, body string) string {
 	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(ts + method + path + body))
@@ -161,146 +160,182 @@ func headers(method, path, body string) http.Header {
 	return h
 }
 
-/* ================= GET WS TOKEN ================= */
+/* ================= GET PRIVATE WS TOKEN ================= */
+type BulletPrivateResp struct {
+	Code string `json:"code"`
+	Data struct {
+		Token           string `json:"token"`
+		InstanceServers []struct {
+			Endpoint string `json:"endpoint"`
+		} `json:"instanceServers"`
+	} `json:"data"`
+}
 
-func getWSToken() (string, string, error) {
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-public", nil)
-	req.Header = headers("POST", "/api/v1/bullet-public", "")
+func getPrivateWSToken() (string, string, error) {
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
+	req.Header = headers("POST", "/api/v1/bullet-private", "")
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", "", err
 	}
 	defer resp.Body.Close()
 
-	var r struct {
-		Code string `json:"code"`
-		Data struct {
-			Token string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
+	var r BulletPrivateResp
 	body, _ := io.ReadAll(resp.Body)
 	if err := json.Unmarshal(body, &r); err != nil {
 		return "", "", err
 	}
 	if r.Code != "200000" || len(r.Data.InstanceServers) == 0 {
-		return "", "", fmt.Errorf("failed to get WS token")
+		return "", "", fmt.Errorf("failed to get private ws token")
 	}
+
 	return r.Data.InstanceServers[0].Endpoint, r.Data.Token, nil
 }
 
-/* ================= LEG STRUCT ================= */
-
-type Leg struct {
-	Name      string
-	Symbol    string
-	Side      string
-	Amount    float64
-	ClientOid string
-	Done      bool
-	Filled    float64
+/* ================= WEBSOCKET ================= */
+type WSMessage struct {
+	Type  string `json:"type"`
+	Topic string `json:"topic"`
+	Data  struct {
+		OrderId    string `json:"orderId"`
+		Status     string `json:"status"`
+		FilledSize string `json:"filledSize"`
+	} `json:"data"`
 }
 
-/* ================= UTILS ================= */
-
-func roundDown(v, step float64) float64 {
-	return float64(int(v/step)) * step
+func connectWS(endpoint, token string) (*websocket.Conn, error) {
+	wsURL := fmt.Sprintf("%s?token=%s", endpoint, token)
+	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
-/* ================= EXECUTION ================= */
-
-func sendOrder(conn *websocket.Conn, leg *Leg) error {
-	data := map[string]string{
-		"symbol":    leg.Symbol,
-		"side":      leg.Side,
-		"type":      "market",
-		"clientOid": leg.ClientOid,
-	}
-	if leg.Side == "buy" {
-		data["funds"] = fmt.Sprintf("%.8f", leg.Amount)
-	} else {
-		data["size"] = fmt.Sprintf("%.8f", leg.Amount)
-	}
+func subscribeOrders(c *websocket.Conn) error {
 	msg := map[string]interface{}{
-		"id":    uuid.NewString(),
-		"type":  "order",
-		"topic": "/spotMarket/tradeOrders",
-		"data":  data,
+		"id":       uuid.NewString(),
+		"type":     "subscribe",
+		"topic":    "/spotMarket/tradeOrders",
+		"response": true,
 	}
-	return conn.WriteJSON(msg)
+	raw, _ := json.Marshal(msg)
+	return c.WriteMessage(websocket.TextMessage, raw)
 }
 
-func waitForFill(conn *websocket.Conn, leg *Leg) {
+/* ================= PLACE ORDER ================= */
+func placeMarket(symbol, side string, value float64) (string, error) {
+	body := map[string]string{
+		"symbol":    symbol,
+		"type":      "market",
+		"side":      side,
+		"clientOid": uuid.NewString(),
+	}
+	if side == "buy" {
+		body["funds"] = fmt.Sprintf("%.8f", value)
+	} else {
+		body["size"] = fmt.Sprintf("%.8f", value)
+	}
+	raw, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
+	req.Header = headers("POST", "/api/v1/orders", string(raw))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			OrderId string `json:"orderId"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(b, &r); err != nil {
+		return "", err
+	}
+	if r.Code != "200000" {
+		return "", fmt.Errorf("order rejected: %s", r.Msg)
+	}
+	return r.Data.OrderId, nil
+}
+
+/* ================= WAIT FOR FILL ================= */
+func waitForFill(c *websocket.Conn, orderId string) error {
 	for {
-		var ev map[string]interface{}
-		if err := conn.ReadJSON(&ev); err != nil {
-			log.Println("WS read error:", err)
+		_, msg, err := c.ReadMessage()
+		if err != nil {
+			return err
+		}
+		var m WSMessage
+		if err := json.Unmarshal(msg, &m); err != nil {
 			continue
 		}
-		if ev["type"] == "message" {
-			data := ev["data"].(map[string]interface{})
-			if data["clientOid"] == leg.ClientOid && data["status"] == "done" {
-				leg.Filled, _ = strconv.ParseFloat(data["filledSize"].(string), 64)
-				log.Printf("%s filled: %.8f", leg.Name, leg.Filled)
-				return
-			}
+		if m.Type == "message" && m.Topic == "/spotMarket/tradeOrders" && m.Data.OrderId == orderId && m.Data.Status == "done" {
+			return nil
 		}
 	}
 }
 
 /* ================= MAIN ================= */
-
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-	endpoint, token, err := getWSToken()
+	endpoint, token, err := getPrivateWSToken()
 	if err != nil {
-		log.Fatal("WS token error:", err)
+		log.Fatal("Get WS token failed:", err)
 	}
-	wsURL := fmt.Sprintf("%s?token=%s", endpoint, token)
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	wsConn, err := connectWS(endpoint, token)
 	if err != nil {
-		log.Fatal("WS dial error:", err)
+		log.Fatal("WS connect failed:", err)
 	}
-	defer conn.Close()
+	defer wsConn.Close()
 
-	legs := []Leg{
-		{Name: "LEG1", Symbol: sym1, Side: "buy", Amount: startUSDT, ClientOid: uuid.NewString()},
-		{Name: "LEG2", Symbol: sym2, Side: "sell", ClientOid: uuid.NewString()},
-		{Name: "LEG3", Symbol: sym3, Side: "sell", ClientOid: uuid.NewString()},
+	if err := subscribeOrders(wsConn); err != nil {
+		log.Fatal("Subscribe failed:", err)
 	}
 
-	// LEG1
-	if err := sendOrder(conn, &legs[0]); err != nil {
-		log.Fatal("LEG1 send error:", err)
+	// LEG1: USDT → DASH
+	order1, err := placeMarket(sym1, "buy", startUSDT)
+	if err != nil {
+		log.Fatal("LEG1 BUY failed:", err)
 	}
-	waitForFill(conn, &legs[0])
-
-	// LEG2
-	legs[1].Amount = legs[0].Filled
-	if err := sendOrder(conn, &legs[1]); err != nil {
-		log.Fatal("LEG2 send error:", err)
+	log.Println("LEG1 order sent, waiting for fill...")
+	if err := waitForFill(wsConn, order1); err != nil {
+		log.Fatal(err)
 	}
-	waitForFill(conn, &legs[1])
+	log.Println("LEG1 filled ✅")
 
-	// LEG3
-	legs[2].Amount = legs[1].Filled
-	if err := sendOrder(conn, &legs[2]); err != nil {
-		log.Fatal("LEG3 send error:", err)
+	// LEG2: DASH → BTC
+	order2, err := placeMarket(sym2, "sell", 0.1365) // пример значения
+	if err != nil {
+		log.Fatal("LEG2 SELL failed:", err)
 	}
-	waitForFill(conn, &legs[2])
+	log.Println("LEG2 order sent, waiting for fill...")
+	if err := waitForFill(wsConn, order2); err != nil {
+		log.Fatal(err)
+	}
+	log.Println("LEG2 filled ✅")
 
-	log.Println("====== TRIANGLE COMPLETE ======")
-	log.Printf("USDT final: %.6f | PNL: %.6f", legs[2].Filled, legs[2].Filled-startUSDT)
+	// LEG3: BTC → USDT
+	order3, err := placeMarket(sym3, "sell", 0.00012) // пример значения
+	if err != nil {
+		log.Fatal("LEG3 SELL failed:", err)
+	}
+	log.Println("LEG3 order sent, waiting for fill...")
+	if err := waitForFill(wsConn, order3); err != nil {
+		log.Fatal(err)
+	}
+	log.Println("LEG3 filled ✅")
+
+	log.Println("TRIANGLE COMPLETE ✅")
 }
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/18 23:35:02.760405 START TRIANGLE 12.00 USDT
 
 
 
