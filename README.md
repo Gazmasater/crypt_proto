@@ -148,19 +148,10 @@ func main() {
 	totalStart := time.Now()
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-	var (
-		dash float64
-		btc  float64
-		usdt float64
-	)
+	var dash, btc, usdt float64
+	var leg1Time, leg2Time, leg3Time time.Duration
 
-	var (
-		leg1Time time.Duration
-		leg2Time time.Duration
-		leg3Time time.Duration
-	)
-
-	/* ================= LEG 1 ================= */
+	/* ================= LEG 1: USDT → DASH ================= */
 	{
 		legStart := time.Now()
 
@@ -171,28 +162,25 @@ func main() {
 			log.Fatal("LEG1 BUY failed:", err)
 		}
 
-		time.Sleep(50 * time.Millisecond)
-
-		balStart := time.Now()
-		dash, err = getBalance("DASH")
-		balDur := time.Since(balStart)
+		dash, err := getBalance("DASH")
 		if err != nil || dash <= 0 {
 			log.Fatal("LEG1 balance failed:", err)
 		}
 
 		leg1Time = time.Since(legStart)
-
 		log.Printf(
-			"LEG1 USDT→DASH | DASH=%.6f | api=%s | balance=%s | total=%s",
-			dash, apiDur, balDur, leg1Time,
+			"LEG1 USDT→DASH | DASH=%.6f | api=%s | total=%s",
+			dash, apiDur, leg1Time,
 		)
 	}
 
-	/* ================= LEG 2 ================= */
+	/* ================= LEG 2: DASH → BTC ================= */
 	{
 		legStart := time.Now()
 
-		dash = roundDown(dash, 0.001)
+		// округление по шагу DASH-BTC
+		const stepDash = 0.001
+		dash = roundDown(dash, stepDash)
 
 		apiStart := time.Now()
 		_, err := placeMarket(sym2, "sell", dash)
@@ -201,59 +189,52 @@ func main() {
 			log.Fatal("LEG2 SELL failed:", err)
 		}
 
-		time.Sleep(50 * time.Millisecond)
-
-		balStart := time.Now()
-		btc, err = getBalance("BTC")
-		balDur := time.Since(balStart)
+		btc, err := getBalance("BTC")
 		if err != nil || btc <= 0 {
 			log.Fatal("LEG2 balance failed:", err)
 		}
 
 		leg2Time = time.Since(legStart)
-
 		log.Printf(
-			"LEG2 DASH→BTC | BTC=%.8f | api=%s | balance=%s | total=%s",
-			btc, apiDur, balDur, leg2Time,
+			"LEG2 DASH→BTC | BTC=%.8f | api=%s | total=%s",
+			btc, apiDur, leg2Time,
 		)
 	}
 
-	/* ================= LEG 3 ================= */
+	/* ================= LEG 3: BTC → USDT ================= */
 	{
 		legStart := time.Now()
 
-		btc = roundDown(btc, 0.0001)
+		const stepBTC = 0.00001
+		const minSizeBTC = 0.00001
 
-		if btc >= 0.0001 {
+		if btc >= minSizeBTC {
+			btcToSell := roundDown(btc, stepBTC)
+
 			apiStart := time.Now()
-			_, err := placeMarket(sym3, "sell", btc)
+			_, err := placeMarket(sym3, "sell", btcToSell)
 			apiDur := time.Since(apiStart)
 			if err != nil {
 				log.Fatal("LEG3 SELL failed:", err)
 			}
-			log.Printf("LEG3 API sell time=%s", apiDur)
+
+			log.Printf("LEG3 BTC→USDT | BTC sold=%.8f | api time=%s", btcToSell, apiDur)
 		} else {
-			log.Printf("LEG3 skipped | BTC dust=%.8f", btc)
+			log.Printf("LEG3 skipped | BTC below minimum=%.8f", btc)
 		}
 
-		time.Sleep(50 * time.Millisecond)
-
-		balStart := time.Now()
 		usdt, _ = getBalance("USDT")
-		balDur := time.Since(balStart)
+		balDur := time.Since(legStart)
 
 		leg3Time = time.Since(legStart)
-
 		log.Printf(
-			"LEG3 BTC→USDT | USDT=%.4f | balance=%s | total=%s",
-			usdt, balDur, leg3Time,
+			"LEG3 BTC→USDT | USDT=%.4f | total=%s | balance fetch=%s",
+			usdt, leg3Time, balDur,
 		)
 	}
 
 	/* ================= SUMMARY ================= */
-
 	totalTime := time.Since(totalStart)
-
 	log.Println("====== TRIANGLE SUMMARY ======")
 	log.Printf("LEG1 time: %s", leg1Time)
 	log.Printf("LEG2 time: %s", leg2Time)
@@ -262,7 +243,7 @@ func main() {
 	log.Printf("PNL: %.6f USDT", usdt-startUSDT)
 }
 
-/* ================= API ================= */
+/* ================= API FUNCTIONS ================= */
 
 func placeMarket(symbol, side string, value float64) (string, error) {
 	body := map[string]string{
@@ -279,7 +260,6 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	}
 
 	raw, _ := json.Marshal(body)
-
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
 	req.Header = headers("POST", "/api/v1/orders", string(raw))
 
@@ -341,21 +321,6 @@ func getBalance(currency string) (float64, error) {
 
 	return 0, fmt.Errorf("balance %s not found", currency)
 }
-
-
-
-2026/01/18 15:41:20.502299 START TRIANGLE 12.00 USDT
-2026/01/18 15:41:21.759884 LEG1 USDT→DASH | DASH=0.149000 | api=848.978905ms | balance=358.318142ms | total=1.257501622s
-2026/01/18 15:41:22.668264 LEG2 DASH→BTC | BTC=0.00012591 | api=387.581296ms | balance=470.414252ms | total=908.331252ms
-2026/01/18 15:41:23.051869 LEG3 API sell time=383.569555ms
-2026/01/18 15:41:23.500172 LEG3 BTC→USDT | USDT=30.9107 | balance=398.024783ms | total=831.873037ms
-2026/01/18 15:41:23.500205 ====== TRIANGLE SUMMARY ======
-2026/01/18 15:41:23.500210 LEG1 time: 1.257501622s
-2026/01/18 15:41:23.500218 LEG2 time: 908.331252ms
-2026/01/18 15:41:23.500223 LEG3 time: 831.873037ms
-2026/01/18 15:41:23.500231 TOTAL time: 2.997906557s
-2026/01/18 15:41:23.500238 PNL: 18.910679 USDT
-
 
 
 
