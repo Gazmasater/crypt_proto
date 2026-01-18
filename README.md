@@ -109,7 +109,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"net/http"
@@ -123,9 +122,9 @@ import (
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "696935c42a6dcd00013273f2"
-	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
-	apiPassphrase = "Gazmaster_358"
+	apiKey        = "YOUR_API_KEY"
+	apiSecret     = "YOUR_API_SECRET"
+	apiPassphrase = "YOUR_API_PASSPHRASE"
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -147,7 +146,6 @@ func sign(ts, method, path, body string) string {
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// HMAC passphrase для v2
 func passphrase() string {
 	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(apiPassphrase))
@@ -204,10 +202,7 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 			OrderId string `json:"orderId"`
 		} `json:"data"`
 	}
-	b, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(b, &r); err != nil {
-		return "", err
-	}
+	json.NewDecoder(resp.Body).Decode(&r)
 	if r.Code != "200000" {
 		return "", fmt.Errorf("order rejected: %s", r.Msg)
 	}
@@ -216,7 +211,7 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 
 /* ================= WEBSOCKET ================= */
 
-func getWSToken() (string, string) {
+func getWSToken() string {
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-public", nil)
 	req.Header = headers("POST", "/api/v1/bullet-public", "")
 	resp, err := http.DefaultClient.Do(req)
@@ -234,13 +229,9 @@ func getWSToken() (string, string) {
 			} `json:"instanceServers"`
 		} `json:"data"`
 	}
-	b, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(b, &r); err != nil {
-		log.Fatal(err)
-	}
-	token := r.Data.Token
-	url := r.Data.InstanceServers[0].Endpoint + "?token=" + token
-	return token, url
+	json.NewDecoder(resp.Body).Decode(&r)
+	url := r.Data.InstanceServers[0].Endpoint + "?token=" + r.Data.Token
+	return url
 }
 
 func heartbeat(conn *websocket.Conn) {
@@ -251,7 +242,18 @@ func heartbeat(conn *websocket.Conn) {
 	}
 }
 
-// ждём заполнение ордера и округляем
+func subscribeOrders(conn *websocket.Conn) {
+	sub := map[string]interface{}{
+		"id":             1,
+		"type":           "subscribe",
+		"topic":          "/spotMarket/tradeOrders",
+		"privateChannel": true,
+		"response":       true,
+	}
+	raw, _ := json.Marshal(sub)
+	conn.WriteMessage(websocket.TextMessage, raw)
+}
+
 func waitFill(conn *websocket.Conn, orderID string, step float64) float64 {
 	for {
 		_, msg, _ := conn.ReadMessage()
@@ -277,17 +279,19 @@ func main() {
 	start := time.Now()
 	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-	_, wsURL := getWSToken()
+	wsURL := getWSToken()
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		log.Fatal("WS connect error:", err)
 	}
 	defer conn.Close()
+
 	go heartbeat(conn)
+	subscribeOrders(conn)
 
 	var dash, btc, usdt float64
 
-	// LEG1: USDT → DASH
+	// LEG1
 	order1, err := placeMarket(sym1, "buy", startUSDT)
 	if err != nil {
 		log.Fatal("LEG1 order failed:", err)
@@ -295,7 +299,7 @@ func main() {
 	dash = waitFill(conn, order1, step1)
 	log.Printf("LEG1 OK | DASH=%.6f", dash)
 
-	// LEG2: DASH → BTC
+	// LEG2
 	order2, err := placeMarket(sym2, "sell", dash)
 	if err != nil {
 		log.Fatal("LEG2 order failed:", err)
@@ -303,7 +307,7 @@ func main() {
 	btc = waitFill(conn, order2, step2)
 	log.Printf("LEG2 OK | BTC=%.8f", btc)
 
-	// LEG3: BTC → USDT
+	// LEG3
 	order3, err := placeMarket(sym3, "sell", btc)
 	if err != nil {
 		log.Fatal("LEG3 order failed:", err)
@@ -315,9 +319,6 @@ func main() {
 	log.Printf("PNL: %.6f USDT", usdt-startUSDT)
 	log.Printf("TOTAL TIME: %s", time.Since(start))
 }
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/19 00:47:30.589582 START TRIANGLE 12.00 USDT
 
 
 
