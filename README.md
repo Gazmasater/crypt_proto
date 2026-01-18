@@ -100,10 +100,32 @@ BTC-USDT step: 0.00001000
 
 
 
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log"
+	"math"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+)
+
+/* ================= CONFIG ================= */
+
 const (
-	apiKey        = "XXX"
-	apiSecret     = "YYY"
-	apiPassphrase = "ZZZ"
+	apiKey        = "696935c42a6dcd00013273f2"
+	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
+	apiPassphrase = "Gazmaster_358"
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -143,8 +165,6 @@ func headers(method, path, body string) http.Header {
 	return h
 }
 
-
-
 func placeMarket(symbol, side string, value float64) (string, error) {
 	body := map[string]string{
 		"symbol":    symbol,
@@ -183,8 +203,6 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	}
 	return r.Data.OrderId, nil
 }
-
-
 
 func getPrivateWS() string {
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
@@ -233,8 +251,6 @@ func wsLogin(conn *websocket.Conn) {
 	}
 }
 
-
-
 type OrderEvent struct {
 	OrderID string
 	Filled  float64
@@ -269,8 +285,6 @@ func wsReader(conn *websocket.Conn, out chan<- OrderEvent) {
 	}
 }
 
-
-
 func waitOrder(ctx context.Context, ch <-chan OrderEvent, orderID string, step float64) (float64, error) {
 	for {
 		select {
@@ -283,7 +297,6 @@ func waitOrder(ctx context.Context, ch <-chan OrderEvent, orderID string, step f
 		}
 	}
 }
-
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -329,6 +342,99 @@ func main() {
 
 	log.Println("PNL:", usdt-startUSDT)
 }
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "default",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/go/analysis/passes/httpresponse",
+			"scheme": "https",
+			"authority": "pkg.go.dev"
+		}
+	},
+	"severity": 4,
+	"message": "using resp before checking for errors",
+	"source": "httpresponse",
+	"startLineNumber": 110,
+	"startColumn": 8,
+	"endLineNumber": 110,
+	"endColumn": 12,
+	"modelVersionId": 64,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "default",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/go/analysis/passes/lostcancel",
+			"scheme": "https",
+			"authority": "pkg.go.dev"
+		}
+	},
+	"severity": 4,
+	"message": "the cancel function returned by context.WithTimeout should be called, not discarded, to avoid a context leak",
+	"source": "lostcancel",
+	"startLineNumber": 217,
+	"startColumn": 8,
+	"endLineNumber": 217,
+	"endColumn": 9,
+	"modelVersionId": 64,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "default",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/go/analysis/passes/lostcancel",
+			"scheme": "https",
+			"authority": "pkg.go.dev"
+		}
+	},
+	"severity": 4,
+	"message": "the cancel function returned by context.WithTimeout should be called, not discarded, to avoid a context leak",
+	"source": "lostcancel",
+	"startLineNumber": 226,
+	"startColumn": 8,
+	"endLineNumber": 226,
+	"endColumn": 9,
+	"modelVersionId": 64,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "default",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/go/analysis/passes/lostcancel",
+			"scheme": "https",
+			"authority": "pkg.go.dev"
+		}
+	},
+	"severity": 4,
+	"message": "the cancel function returned by context.WithTimeout should be called, not discarded, to avoid a context leak",
+	"source": "lostcancel",
+	"startLineNumber": 235,
+	"startColumn": 8,
+	"endLineNumber": 235,
+	"endColumn": 9,
+	"modelVersionId": 64,
+	"origin": "extHost1"
+}]
 
 
 
