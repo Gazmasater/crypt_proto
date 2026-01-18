@@ -348,3 +348,9 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 }
 
 
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/19 00:28:24.157282 START TRIANGLE 12.00 USDT
+2026/01/19 00:28:25.784042 LEG1 order failed:order rejected: Invalid KC-API-PASSPHRASE
+exit status 1
+
+
