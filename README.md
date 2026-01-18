@@ -392,6 +392,160 @@ func main() {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: ch1",
+	"source": "compiler",
+	"startLineNumber": 246,
+	"startColumn": 2,
+	"endLineNumber": 246,
+	"endColumn": 5,
+	"modelVersionId": 3,
+	"tags": [
+		1
+	],
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidSelectCase",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidSelectCase"
+		}
+	},
+	"severity": 8,
+	"message": "select case must be send or receive (possibly with assignment)",
+	"source": "compiler",
+	"startLineNumber": 253,
+	"startColumn": 7,
+	"endLineNumber": 253,
+	"endColumn": 37,
+	"modelVersionId": 3,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: ch2",
+	"source": "compiler",
+	"startLineNumber": 261,
+	"startColumn": 2,
+	"endLineNumber": 261,
+	"endColumn": 5,
+	"modelVersionId": 3,
+	"tags": [
+		1
+	],
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidSelectCase",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidSelectCase"
+		}
+	},
+	"severity": 8,
+	"message": "select case must be send or receive (possibly with assignment)",
+	"source": "compiler",
+	"startLineNumber": 268,
+	"startColumn": 7,
+	"endLineNumber": 268,
+	"endColumn": 36,
+	"modelVersionId": 3,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UnusedVar",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UnusedVar"
+		}
+	},
+	"severity": 8,
+	"message": "declared and not used: ch3",
+	"source": "compiler",
+	"startLineNumber": 276,
+	"startColumn": 2,
+	"endLineNumber": 276,
+	"endColumn": 5,
+	"modelVersionId": 3,
+	"tags": [
+		1
+	],
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidSelectCase",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidSelectCase"
+		}
+	},
+	"severity": 8,
+	"message": "select case must be send or receive (possibly with assignment)",
+	"source": "compiler",
+	"startLineNumber": 283,
+	"startColumn": 7,
+	"endLineNumber": 283,
+	"endColumn": 37,
+	"modelVersionId": 3,
+	"origin": "extHost1"
+}]
+
+
 
 
 
