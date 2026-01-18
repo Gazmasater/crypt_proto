@@ -92,9 +92,9 @@ import (
 
 /* ================= CONFIG ================= */
 const (
-	apiKey        = "YOUR_API_KEY"
-	apiSecret     = "YOUR_API_SECRET"
-	apiPassphrase = "YOUR_API_PASSPHRASE"
+	apiKey        = "696935c42a6dcd00013273f2"
+	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
+	apiPassphrase = "Gazmaster_358"
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -237,8 +237,6 @@ func main() {
 
 
 gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/16 04:37:55.162871 START TRIANGLE 12.00 USDT
-2026/01/16 04:37:55.871028 [OK] buy DASH-USDT orderId=696996738333910007e03fec filled=0.00000000
-2026/01/16 04:37:56.177800 [FAIL] LEG2 DASH→BTC order rejected: The quantity is invalid.; raw: {"msg":"The quantity is invalid.","code":"300000"}
-
-
+2026/01/18 14:51:11.869234 START TRIANGLE 12.00 USDT
+2026/01/18 14:51:12.675455 [OK] buy DASH-USDT orderId=696cc9300b211e000751f6e8 filled=0.00000000
+2026/01/18 14:51:13.084875 [FAIL] LEG2 DASH→BTC order rejected: The quantity is invalid.; raw: {"msg":"The quantity is invalid.","code":"300000"}
