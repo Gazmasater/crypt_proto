@@ -307,4 +307,11 @@ func main() {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/18 20:07:56.449715 START TRIANGLE 12.00 USDT
+2026/01/18 20:07:58.236574 LEG1 USDT→DASH | DASH=0.137000
+2026/01/18 20:07:59.055617 LEG2 SELL failed:order rejected: Balance insufficient!
+exit status 1
+
+
 
