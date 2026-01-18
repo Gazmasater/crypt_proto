@@ -338,6 +338,13 @@ func main() {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/18 23:44:00.789617 START TRIANGLE 12.00 USDT
+2026/01/18 23:44:03.205033 LEG1 order sent, waiting for fill...
+
+
+
+
 
 
 
