@@ -110,33 +110,32 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 )
 
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "YOUR_API_KEY"
-	apiSecret     = "YOUR_API_SECRET"
-	apiPassphrase = "YOUR_API_PASSPHRASE"
+	apiKey        = "696935c42a6dcd00013273f2"
+	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
+	apiPassphrase = "Gazmaster_358"
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
 
-	// Пары треугольника
 	sym1 = "DASH-USDT"
 	sym2 = "DASH-BTC"
 	sym3 = "BTC-USDT"
 
-	// Шаги ордеров (можно получить через REST /symbols)
-	step1 = 0.0001
-	step2 = 0.0001
-	step3 = 0.00001
+	// Минимальные шаги для ордеров
+	step1 = 0.0001  // DASH-USDT
+	step2 = 0.0001  // DASH-BTC
+	step3 = 0.00001 // BTC-USDT
 )
 
 /* ================= AUTH ================= */
@@ -165,95 +164,96 @@ func headers(method, path, body string) http.Header {
 	return h
 }
 
-/* ================= PRIVATE WS TOKEN ================= */
+/* ================= UTILS ================= */
 
-type BulletResp struct {
-	Code string `json:"code"`
-	Data struct {
-		Token           string `json:"token"`
-		InstanceServers []struct {
-			Endpoint string `json:"endpoint"`
-		} `json:"instanceServers"`
-	} `json:"data"`
+func roundDown(v, step float64) float64 {
+	return math.Floor(v/step) * step
 }
 
-func getPrivateWSToken() (string, string, error) {
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
-	req.Header = headers("POST", "/api/v1/bullet-private", "")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
+/* ================= MAIN ================= */
 
-	var r BulletResp
-	body, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(body, &r); err != nil {
-		return "", "", err
-	}
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	totalStart := time.Now()
+	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
 
-	if r.Code != "200000" || len(r.Data.InstanceServers) == 0 {
-		return "", "", fmt.Errorf("failed to get WS token")
-	}
+	var dash, btc, usdt float64
 
-	return r.Data.Token, r.Data.InstanceServers[0].Endpoint, nil
-}
-
-/* ================= WS HANDLER ================= */
-
-func connectWS(token, endpoint string) (*websocket.Conn, error) {
-	wsURL := endpoint + "?token=" + token
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	return conn, nil
-}
-
-func subscribeOrders(ws *websocket.Conn) error {
-	sub := map[string]interface{}{
-		"type":           "subscribe",
-		"topic":          "/spotMarket/tradeOrders",
-		"privateChannel": true,
-		"response":       true,
-	}
-	return ws.WriteJSON(sub)
-}
-
-func heartbeat(ws *websocket.Conn) {
-	t := time.NewTicker(30 * time.Second)
-	go func() {
-		for range t.C {
-			ws.WriteJSON(map[string]string{"id": uuid.NewString(), "type": "ping"})
+	/* ================= LEG 1: USDT → DASH ================= */
+	{
+		legStart := time.Now()
+		orderID, err := placeMarket(sym1, "buy", startUSDT)
+		if err != nil {
+			log.Fatal("LEG1 BUY failed:", err)
 		}
-	}()
-}
+		log.Printf("LEG1 order sent, waiting for fill... | OrderID=%s", orderID)
 
-func waitForFill(ws *websocket.Conn, clientOid string) {
-	for {
-		var msg map[string]interface{}
-		if err := ws.ReadJSON(&msg); err != nil {
-			log.Println("WS read error:", err)
-			continue
+		dash, err = getBalance("DASH")
+		if err != nil || dash < step1 {
+			log.Fatal("LEG1 balance failed or below step")
 		}
-		if data, ok := msg["data"].(map[string]interface{}); ok {
-			if data["clientOid"] == clientOid && data["status"] == "done" {
-				log.Printf("Order %s filled", clientOid)
-				return
+		dash = roundDown(dash, step1)
+		log.Printf("LEG1 OK | DASH=%.6f | total=%s", dash, time.Since(legStart))
+	}
+
+	/* ================= LEG 2: DASH → BTC ================= */
+	{
+		legStart := time.Now()
+		if dash < step2 {
+			log.Fatalf("LEG2 skipped | DASH below min step: %.6f", dash)
+		}
+		dashToSell := roundDown(dash, step2)
+
+		orderID, err := placeMarket(sym2, "sell", dashToSell)
+		if err != nil {
+			log.Fatal("LEG2 SELL failed:", err)
+		}
+		log.Printf("LEG2 order sent, waiting for fill... | OrderID=%s | DASH=%.6f", orderID, dashToSell)
+
+		btc, err = getBalance("BTC")
+		if err != nil || btc < step3 {
+			log.Fatal("LEG2 balance failed or BTC below min step")
+		}
+		btc = roundDown(btc, step3)
+		log.Printf("LEG2 OK | BTC=%.8f | total=%s", btc, time.Since(legStart))
+	}
+
+	/* ================= LEG 3: BTC → USDT ================= */
+	{
+		legStart := time.Now()
+		if btc < step3 {
+			log.Printf("LEG3 skipped | BTC below min step: %.8f", btc)
+		} else {
+			// Автоматически продаём весь BTC, округляя вниз по шагу
+			btcToSell := roundDown(btc, step3)
+			if btcToSell < step3 {
+				log.Printf("LEG3 skipped after rounding | BTC below min step: %.8f", btcToSell)
+			} else {
+				orderID, err := placeMarket(sym3, "sell", btcToSell)
+				if err != nil {
+					log.Fatal("LEG3 SELL failed:", err)
+				}
+				log.Printf("LEG3 order sent, waiting for fill... | OrderID=%s | BTC=%.8f", orderID, btcToSell)
 			}
 		}
+
+		usdt, _ = getBalance("USDT")
+		log.Printf("LEG3 OK | USDT=%.6f | total=%s", usdt, time.Since(legStart))
 	}
+
+	log.Println("====== TRIANGLE SUMMARY ======")
+	log.Printf("PNL: %.6f USDT", usdt-startUSDT)
+	log.Printf("TOTAL TIME: %s", time.Since(totalStart))
 }
 
-/* ================= API PLACE ORDER ================= */
+/* ================= API FUNCTIONS ================= */
 
 func placeMarket(symbol, side string, value float64) (string, error) {
-	clientOid := uuid.NewString()
 	body := map[string]string{
 		"symbol":    symbol,
 		"type":      "market",
 		"side":      side,
-		"clientOid": clientOid,
+		"clientOid": uuid.NewString(),
 	}
 	if side == "buy" {
 		body["funds"] = fmt.Sprintf("%.8f", value)
@@ -284,10 +284,8 @@ func placeMarket(symbol, side string, value float64) (string, error) {
 	if r.Code != "200000" {
 		return "", fmt.Errorf("order rejected: %s", r.Msg)
 	}
-	return clientOid, nil
+	return r.Data.OrderId, nil
 }
-
-/* ================= GET BALANCE ================= */
 
 func getBalance(currency string) (float64, error) {
 	req, _ := http.NewRequest("GET", baseURL+"/api/v1/accounts", nil)
@@ -318,92 +316,6 @@ func getBalance(currency string) (float64, error) {
 	}
 	return 0, fmt.Errorf("balance %s not found", currency)
 }
-
-/* ================= UTILS ================= */
-
-func roundDown(v, step float64) float64 {
-	if step == 0 {
-		return v
-	}
-	return float64(int(v/step)) * step
-}
-
-/* ================= MAIN ================= */
-
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("START TRIANGLE %.2f USDT", startUSDT)
-
-	// Получаем private WS токен
-	token, endpoint, err := getPrivateWSToken()
-	if err != nil {
-		log.Fatal("Failed to get WS token:", err)
-	}
-
-	ws, err := connectWS(token, endpoint)
-	if err != nil {
-		log.Fatal("WS connect error:", err)
-	}
-	defer ws.Close()
-
-	heartbeat(ws)
-	if err := subscribeOrders(ws); err != nil {
-		log.Fatal("WS subscribe error:", err)
-	}
-
-	/* ================= LEG 1: USDT → DASH ================= */
-	leg1Oid, err := placeMarket(sym1, "buy", startUSDT)
-	if err != nil {
-		log.Fatal("LEG1 BUY failed:", err)
-	}
-	log.Println("LEG1 order sent, waiting for fill...")
-	waitForFill(ws, leg1Oid)
-	dash, _ := getBalance("DASH")
-	dash = roundDown(dash, step1)
-	log.Printf("LEG1 OK | DASH=%.6f", dash)
-
-	/* ================= LEG 2: DASH → BTC ================= */
-	leg2Oid, err := placeMarket(sym2, "sell", dash)
-	if err != nil {
-		log.Fatal("LEG2 SELL failed:", err)
-	}
-	log.Println("LEG2 order sent, waiting for fill...")
-	waitForFill(ws, leg2Oid)
-	btc, _ := getBalance("BTC")
-	btc = roundDown(btc, step2)
-	log.Printf("LEG2 OK | BTC=%.8f", btc)
-
-	/* ================= LEG 3: BTC → USDT ================= */
-	leg3Oid, err := placeMarket(sym3, "sell", btc)
-	if err != nil {
-		log.Fatal("LEG3 SELL failed:", err)
-	}
-	log.Println("LEG3 order sent, waiting for fill...")
-	waitForFill(ws, leg3Oid)
-	usdt, _ := getBalance("USDT")
-	usdt = roundDown(usdt, step3)
-	log.Printf("LEG3 OK | USDT=%.6f", usdt)
-
-	/* ================= SUMMARY ================= */
-	log.Println("====== SUMMARY ======")
-	log.Printf("PNL: %.6f USDT", usdt-startUSDT)
-}
-
-
-
-026/01/18 23:55:07.197640 START TRIANGLE 12.00 USDT
-2026/01/18 23:55:09.780668 LEG1 order sent, waiting for fill...
-2026/01/18 23:55:09.780836 Order 6ce46516-2f44-4de3-bd39-3e21b44803ea filled
-2026/01/18 23:55:10.236562 LEG1 OK | DASH=0.286900
-2026/01/18 23:55:10.649091 LEG2 order sent, waiting for fill...
-2026/01/18 23:55:10.649282 Order 4e49ab8d-a3a1-498d-b4c5-c87ad379e6db filled
-2026/01/18 23:55:11.055396 LEG2 OK | BTC=0.00020000
-2026/01/18 23:55:11.465079 LEG3 order sent, waiting for fill...
-2026/01/18 23:55:11.465235 Order d744c14e-ed99-4b93-998a-4e535924148d filled
-2026/01/18 23:55:11.874653 LEG3 OK | USDT=29.723960
-2026/01/18 23:55:11.874685 ====== SUMMARY ======
-2026/01/18 23:55:11.874693 PNL: 17.723960 USDT
-
 
 
 
