@@ -128,7 +128,8 @@ const (
 	apiSecret     = "API_SECRET"
 	apiPassphrase = "API_PASSPHRASE"
 
-	baseURL   = "https://api.kucoin.com"
+	baseURL = "https://api.kucoin.com"
+
 	startUSDT = 12.0
 
 	sym1 = "DASH-USDT"
@@ -174,40 +175,12 @@ func roundDown(v, step float64) float64 {
 	return math.Floor(v/step) * step
 }
 
-/* ================= ORDER ROUTER ================= */
-
-type OrderRouter struct {
-	mu   sync.Mutex
-	wait map[string]chan float64
-}
-
-func NewOrderRouter() *OrderRouter {
-	return &OrderRouter{wait: make(map[string]chan float64)}
-}
-
-func (r *OrderRouter) Register(oid string) chan float64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ch := make(chan float64, 1)
-	r.wait[oid] = ch
-	return ch
-}
-
-func (r *OrderRouter) Resolve(oid string, filled float64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if ch, ok := r.wait[oid]; ok {
-		ch <- filled
-		delete(r.wait, oid)
-	}
-}
-
-/* ================= REST SEND ================= */
+/* ================= FAST REST ================= */
 
 var fastHTTP = &http.Client{
 	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
+		MaxIdleConns:        200,
+		MaxIdleConnsPerHost: 200,
 		IdleConnTimeout:     90 * time.Second,
 		DisableCompression: true,
 	},
@@ -229,14 +202,38 @@ func sendMarket(symbol, side string, value float64, oid string) {
 
 	raw, _ := json.Marshal(body)
 
-	req, _ := http.NewRequest(
-		"POST",
-		baseURL+"/api/v1/orders",
-		bytes.NewReader(raw),
-	)
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
 	req.Header = headers("POST", "/api/v1/orders", string(raw))
 
 	go fastHTTP.Do(req) // 🔥 FIRE & FORGET
+}
+
+/* ================= ORDER ROUTER ================= */
+
+type OrderRouter struct {
+	mu   sync.Mutex
+	wait map[string]chan float64
+}
+
+func NewOrderRouter() *OrderRouter {
+	return &OrderRouter{wait: map[string]chan float64{}}
+}
+
+func (r *OrderRouter) Register(oid string) chan float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ch := make(chan float64, 1)
+	r.wait[oid] = ch
+	return ch
+}
+
+func (r *OrderRouter) Resolve(oid string, filled float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ch, ok := r.wait[oid]; ok {
+		ch <- filled
+		delete(r.wait, oid)
+	}
 }
 
 /* ================= EXECUTOR ================= */
@@ -254,11 +251,8 @@ type Executor struct {
 	router *OrderRouter
 }
 
-func NewExecutor(router *OrderRouter) *Executor {
-	return &Executor{
-		leg:    Leg1,
-		router: router,
-	}
+func NewExecutor(r *OrderRouter) *Executor {
+	return &Executor{leg: Leg1, router: r}
 }
 
 func (e *Executor) Start(usdt float64) {
@@ -268,17 +262,16 @@ func (e *Executor) Start(usdt float64) {
 	log.Println("SEND LEG1")
 	sendMarket(sym1, "buy", usdt, oid)
 
-	go e.wait(ch)
+	go e.loop(ch)
 }
 
-func (e *Executor) wait(ch chan float64) {
+func (e *Executor) loop(ch chan float64) {
 	for filled := range ch {
 
 		switch e.leg {
 
 		case Leg1:
 			dash := roundDown(filled, stepDash)
-
 			oid := uuid.NewString()
 			ch2 := e.router.Register(oid)
 
@@ -290,7 +283,6 @@ func (e *Executor) wait(ch chan float64) {
 
 		case Leg2:
 			btc := roundDown(filled*fee, stepBTC)
-
 			oid := uuid.NewString()
 			ch3 := e.router.Register(oid)
 
@@ -370,7 +362,7 @@ func main() {
 	router := NewOrderRouter()
 	exec := NewExecutor(router)
 
-	// WS reader
+	// WS reader (КЛЮЧЕВО!)
 	go func() {
 		for {
 			_, msg, err := conn.ReadMessage()
@@ -378,12 +370,16 @@ func main() {
 				log.Fatal(err)
 			}
 
+			if !strings.Contains(string(msg), "tradeOrders") {
+				continue
+			}
+
 			var evt struct {
 				Topic string `json:"topic"`
-				Data  struct {
-					Type       string `json:"type"`
-					ClientOid  string `json:"clientOid"`
-					FilledSize string `json:"filledSize"`
+				Data struct {
+					ClientOid    string `json:"clientOid"`
+					FilledSize   string `json:"filledSize"`
+					FilledFunds string `json:"filledFunds"`
 				} `json:"data"`
 			}
 
@@ -391,21 +387,27 @@ func main() {
 				continue
 			}
 
-			if evt.Topic == "/spotMarket/tradeOrders" && evt.Data.Type == "done" {
-				v, _ := strconv.ParseFloat(evt.Data.FilledSize, 64)
-				router.Resolve(evt.Data.ClientOid, v)
+			if evt.Data.ClientOid == "" {
+				continue
+			}
+
+			var filled float64
+
+			if evt.Data.FilledSize != "" {
+				filled, _ = strconv.ParseFloat(evt.Data.FilledSize, 64)
+			} else if evt.Data.FilledFunds != "" {
+				filled, _ = strconv.ParseFloat(evt.Data.FilledFunds, 64)
+			}
+
+			if filled > 0 {
+				router.Resolve(evt.Data.ClientOid, filled)
 			}
 		}
 	}()
 
 	exec.Start(startUSDT)
 
-	select {} // держим процесс
+	select {}
 }
-
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/19 12:47:32.418070 START TRIANGLE 12
-2026/01/19 12:47:34.125191 SEND LEG1
 
 
