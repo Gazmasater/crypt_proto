@@ -100,163 +100,6 @@ BTC-USDT step: 0.00001000
 
 
 
-package main
-
-import (
-	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"log"
-	"math"
-	"net/http"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
-
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
-)
-
-/* ================= CONFIG ================= */
-
-const (
-	apiKey        = "API_KEY"
-	apiSecret     = "API_SECRET"
-	apiPassphrase = "API_PASSPHRASE"
-
-	baseURL = "https://api.kucoin.com"
-
-	startUSDT = 12.0
-
-	sym1 = "DASH-USDT"
-	sym2 = "DASH-BTC"
-	sym3 = "BTC-USDT"
-
-	stepDash = 0.0001
-	stepBTC  = 0.00001
-	stepUSDT = 0.01
-
-	fee = 0.999 // 0.1% комиссия
-)
-
-/* ================= AUTH ================= */
-
-func sign(ts, method, path, body string) string {
-	mac := hmac.New(sha256.New, []byte(apiSecret))
-	mac.Write([]byte(ts + method + path + body))
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
-}
-
-func signPassphrase() string {
-	mac := hmac.New(sha256.New, []byte(apiSecret))
-	mac.Write([]byte(apiPassphrase))
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
-}
-
-func headers(method, path, body string) http.Header {
-	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	h := http.Header{}
-	h.Set("KC-API-KEY", apiKey)
-	h.Set("KC-API-SIGN", sign(ts, method, path, body))
-	h.Set("KC-API-TIMESTAMP", ts)
-	h.Set("KC-API-PASSPHRASE", signPassphrase())
-	h.Set("KC-API-KEY-VERSION", "2")
-	h.Set("Content-Type", "application/json")
-	return h
-}
-
-/* ================= UTILS ================= */
-
-func roundDown(v, step float64) float64 {
-	return math.Floor(v/step) * step
-}
-
-/* ================= FAST REST ================= */
-
-var fastHTTP = &http.Client{
-	Transport: &http.Transport{
-		MaxIdleConns:        200,
-		MaxIdleConnsPerHost: 200,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  true,
-	},
-}
-
-func sendMarket(symbol, side string, value float64, oid string) {
-	body := map[string]string{
-		"symbol":    symbol,
-		"type":      "market",
-		"side":      side,
-		"clientOid": oid,
-	}
-
-	if side == "buy" {
-		body["funds"] = fmt.Sprintf("%.8f", value)
-	} else {
-		body["size"] = fmt.Sprintf("%.8f", value)
-	}
-
-	raw, _ := json.Marshal(body)
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
-	req.Header = headers("POST", "/api/v1/orders", string(raw))
-
-	go fastHTTP.Do(req) // 🔥 FIRE & FORGET
-}
-
-/* ================= ORDER ROUTER ================= */
-
-type OrderRouter struct {
-	mu   sync.Mutex
-	wait map[string]chan float64
-}
-
-func NewOrderRouter() *OrderRouter {
-	return &OrderRouter{wait: map[string]chan float64{}}
-}
-
-func (r *OrderRouter) Register(oid string) chan float64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ch := make(chan float64, 1)
-	r.wait[oid] = ch
-	return ch
-}
-
-func (r *OrderRouter) Resolve(oid string, filled float64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if ch, ok := r.wait[oid]; ok {
-		ch <- filled
-		delete(r.wait, oid)
-	}
-}
-
-/* ================= EXECUTOR ================= */
-
-type Executor struct {
-	router    *OrderRouter
-	delayLeg1 time.Duration
-	delayLeg2 time.Duration
-	delayLeg3 time.Duration
-}
-
-func NewExecutor(r *OrderRouter, d1, d2, d3 time.Duration) *Executor {
-	return &Executor{
-		router:    r,
-		delayLeg1: d1,
-		delayLeg2: d2,
-		delayLeg3: d3,
-	}
-}
-
-func (e *Executor) Start(usdt float64) {
-	go e.execute(usdt)
-}
-
 func (e *Executor) execute(usdt float64) {
 	// ===== LEG1 =====
 	oid1 := uuid.NewString()
@@ -264,7 +107,13 @@ func (e *Executor) execute(usdt float64) {
 	log.Println("SEND LEG1")
 	sendMarket(sym1, "buy", usdt, oid1)
 
-	filledDash := <-ch1
+	var filledDash float64
+	select {
+	case filledDash = <-ch1:
+	case <-time.After(5 * time.Second):
+		log.Println("LEG1 timeout!")
+		return
+	}
 	time.Sleep(e.delayLeg1)
 	dash := roundDown(filledDash, stepDash)
 	log.Println("LEG1 FILLED:", dash)
@@ -275,7 +124,13 @@ func (e *Executor) execute(usdt float64) {
 	log.Println("SEND LEG2")
 	sendMarket(sym2, "sell", dash, oid2)
 
-	filledBTC := <-ch2
+	var filledBTC float64
+	select {
+	case filledBTC = <-ch2:
+	case <-time.After(5 * time.Second):
+		log.Println("LEG2 timeout!")
+		return
+	}
 	time.Sleep(e.delayLeg2)
 	btc := roundDown(filledBTC*fee, stepBTC)
 	log.Println("LEG2 FILLED:", btc)
@@ -291,132 +146,19 @@ func (e *Executor) execute(usdt float64) {
 	log.Println("SEND LEG3")
 	sendMarket(sym3, "sell", btc, oid3)
 
-	filledUSDT := <-ch3
+	var filledUSDT float64
+	select {
+	case filledUSDT = <-ch3:
+	case <-time.After(5 * time.Second):
+		log.Println("LEG3 timeout!")
+		return
+	}
 	time.Sleep(e.delayLeg3)
 	usdtFinal := roundDown(filledUSDT, stepUSDT)
 	log.Println("LEG3 FILLED:", usdtFinal)
 	log.Println("PNL:", usdtFinal-startUSDT)
 }
 
-/* ================= WEBSOCKET ================= */
-
-func getPrivateWS() (string, error) {
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
-	req.Header = headers("POST", "/api/v1/bullet-private", "")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-	json.NewDecoder(resp.Body).Decode(&r)
-
-	return r.Data.InstanceServers[0].Endpoint + "?token=" + r.Data.Token, nil
-}
-
-/* ================= MAIN ================= */
-
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Println("START TRIANGLE", startUSDT)
-
-	wsURL, err := getPrivateWS()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer conn.Close()
-
-	// ping каждые 25 секунд
-	go func() {
-		t := time.NewTicker(25 * time.Second)
-		for range t.C {
-			conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping"}`))
-		}
-	}()
-
-	// подписка на private tradeOrders
-	sub := fmt.Sprintf(`{
-		"id":"%s",
-		"type":"subscribe",
-		"topic":"/spotMarket/tradeOrders",
-		"privateChannel":true
-	}`, uuid.NewString())
-	conn.WriteMessage(websocket.TextMessage, []byte(sub))
-
-	router := NewOrderRouter()
-	// тайминги LEG1 = 1.3s, LEG2 = 1s, LEG3 = 1s
-	exec := NewExecutor(router, 1300*time.Millisecond, 1000*time.Millisecond, 1000*time.Millisecond)
-
-	// WS reader
-	go func() {
-		for {
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			if !strings.Contains(string(msg), "tradeOrders") {
-				continue
-			}
-
-			var evt struct {
-				Topic string `json:"topic"`
-				Data  struct {
-					ClientOid   string `json:"clientOid"`
-					FilledSize  string `json:"filledSize"`
-					FilledFunds string `json:"filledFunds"`
-				} `json:"data"`
-			}
-
-			if json.Unmarshal(msg, &evt) != nil {
-				continue
-			}
-
-			if evt.Data.ClientOid == "" {
-				continue
-			}
-
-			var filled float64
-			if evt.Data.FilledSize != "" {
-				filled, _ = strconv.ParseFloat(evt.Data.FilledSize, 64)
-			} else if evt.Data.FilledFunds != "" {
-				filled, _ = strconv.ParseFloat(evt.Data.FilledFunds, 64)
-			}
-
-			if filled > 0 {
-				router.Resolve(evt.Data.ClientOid, filled)
-			}
-		}
-	}()
-
-	exec.Start(startUSDT)
-
-	select {} // держим main
-}
-
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/19 13:36:43.474170 START TRIANGLE 12
-2026/01/19 13:36:45.259955 SEND LEG1
-2026/01/19 13:36:46.970000 LEG1 FILLED: 0.1472
-2026/01/19 13:36:46.970088 SEND LEG2
-2026/01/19 13:36:48.308659 LEG2 FILLED: 0.14705000000000001
-2026/01/19 13:36:48.308736 SEND LEG3
-^Csignal: interrupt
 
 
 
