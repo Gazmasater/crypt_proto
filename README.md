@@ -191,3 +191,22 @@ go func() {
 
 
 
+2026/01/19 14:44:34.456953 START TRIANGLE 12
+2026/01/19 14:44:35.960020 SEND LEG1
+2026/01/19 14:44:35.960085 WS MSG: {"id":"17lZasYykka","type":"welcome"}
+2026/01/19 14:44:36.472296 WS MSG: {"topic":"/spotMarket/tradeOrders","type":"message","subject":"orderChange","userId":"693a99012d117700012b08db","channelType":"private","data":{"clientOid":"673ace3e-4e31-4d91-bd10-5cdbad2c22fa","feeType":"takerFee","filledSize":"0.1481","funds":"12","liquidity":"taker","matchPrice":"80.99","matchSize":"0.1481","orderId":"696e1924b4b86900076f34dd","orderTime":1768823076278,"orderType":"market","pt":1768823076297,"remainFunds":"0.005381","side":"buy","status":"match","symbol":"DASH-USDT","tradeId":"19259671366621184","ts":1768823076296000000,"type":"match"}}
+2026/01/19 14:44:36.472542 RESOLVE 673ace3e-4e31-4d91-bd10-5cdbad2c22fa filled=0.148100
+2026/01/19 14:44:36.472573 WS MSG: {"topic":"/spotMarket/tradeOrders","type":"message","subject":"orderChange","userId":"693a99012d117700012b08db","channelType":"private","data":{"clientOid":"673ace3e-4e31-4d91-bd10-5cdbad2c22fa","filledSize":"0.1481","funds":"12","orderId":"696e1924b4b86900076f34dd","orderTime":1768823076278,"orderType":"market","pt":1768823076297,"remainFunds":"0","remainSize":"0","side":"buy","status":"done","symbol":"DASH-USDT","ts":1768823076296000000,"type":"canceled"}}
+2026/01/19 14:44:36.472598 RESOLVE 673ace3e-4e31-4d91-bd10-5cdbad2c22fa filled=0.148100
+2026/01/19 14:44:36.472613 LEG1 FILLED: 0.1481
+2026/01/19 14:44:36.472630 SEND LEG2
+2026/01/19 14:44:36.881906 WS MSG: {"topic":"/spotMarket/tradeOrders","type":"message","subject":"orderChange","userId":"693a99012d117700012b08db","channelType":"private","data":{"clientOid":"078db25f-c00a-4399-8485-415e9c6b09a9","feeType":"takerFee","filledSize":"0.1481","liquidity":"taker","matchPrice":"0.0008676","matchSize":"0.1481","orderId":"696e19248ae5f90007130e26","orderTime":1768823076637,"orderType":"market","pt":1768823076643,"remainSize":"0","side":"sell","size":"0.1481","status":"match","symbol":"DASH-BTC","tradeId":"16389436815462400","ts":1768823076642000000,"type":"match"}}
+2026/01/19 14:44:36.881984 RESOLVE 078db25f-c00a-4399-8485-415e9c6b09a9 filled=0.148100
+2026/01/19 14:44:36.882010 WS MSG: {"topic":"/spotMarket/tradeOrders","type":"message","subject":"orderChange","userId":"693a99012d117700012b08db","channelType":"private","data":{"clientOid":"078db25f-c00a-4399-8485-415e9c6b09a9","filledSize":"0.1481","orderId":"696e19248ae5f90007130e26","orderTime":1768823076637,"orderType":"market","pt":1768823076643,"remainFunds":"0","remainSize":"0","side":"sell","size":"0.1481","status":"done","symbol":"DASH-BTC","ts":1768823076642000000,"type":"filled"}}
+2026/01/19 14:44:36.882033 RESOLVE 078db25f-c00a-4399-8485-415e9c6b09a9 filled=0.148100
+2026/01/19 14:44:36.882074 LEG2 FILLED: 0.1481
+2026/01/19 14:44:36.882095 SEND LEG3
+2026/01/19 14:45:01.254483 WS MSG: {"type":"pong","timestamp":1768823101106020}
+
+
+
