@@ -403,3 +403,9 @@ func main() {
 	select {} // держим процесс
 }
 
+
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/19 12:47:32.418070 START TRIANGLE 12
+2026/01/19 12:47:34.125191 SEND LEG1
+
+
