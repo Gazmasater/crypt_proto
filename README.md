@@ -131,5 +131,11 @@ func getPrivateWS() (string, error) {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/19 14:12:47.204399 START TRIANGLE 12
+2026/01/19 14:12:52.777198 no instance servers returned from KuCoin: {Code:400002 Data:{Token: InstanceServers:[]}}
+exit status 1
+
+
 
 
