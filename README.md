@@ -100,41 +100,93 @@ BTC-USDT step: 0.00001000
 
 
 
-func getPrivateWS() (string, error) {
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
-	req.Header = headers("POST", "/api/v1/bullet-private", "")
+func (e *Executor) execute(usdt float64) {
+	// ===== LEG1 =====
+	oid1 := uuid.NewString()
+	ch1 := e.router.Register(oid1)
+	log.Println("SEND LEG1")
+	sendMarket(sym1, "buy", usdt, oid1)
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
+	filledDash := <-ch1
+	dash := roundDown(filledDash, stepDash)
+	log.Println("LEG1 FILLED:", dash)
 
-	var r struct {
-		Code string `json:"code"`
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", fmt.Errorf("failed to decode WS response: %w", err)
-	}
+	// ===== LEG2 =====
+	oid2 := uuid.NewString()
+	ch2 := e.router.Register(oid2)
+	log.Println("SEND LEG2")
+	sendMarket(sym2, "sell", dash, oid2)
 
-	if len(r.Data.InstanceServers) == 0 {
-		return "", fmt.Errorf("no instance servers returned from KuCoin: %+v", r)
+	filledBTC := <-ch2
+	btc := roundDown(filledBTC, stepBTC) // WS уже возвращает с комиссией
+	log.Println("LEG2 FILLED:", btc)
+
+	// ===== LEG3 =====
+	if btc < stepBTC {
+		log.Println("LEG3 skipped, BTC меньше минимального шага")
+		return
 	}
 
-	return r.Data.InstanceServers[0].Endpoint + "?token=" + r.Data.Token, nil
+	oid3 := uuid.NewString()
+	ch3 := e.router.Register(oid3)
+	log.Println("SEND LEG3")
+	sendMarket(sym3, "sell", btc, oid3)
+
+	// ждем fill через WS
+	filledUSDT := <-ch3
+	usdtFinal := roundDown(filledUSDT, stepUSDT)
+	log.Println("LEG3 FILLED:", usdtFinal)
+	log.Println("PNL:", usdtFinal-startUSDT)
 }
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
-2026/01/19 14:12:47.204399 START TRIANGLE 12
-2026/01/19 14:12:52.777198 no instance servers returned from KuCoin: {Code:400002 Data:{Token: InstanceServers:[]}}
-exit status 1
+
+
+go func() {
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// лог всех сообщений для дебага
+		log.Println("WS MSG:", string(msg))
+
+		if !bytes.Contains(msg, []byte("tradeOrders")) {
+			continue
+		}
+
+		var evt struct {
+			Topic string `json:"topic"`
+			Data  struct {
+				ClientOid   string `json:"clientOid"`
+				FilledSize  string `json:"filledSize"`
+				FilledFunds string `json:"filledFunds"`
+			} `json:"data"`
+		}
+
+		if err := json.Unmarshal(msg, &evt); err != nil {
+			log.Println("WS unmarshal error:", err)
+			continue
+		}
+
+		if evt.Data.ClientOid == "" {
+			continue
+		}
+
+		var filled float64
+		if evt.Data.FilledFunds != "" {
+			filled, _ = strconv.ParseFloat(evt.Data.FilledFunds, 64)
+		} else if evt.Data.FilledSize != "" {
+			filled, _ = strconv.ParseFloat(evt.Data.FilledSize, 64)
+		}
+
+		if filled > 0 {
+			log.Printf("RESOLVE %s filled=%f\n", evt.Data.ClientOid, filled)
+			router.Resolve(evt.Data.ClientOid, filled)
+		}
+	}
+}()
 
 
 
