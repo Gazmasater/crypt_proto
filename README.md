@@ -104,7 +104,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -114,6 +113,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,9 +124,9 @@ import (
 /* ================= CONFIG ================= */
 
 const (
-	apiKey        = "696935c42a6dcd00013273f2"
-	apiSecret     = "b348b686-55ff-4290-897b-02d55f815f65"
-	apiPassphrase = "Gazmaster_358"
+	apiKey        = "API_KEY"
+	apiSecret     = "API_SECRET"
+	apiPassphrase = "API_PASSPHRASE"
 
 	baseURL   = "https://api.kucoin.com"
 	startUSDT = 12.0
@@ -135,12 +135,11 @@ const (
 	sym2 = "DASH-BTC"
 	sym3 = "BTC-USDT"
 
-	step1 = 0.0001
-	step2 = 0.00001
-	step3 = 0.01
+	stepDash = 0.0001
+	stepBTC  = 0.00001
+	stepUSDT = 0.01
 
-	orderTimeout = 6 * time.Second
-	safetyMargin = 0.999 // учитываем комиссию 0.1%
+	fee = 0.999 // 0.1%
 )
 
 /* ================= AUTH ================= */
@@ -169,73 +168,10 @@ func headers(method, path, body string) http.Header {
 	return h
 }
 
-/* ================= REST ================= */
+/* ================= UTILS ================= */
 
-func placeMarketREST(symbol, side string, value float64) (float64, error) {
-	clientOid := uuid.NewString()
-	body := map[string]string{
-		"symbol":    symbol,
-		"type":      "market",
-		"side":      side,
-		"clientOid": clientOid,
-	}
-	if side == "buy" {
-		body["funds"] = fmt.Sprintf("%.8f", value)
-	} else {
-		body["size"] = fmt.Sprintf("%.8f", value)
-	}
-
-	raw, _ := json.Marshal(body)
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
-	req.Header = headers("POST", "/api/v1/orders", string(raw))
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Code string `json:"code"`
-		Msg  string `json:"msg"`
-		Data struct {
-			FilledSize string `json:"filledSize"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return 0, err
-	}
-	if r.Code != "200000" {
-		return 0, fmt.Errorf("order rejected: %s", r.Msg)
-	}
-	filled, _ := strconv.ParseFloat(r.Data.FilledSize, 64)
-	return filled, nil
-}
-
-/* ================= WEBSOCKET ================= */
-
-func getPrivateWSURL() (string, error) {
-	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
-	req.Header = headers("POST", "/api/v1/bullet-private", "")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Code string `json:"code"`
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", err
-	}
-	return r.Data.InstanceServers[0].Endpoint + "?token=" + r.Data.Token, nil
+func roundDown(v, step float64) float64 {
+	return math.Floor(v/step) * step
 }
 
 /* ================= ORDER ROUTER ================= */
@@ -266,10 +202,136 @@ func (r *OrderRouter) Resolve(oid string, filled float64) {
 	}
 }
 
-/* ================= UTILS ================= */
+/* ================= REST SEND ================= */
 
-func roundDown(v, step float64) float64 {
-	return math.Floor(v/step) * step
+var fastHTTP = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression: true,
+	},
+}
+
+func sendMarket(symbol, side string, value float64, oid string) {
+	body := map[string]string{
+		"symbol":    symbol,
+		"type":      "market",
+		"side":      side,
+		"clientOid": oid,
+	}
+
+	if side == "buy" {
+		body["funds"] = fmt.Sprintf("%.8f", value)
+	} else {
+		body["size"] = fmt.Sprintf("%.8f", value)
+	}
+
+	raw, _ := json.Marshal(body)
+
+	req, _ := http.NewRequest(
+		"POST",
+		baseURL+"/api/v1/orders",
+		bytes.NewReader(raw),
+	)
+	req.Header = headers("POST", "/api/v1/orders", string(raw))
+
+	go fastHTTP.Do(req) // 🔥 FIRE & FORGET
+}
+
+/* ================= EXECUTOR ================= */
+
+type Leg int
+
+const (
+	Leg1 Leg = iota
+	Leg2
+	Leg3
+)
+
+type Executor struct {
+	leg    Leg
+	router *OrderRouter
+}
+
+func NewExecutor(router *OrderRouter) *Executor {
+	return &Executor{
+		leg:    Leg1,
+		router: router,
+	}
+}
+
+func (e *Executor) Start(usdt float64) {
+	oid := uuid.NewString()
+	ch := e.router.Register(oid)
+
+	log.Println("SEND LEG1")
+	sendMarket(sym1, "buy", usdt, oid)
+
+	go e.wait(ch)
+}
+
+func (e *Executor) wait(ch chan float64) {
+	for filled := range ch {
+
+		switch e.leg {
+
+		case Leg1:
+			dash := roundDown(filled, stepDash)
+
+			oid := uuid.NewString()
+			ch2 := e.router.Register(oid)
+
+			e.leg = Leg2
+			log.Println("SEND LEG2")
+			sendMarket(sym2, "sell", dash, oid)
+
+			ch = ch2
+
+		case Leg2:
+			btc := roundDown(filled*fee, stepBTC)
+
+			oid := uuid.NewString()
+			ch3 := e.router.Register(oid)
+
+			e.leg = Leg3
+			log.Println("SEND LEG3")
+			sendMarket(sym3, "sell", btc, oid)
+
+			ch = ch3
+
+		case Leg3:
+			usdt := roundDown(filled, stepUSDT)
+			log.Println("DONE USDT:", usdt)
+			log.Println("PNL:", usdt-startUSDT)
+			return
+		}
+	}
+}
+
+/* ================= WEBSOCKET ================= */
+
+func getPrivateWS() (string, error) {
+	req, _ := http.NewRequest("POST", baseURL+"/api/v1/bullet-private", nil)
+	req.Header = headers("POST", "/api/v1/bullet-private", "")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Data struct {
+			Token           string `json:"token"`
+			InstanceServers []struct {
+				Endpoint string `json:"endpoint"`
+			} `json:"instanceServers"`
+		} `json:"data"`
+	}
+	json.NewDecoder(resp.Body).Decode(&r)
+
+	return r.Data.InstanceServers[0].Endpoint + "?token=" + r.Data.Token, nil
 }
 
 /* ================= MAIN ================= */
@@ -278,53 +340,44 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("START TRIANGLE", startUSDT)
 
-	// ===== LEG 1 через REST (быстро) =====
-	dash, err := placeMarketREST(sym1, "buy", startUSDT)
+	wsURL, err := getPrivateWS()
 	if err != nil {
-		log.Fatal("LEG1 error:", err)
+		log.Fatal(err)
 	}
-	dash = roundDown(dash, step1)
-	log.Println("LEG1 OK", dash)
 
-	// ===== LEG2 и LEG3 через WS =====
-	wsURL, err := getPrivateWSURL()
-	if err != nil {
-		log.Fatal("WS token error:", err)
-	}
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
-		log.Fatal("WS connect error:", err)
+		log.Fatal(err)
 	}
-	defer conn.Close()
 
-	// heartbeat
+	// ping
 	go func() {
 		t := time.NewTicker(25 * time.Second)
-		defer t.Stop()
 		for range t.C {
 			conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping"}`))
 		}
 	}()
 
 	// subscribe
-	sub := map[string]interface{}{
-		"id":             uuid.NewString(),
-		"type":           "subscribe",
-		"topic":          "/spotMarket/tradeOrders",
-		"privateChannel": true,
-	}
-	raw, _ := json.Marshal(sub)
-	conn.WriteMessage(websocket.TextMessage, raw)
+	sub := fmt.Sprintf(`{
+		"id":"%s",
+		"type":"subscribe",
+		"topic":"/spotMarket/tradeOrders",
+		"privateChannel":true
+	}`, uuid.NewString())
+	conn.WriteMessage(websocket.TextMessage, []byte(sub))
 
 	router := NewOrderRouter()
+	exec := NewExecutor(router)
 
 	// WS reader
 	go func() {
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				log.Fatal("WS read:", err)
+				log.Fatal(err)
 			}
+
 			var evt struct {
 				Topic string `json:"topic"`
 				Data  struct {
@@ -333,9 +386,11 @@ func main() {
 					FilledSize string `json:"filledSize"`
 				} `json:"data"`
 			}
+
 			if json.Unmarshal(msg, &evt) != nil {
 				continue
 			}
+
 			if evt.Topic == "/spotMarket/tradeOrders" && evt.Data.Type == "done" {
 				v, _ := strconv.ParseFloat(evt.Data.FilledSize, 64)
 				router.Resolve(evt.Data.ClientOid, v)
@@ -343,67 +398,8 @@ func main() {
 		}
 	}()
 
-	// ===== LEG 2 =====
-	oid2 := uuid.NewString()
-	ch2 := router.Register(oid2)
-	if err := placeMarketWithOid(sym2, "sell", dash, oid2); err != nil {
-		log.Fatal("LEG2 error:", err)
-	}
+	exec.Start(startUSDT)
 
-	ctx2, cancel2 := context.WithTimeout(context.Background(), orderTimeout)
-	defer cancel2()
-	var btc float64
-	select {
-	case v := <-ch2:
-		btc = roundDown(v*safetyMargin, step2)
-	case <-ctx2.Done():
-		log.Fatal("LEG2 timeout")
-	}
-	log.Println("LEG2 OK", btc)
-
-	// ===== LEG 3 =====
-	if btc < step2 {
-		log.Fatal("LEG3 skipped, not enough BTC")
-	}
-	oid3 := uuid.NewString()
-	ch3 := router.Register(oid3)
-	if err := placeMarketWithOid(sym3, "sell", btc, oid3); err != nil {
-		log.Fatal("LEG3 error:", err)
-	}
-	ctx3, cancel3 := context.WithTimeout(context.Background(), orderTimeout)
-	defer cancel3()
-	var usdt float64
-	select {
-	case v := <-ch3:
-		usdt = roundDown(v*safetyMargin, step3)
-	case <-ctx3.Done():
-		log.Fatal("LEG3 timeout")
-	}
-	log.Println("LEG3 OK", usdt)
-	log.Println("PNL:", usdt-startUSDT)
+	select {} // держим процесс
 }
 
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/test/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: placeMarketWithOid",
-	"source": "compiler",
-	"startLineNumber": 247,
-	"startColumn": 12,
-	"endLineNumber": 247,
-	"endColumn": 30,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
