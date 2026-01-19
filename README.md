@@ -409,4 +409,17 @@ func main() {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/test$ go run .
+2026/01/19 14:05:21.688955 START TRIANGLE 12
+panic: runtime error: index out of range [0] with length 0
+
+goroutine 1 [running]:
+main.getPrivateWS()
+        /home/gaz358/myprog/crypt_proto/test/main.go:219 +0x251
+main.main()
+        /home/gaz358/myprog/crypt_proto/test/main.go:228 +0xcf
+exit status 2
+
+
+
 
