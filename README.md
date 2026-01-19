@@ -113,6 +113,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -237,11 +238,19 @@ func (r *OrderRouter) Resolve(oid string, filled float64) {
 /* ================= EXECUTOR ================= */
 
 type Executor struct {
-	router *OrderRouter
+	router    *OrderRouter
+	delayLeg1 time.Duration
+	delayLeg2 time.Duration
+	delayLeg3 time.Duration
 }
 
-func NewExecutor(r *OrderRouter) *Executor {
-	return &Executor{router: r}
+func NewExecutor(r *OrderRouter, d1, d2, d3 time.Duration) *Executor {
+	return &Executor{
+		router:    r,
+		delayLeg1: d1,
+		delayLeg2: d2,
+		delayLeg3: d3,
+	}
 }
 
 func (e *Executor) Start(usdt float64) {
@@ -256,6 +265,7 @@ func (e *Executor) execute(usdt float64) {
 	sendMarket(sym1, "buy", usdt, oid1)
 
 	filledDash := <-ch1
+	time.Sleep(e.delayLeg1)
 	dash := roundDown(filledDash, stepDash)
 	log.Println("LEG1 FILLED:", dash)
 
@@ -266,12 +276,13 @@ func (e *Executor) execute(usdt float64) {
 	sendMarket(sym2, "sell", dash, oid2)
 
 	filledBTC := <-ch2
+	time.Sleep(e.delayLeg2)
 	btc := roundDown(filledBTC*fee, stepBTC)
 	log.Println("LEG2 FILLED:", btc)
 
 	// ===== LEG3 =====
 	if btc < stepBTC {
-		log.Println("LEG3 skipped, BTC не хватает")
+		log.Println("LEG3 skipped, BTC меньше минимального шага")
 		return
 	}
 
@@ -281,6 +292,7 @@ func (e *Executor) execute(usdt float64) {
 	sendMarket(sym3, "sell", btc, oid3)
 
 	filledUSDT := <-ch3
+	time.Sleep(e.delayLeg3)
 	usdtFinal := roundDown(filledUSDT, stepUSDT)
 	log.Println("LEG3 FILLED:", usdtFinal)
 	log.Println("PNL:", usdtFinal-startUSDT)
@@ -346,9 +358,10 @@ func main() {
 	conn.WriteMessage(websocket.TextMessage, []byte(sub))
 
 	router := NewOrderRouter()
-	exec := NewExecutor(router)
+	// тайминги LEG1 = 1.3s, LEG2 = 1s, LEG3 = 1s
+	exec := NewExecutor(router, 1300*time.Millisecond, 1000*time.Millisecond, 1000*time.Millisecond)
 
-	// WS reader (критично для fill)
+	// WS reader
 	go func() {
 		for {
 			_, msg, err := conn.ReadMessage()
@@ -356,7 +369,7 @@ func main() {
 				log.Fatal(err)
 			}
 
-			if !bytes.Contains(msg, []byte("tradeOrders")) {
+			if !strings.Contains(string(msg), "tradeOrders") {
 				continue
 			}
 
@@ -395,14 +408,6 @@ func main() {
 	select {} // держим main
 }
 
-
-
-2026/01/19 13:18:56.670932 START TRIANGLE 12
-2026/01/19 13:18:58.978288 SEND LEG1
-2026/01/19 13:18:59.490424 LEG1 FILLED: 0.1477
-2026/01/19 13:18:59.490491 SEND LEG2
-2026/01/19 13:18:59.899661 LEG2 FILLED: 0.14755000000000001
-2026/01/19 13:18:59.899696 SEND LEG3
 
 
 
