@@ -113,7 +113,6 @@ import (
 	"math"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -140,7 +139,7 @@ const (
 	stepBTC  = 0.00001
 	stepUSDT = 0.01
 
-	fee = 0.999 // 0.1%
+	fee = 0.999 // 0.1% комиссия
 )
 
 /* ================= AUTH ================= */
@@ -182,7 +181,7 @@ var fastHTTP = &http.Client{
 		MaxIdleConns:        200,
 		MaxIdleConnsPerHost: 200,
 		IdleConnTimeout:     90 * time.Second,
-		DisableCompression: true,
+		DisableCompression:  true,
 	},
 }
 
@@ -201,7 +200,6 @@ func sendMarket(symbol, side string, value float64, oid string) {
 	}
 
 	raw, _ := json.Marshal(body)
-
 	req, _ := http.NewRequest("POST", baseURL+"/api/v1/orders", bytes.NewReader(raw))
 	req.Header = headers("POST", "/api/v1/orders", string(raw))
 
@@ -238,67 +236,54 @@ func (r *OrderRouter) Resolve(oid string, filled float64) {
 
 /* ================= EXECUTOR ================= */
 
-type Leg int
-
-const (
-	Leg1 Leg = iota
-	Leg2
-	Leg3
-)
-
 type Executor struct {
-	leg    Leg
 	router *OrderRouter
 }
 
 func NewExecutor(r *OrderRouter) *Executor {
-	return &Executor{leg: Leg1, router: r}
+	return &Executor{router: r}
 }
 
 func (e *Executor) Start(usdt float64) {
-	oid := uuid.NewString()
-	ch := e.router.Register(oid)
-
-	log.Println("SEND LEG1")
-	sendMarket(sym1, "buy", usdt, oid)
-
-	go e.loop(ch)
+	go e.execute(usdt)
 }
 
-func (e *Executor) loop(ch chan float64) {
-	for filled := range ch {
+func (e *Executor) execute(usdt float64) {
+	// ===== LEG1 =====
+	oid1 := uuid.NewString()
+	ch1 := e.router.Register(oid1)
+	log.Println("SEND LEG1")
+	sendMarket(sym1, "buy", usdt, oid1)
 
-		switch e.leg {
+	filledDash := <-ch1
+	dash := roundDown(filledDash, stepDash)
+	log.Println("LEG1 FILLED:", dash)
 
-		case Leg1:
-			dash := roundDown(filled, stepDash)
-			oid := uuid.NewString()
-			ch2 := e.router.Register(oid)
+	// ===== LEG2 =====
+	oid2 := uuid.NewString()
+	ch2 := e.router.Register(oid2)
+	log.Println("SEND LEG2")
+	sendMarket(sym2, "sell", dash, oid2)
 
-			e.leg = Leg2
-			log.Println("SEND LEG2")
-			sendMarket(sym2, "sell", dash, oid)
+	filledBTC := <-ch2
+	btc := roundDown(filledBTC*fee, stepBTC)
+	log.Println("LEG2 FILLED:", btc)
 
-			ch = ch2
-
-		case Leg2:
-			btc := roundDown(filled*fee, stepBTC)
-			oid := uuid.NewString()
-			ch3 := e.router.Register(oid)
-
-			e.leg = Leg3
-			log.Println("SEND LEG3")
-			sendMarket(sym3, "sell", btc, oid)
-
-			ch = ch3
-
-		case Leg3:
-			usdt := roundDown(filled, stepUSDT)
-			log.Println("DONE USDT:", usdt)
-			log.Println("PNL:", usdt-startUSDT)
-			return
-		}
+	// ===== LEG3 =====
+	if btc < stepBTC {
+		log.Println("LEG3 skipped, BTC не хватает")
+		return
 	}
+
+	oid3 := uuid.NewString()
+	ch3 := e.router.Register(oid3)
+	log.Println("SEND LEG3")
+	sendMarket(sym3, "sell", btc, oid3)
+
+	filledUSDT := <-ch3
+	usdtFinal := roundDown(filledUSDT, stepUSDT)
+	log.Println("LEG3 FILLED:", usdtFinal)
+	log.Println("PNL:", usdtFinal-startUSDT)
 }
 
 /* ================= WEBSOCKET ================= */
@@ -341,8 +326,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer conn.Close()
 
-	// ping
+	// ping каждые 25 секунд
 	go func() {
 		t := time.NewTicker(25 * time.Second)
 		for range t.C {
@@ -350,7 +336,7 @@ func main() {
 		}
 	}()
 
-	// subscribe
+	// подписка на private tradeOrders
 	sub := fmt.Sprintf(`{
 		"id":"%s",
 		"type":"subscribe",
@@ -362,7 +348,7 @@ func main() {
 	router := NewOrderRouter()
 	exec := NewExecutor(router)
 
-	// WS reader (КЛЮЧЕВО!)
+	// WS reader (критично для fill)
 	go func() {
 		for {
 			_, msg, err := conn.ReadMessage()
@@ -370,15 +356,15 @@ func main() {
 				log.Fatal(err)
 			}
 
-			if !strings.Contains(string(msg), "tradeOrders") {
+			if !bytes.Contains(msg, []byte("tradeOrders")) {
 				continue
 			}
 
 			var evt struct {
 				Topic string `json:"topic"`
-				Data struct {
-					ClientOid    string `json:"clientOid"`
-					FilledSize   string `json:"filledSize"`
+				Data  struct {
+					ClientOid   string `json:"clientOid"`
+					FilledSize  string `json:"filledSize"`
 					FilledFunds string `json:"filledFunds"`
 				} `json:"data"`
 			}
@@ -392,7 +378,6 @@ func main() {
 			}
 
 			var filled float64
-
 			if evt.Data.FilledSize != "" {
 				filled, _ = strconv.ParseFloat(evt.Data.FilledSize, 64)
 			} else if evt.Data.FilledFunds != "" {
@@ -407,13 +392,8 @@ func main() {
 
 	exec.Start(startUSDT)
 
-	select {}
+	select {} // держим main
 }
-
-
-2026/01/19 13:05:10.335749 START TRIANGLE 12
-2026/01/19 13:05:12.353831 SEND LEG1
-2026/01/19 13:05:12.865278 SEND LEG2
 
 
 
