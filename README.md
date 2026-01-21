@@ -1,3 +1,14 @@
+Если оставить только нужное:
+
+p99 execution latency
+Micro-volatility (100 мс)
+Fill ratio
+Capture rate
+Inventory drift
+
+
+
+
 Название API
 9623527002
 
@@ -29,11 +40,6 @@ wbs-api.mexc.com/ws
 
 git pull --rebase origin privat
 git push origin privat
-
-
-BOOK_INTERVAL=100ms
-SYMBOLS_FILE=triangles_markets.csv
-DEBUG=false
 
 
 import (
