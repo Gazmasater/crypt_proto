@@ -111,14 +111,14 @@ type Triangle struct {
 type Calculator struct {
 	mem      *queue.MemoryStore
 	bySymbol map[string][]*Triangle
-
-	// roughMax для каждого треугольника, обновляемый при изменении котировок
 	roughMax map[*Triangle]float64
+	fileLog  *log.Logger
 
-	fileLog *log.Logger
+	// временный массив котировок для переиспользования
+	tmpQuotes [3]queue.Quote
 }
 
-// NewCalculator — строим индекс symbol -> triangles и создаем roughMax map
+// NewCalculator — создаём Calculator и строим индексы
 func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	f, err := os.OpenFile("arb_opportunities.log",
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -153,38 +153,40 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 			continue
 		}
 
-		// пересчитываем roughMax для всех треугольников с этой парой
 		for _, tri := range tris {
-			c.updateRoughMax(tri)
-			c.calcTriangle(tri)
+			// достаём котировки сразу в tmpQuotes
+			q0, ok0 := c.mem.Get("KuCoin", tri.Legs[0].Symbol)
+			q1, ok1 := c.mem.Get("KuCoin", tri.Legs[1].Symbol)
+			q2, ok2 := c.mem.Get("KuCoin", tri.Legs[2].Symbol)
+			if !ok0 || !ok1 || !ok2 {
+				c.roughMax[tri] = 0
+				continue
+			}
+			c.tmpQuotes[0], c.tmpQuotes[1], c.tmpQuotes[2] = q0, q1, q2
+
+			// пересчёт roughMax
+			c.updateRoughMaxWithQuotes(tri, c.tmpQuotes[:])
+			// точный расчёт прибыли
+			c.calcTriangleWithQuotes(tri, c.tmpQuotes[:])
 		}
 	}
 }
 
-// updateRoughMax — грубая оценка прибыли (без объёмов и fee)
-func (c *Calculator) updateRoughMax(tri *Triangle) {
-	q0, ok0 := c.mem.Get("KuCoin", tri.Legs[0].Symbol)
-	q1, ok1 := c.mem.Get("KuCoin", tri.Legs[1].Symbol)
-	q2, ok2 := c.mem.Get("KuCoin", tri.Legs[2].Symbol)
-	if !ok0 || !ok1 || !ok2 {
-		c.roughMax[tri] = 0
-		return
-	}
-
-	v0 := q0.Bid
+// updateRoughMaxWithQuotes — грубая оценка прибыли по котировкам
+func (c *Calculator) updateRoughMaxWithQuotes(tri *Triangle, q []*queue.Quote) {
+	v0 := q[0].Bid
 	if tri.Legs[0].IsBuy {
-		v0 = q0.Ask
+		v0 = q[0].Ask
 	}
-	v1 := q1.Bid
+	v1 := q[1].Bid
 	if tri.Legs[1].IsBuy {
-		v1 = q1.Ask
+		v1 = q[1].Ask
 	}
-	v2 := q2.Bid
+	v2 := q[2].Bid
 	if tri.Legs[2].IsBuy {
-		v2 = q2.Ask
+		v2 = q[2].Ask
 	}
 
-	// грубая проверка минимальной возможности прибыли
 	if v0 <= v1*v2 || v0 < minVolumeUSDT || v1 < minVolumeUSDT || v2 < minVolumeUSDT {
 		c.roughMax[tri] = 0
 		return
@@ -193,52 +195,43 @@ func (c *Calculator) updateRoughMax(tri *Triangle) {
 	c.roughMax[tri] = v0 - v1*v2
 }
 
-// calcTriangle — точный расчёт объёма и прибыли
-func (c *Calculator) calcTriangle(tri *Triangle) {
-	// если roughMax <= 0, треугольник сразу пропускаем
+// calcTriangleWithQuotes — точный расчёт прибыли по котировкам
+func (c *Calculator) calcTriangleWithQuotes(tri *Triangle, q []*queue.Quote) {
 	if c.roughMax[tri] <= 0 {
-		return
-	}
-
-	q0, ok0 := c.mem.Get("KuCoin", tri.Legs[0].Symbol)
-	q1, ok1 := c.mem.Get("KuCoin", tri.Legs[1].Symbol)
-	q2, ok2 := c.mem.Get("KuCoin", tri.Legs[2].Symbol)
-	if !ok0 || !ok1 || !ok2 {
 		return
 	}
 
 	var usdt0, usdt1, usdt2 float64
 
 	if tri.Legs[0].IsBuy {
-		if q0.Ask <= 0 || q0.AskSize <= 0 {
+		if q[0].Ask <= 0 || q[0].AskSize <= 0 {
 			return
 		}
-		usdt0 = q0.Ask * q0.AskSize
+		usdt0 = q[0].Ask * q[0].AskSize
 	} else {
-		if q0.Bid <= 0 || q0.BidSize <= 0 {
+		if q[0].Bid <= 0 || q[0].BidSize <= 0 {
 			return
 		}
-		usdt0 = q0.Bid * q0.BidSize
+		usdt0 = q[0].Bid * q[0].BidSize
 	}
 
 	if tri.Legs[1].IsBuy {
-		if q1.Ask <= 0 || q1.AskSize <= 0 || q2.Bid <= 0 {
+		if q[1].Ask <= 0 || q[1].AskSize <= 0 || q[2].Bid <= 0 {
 			return
 		}
-		usdt1 = q1.Ask * q1.AskSize * q2.Bid
+		usdt1 = q[1].Ask * q[1].AskSize * q[2].Bid
 	} else {
-		if q1.Bid <= 0 || q1.BidSize <= 0 || q2.Bid <= 0 {
+		if q[1].Bid <= 0 || q[1].BidSize <= 0 || q[2].Bid <= 0 {
 			return
 		}
-		usdt1 = q1.BidSize * q2.Bid
+		usdt1 = q[1].BidSize * q[2].Bid
 	}
 
-	if q2.Bid <= 0 || q2.BidSize <= 0 {
+	if q[2].Bid <= 0 || q[2].BidSize <= 0 {
 		return
 	}
-	usdt2 = q2.Bid * q2.BidSize
+	usdt2 = q[2].Bid * q[2].BidSize
 
-	// минимальный объём
 	maxUSDT := usdt0
 	if usdt1 < maxUSDT {
 		maxUSDT = usdt1
@@ -250,22 +243,21 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 		return
 	}
 
-	// расчет прибыли с учетом fee
 	amount := maxUSDT
 	if tri.Legs[0].IsBuy {
-		amount = amount / q0.Ask * feeMul
+		amount = amount / q[0].Ask * feeMul
 	} else {
-		amount = amount * q0.Bid * feeMul
+		amount = amount * q[0].Bid * feeMul
 	}
 	if tri.Legs[1].IsBuy {
-		amount = amount / q1.Ask * feeMul
+		amount = amount / q[1].Ask * feeMul
 	} else {
-		amount = amount * q1.Bid * feeMul
+		amount = amount * q[1].Bid * feeMul
 	}
 	if tri.Legs[2].IsBuy {
-		amount = amount / q2.Ask * feeMul
+		amount = amount / q[2].Ask * feeMul
 	} else {
-		amount = amount * q2.Bid * feeMul
+		amount = amount * q[2].Bid * feeMul
 	}
 
 	profitUSDT := amount - maxUSDT
@@ -282,7 +274,7 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	}
 }
 
-// CSV без изменений логики, но сразу сохраняем Symbol
+// ParseTrianglesFromCSV — читаем треугольники из CSV
 func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -296,7 +288,6 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	}
 
 	var res []*Triangle
-
 	for _, row := range rows[1:] {
 		if len(row) < 6 {
 			continue
@@ -336,60 +327,6 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 
 	return res, nil
 }
-
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
-Saved profile in /home/gaz358/pprof/pprof.arb.alloc_objects.alloc_space.inuse_objects.inuse_space.007.pb.gz
-File: arb
-Build ID: 2c883718df17e94f03754d4a86aacb6161e54ba4
-Type: inuse_space
-Time: 2026-01-23 00:53:42 MSK
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 4078.44kB, 100% of 4078.44kB total
-Showing top 10 nodes out of 44
-      flat  flat%   sum%        cum   cum%
-    1539kB 37.74% 37.74%     1539kB 37.74%  runtime.allocm
- 1000.34kB 24.53% 62.26%  1515.34kB 37.15%  main.main
-     515kB 12.63% 74.89%      515kB 12.63%  bytes.growSlice
-  512.05kB 12.55% 87.45%   512.05kB 12.55%  crypto/x509.(*CertPool).AppendCertsFromPEM
-  512.05kB 12.55%   100%   512.05kB 12.55%  runtime.acquireSudog
-         0     0%   100%      515kB 12.63%  bytes.(*Buffer).Grow (inline)
-         0     0%   100%      515kB 12.63%  bytes.(*Buffer).grow
-         0     0%   100%      515kB 12.63%  crypt_proto/internal/collector.(*KuCoinCollector).Start
-         0     0%   100%      515kB 12.63%  crypt_proto/internal/collector.(*kucoinWS).connect
-         0     0%   100%  1027.05kB 25.18%  crypto/tls.(*Conn).HandshakeContext (inline)
-(pprof) 
-
-
-
-
-(pprof) gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.211.pb.gz
-File: arb
-Build ID: 2c883718df17e94f03754d4a86aacb6161e54ba4
-Type: cpu
-Time: 2026-01-23 00:52:29 MSK
-Duration: 30s, Total samples = 1.37s ( 4.57%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 870ms, 63.50% of 1370ms total
-Showing top 10 nodes out of 165
-      flat  flat%   sum%        cum   cum%
-     520ms 37.96% 37.96%      520ms 37.96%  internal/runtime/syscall.Syscall6
-     130ms  9.49% 47.45%      130ms  9.49%  runtime.futex
-      50ms  3.65% 51.09%       60ms  4.38%  runtime.typePointers.next
-      30ms  2.19% 53.28%       90ms  6.57%  crypto/tls.(*halfConn).decrypt
-      30ms  2.19% 55.47%       30ms  2.19%  runtime.memclrNoHeapPointers
-      30ms  2.19% 57.66%       30ms  2.19%  runtime.nextFreeFast
-      20ms  1.46% 59.12%      720ms 52.55%  bufio.(*Reader).fill
-      20ms  1.46% 60.58%       20ms  1.46%  crypto/internal/fips140/aes/gcm.gcmAesData
-      20ms  1.46% 62.04%       20ms  1.46%  crypto/tls.(*halfConn).explicitNonceLen
-      20ms  1.46% 63.50%      750ms 54.74%  github.com/gorilla/websocket.(*Conn).NextReader
-(pprof) 
 
 
 
