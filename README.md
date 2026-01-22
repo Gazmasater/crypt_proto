@@ -79,6 +79,79 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
+package calculator
+
+import (
+	"encoding/csv"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+
+	"crypt_proto/internal/queue"
+	"crypt_proto/pkg/models"
+)
+
+const feeMul = 0.999
+
+type LegIndex struct {
+	Key    string
+	Symbol string
+	IsBuy  bool
+}
+
+type Triangle struct {
+	A, B, C string
+	Legs    [3]LegIndex
+}
+
+type Calculator struct {
+	mem      *queue.MemoryStore
+	bySymbol map[string][]*Triangle
+	fileLog  *log.Logger
+}
+
+// NewCalculator — строим индекс symbol -> triangles
+func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
+	f, err := os.OpenFile("arb_opportunities.log",
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatalf("failed to open log: %v", err)
+	}
+
+	bySymbol := make(map[string][]*Triangle, 1024)
+
+	for _, t := range triangles {
+		for _, leg := range t.Legs {
+			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
+		}
+	}
+
+	log.Printf("[Calculator] indexed %d symbols\n", len(bySymbol))
+
+	return &Calculator{
+		mem:      mem,
+		bySymbol: bySymbol,
+		fileLog:  log.New(f, "", log.LstdFlags),
+	}
+}
+
+// Run — считаем ТОЛЬКО нужные треугольники
+func (c *Calculator) Run(in <-chan *models.MarketData) {
+	for md := range in {
+		c.mem.Push(md)
+
+		tris := c.bySymbol[md.Symbol]
+		if len(tris) == 0 {
+			continue
+		}
+
+		for _, tri := range tris {
+			c.calcTriangle(tri)
+		}
+	}
+}
+
 func (c *Calculator) calcTriangle(tri *Triangle) {
 	const minVolumeUSDT = 20.0
 
@@ -184,6 +257,61 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 
 	log.Println(msg)
 	c.fileLog.Println(msg)
+}
+
+// CSV без изменений логики, но сразу сохраняем Symbol
+func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	rows, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	var res []*Triangle
+
+	for _, row := range rows[1:] {
+		if len(row) < 6 {
+			continue
+		}
+
+		t := &Triangle{
+			A: strings.TrimSpace(row[0]),
+			B: strings.TrimSpace(row[1]),
+			C: strings.TrimSpace(row[2]),
+		}
+
+		for i, leg := range []string{row[3], row[4], row[5]} {
+			leg = strings.ToUpper(strings.TrimSpace(leg))
+			parts := strings.Fields(leg)
+			if len(parts) != 2 {
+				continue
+			}
+
+			isBuy := parts[0] == "BUY"
+			pair := strings.Split(parts[1], "/")
+			if len(pair) != 2 {
+				continue
+			}
+
+			symbol := pair[0] + "-" + pair[1]
+			key := "KuCoin|" + symbol
+
+			t.Legs[i] = LegIndex{
+				Key:    key,
+				Symbol: symbol,
+				IsBuy:  isBuy,
+			}
+		}
+
+		res = append(res, t)
+	}
+
+	return res, nil
 }
 
 
