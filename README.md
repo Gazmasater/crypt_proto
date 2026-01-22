@@ -110,15 +110,14 @@ type Triangle struct {
 type Calculator struct {
 	mem      *queue.MemoryStore
 	bySymbol map[string][]*Triangle
+	roughMax map[*Triangle]float64
+	fileLog  *log.Logger
 
-	roughMax map[*Triangle]float64 // грубая оценка прибыли
-
-	tmpQuotes [3]queue.Quote // временный массив для котировок
-
-	fileLog *log.Logger
+	// временный массив котировок для переиспользования
+	tmpQuotes [3]queue.Quote
 }
 
-// NewCalculator — строим индекс symbol -> triangles и создаем roughMax map
+// NewCalculator — создаём Calculator и строим индексы
 func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	f, err := os.OpenFile("arb_opportunities.log",
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -154,34 +153,26 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 		}
 
 		for _, tri := range tris {
-			// достаем котировки и сохраняем в tmpQuotes
-			if !c.prepareQuotes(tri) {
+			// достаём котировки сразу в tmpQuotes
+			q0, ok0 := c.mem.Get("KuCoin", tri.Legs[0].Symbol)
+			q1, ok1 := c.mem.Get("KuCoin", tri.Legs[1].Symbol)
+			q2, ok2 := c.mem.Get("KuCoin", tri.Legs[2].Symbol)
+			if !ok0 || !ok1 || !ok2 {
+				c.roughMax[tri] = 0
 				continue
 			}
+			c.tmpQuotes[0], c.tmpQuotes[1], c.tmpQuotes[2] = q0, q1, q2
 
-			// обновляем грубую оценку прибыли
-			c.updateRoughMaxWithQuotes(tri, &c.tmpQuotes)
-
+			// пересчёт roughMax
+			c.updateRoughMaxWithQuotes(tri, c.tmpQuotes[:])
 			// точный расчёт прибыли
-			c.calcTriangleWithQuotes(tri, &c.tmpQuotes)
+			c.calcTriangleWithQuotes(tri, c.tmpQuotes[:])
 		}
 	}
 }
 
-// prepareQuotes — достаем котировки и сохраняем в tmpQuotes
-func (c *Calculator) prepareQuotes(tri *Triangle) bool {
-	for i, leg := range tri.Legs {
-		q, ok := c.mem.Get("KuCoin", leg.Symbol)
-		if !ok {
-			return false
-		}
-		c.tmpQuotes[i] = q
-	}
-	return true
-}
-
-// updateRoughMaxWithQuotes — грубая оценка прибыли
-func (c *Calculator) updateRoughMaxWithQuotes(tri *Triangle, q *[3]queue.Quote) {
+// updateRoughMaxWithQuotes — грубая оценка прибыли по котировкам
+func (c *Calculator) updateRoughMaxWithQuotes(tri *Triangle, q []*queue.Quote) {
 	v0 := q[0].Bid
 	if tri.Legs[0].IsBuy {
 		v0 = q[0].Ask
@@ -203,64 +194,69 @@ func (c *Calculator) updateRoughMaxWithQuotes(tri *Triangle, q *[3]queue.Quote) 
 	c.roughMax[tri] = v0 - v1*v2
 }
 
-// calcTriangleWithQuotes — точный расчёт объёма и прибыли
-func (c *Calculator) calcTriangleWithQuotes(tri *Triangle, q *[3]queue.Quote) {
+// calcTriangleWithQuotes — точный расчёт прибыли по котировкам
+func (c *Calculator) calcTriangleWithQuotes(tri *Triangle, q []*queue.Quote) {
 	if c.roughMax[tri] <= 0 {
 		return
 	}
 
-	var usdt [3]float64
+	var usdt0, usdt1, usdt2 float64
 
-	// расчёт USDT по каждой ноге
 	if tri.Legs[0].IsBuy {
 		if q[0].Ask <= 0 || q[0].AskSize <= 0 {
 			return
 		}
-		usdt[0] = q[0].Ask * q[0].AskSize
+		usdt0 = q[0].Ask * q[0].AskSize
 	} else {
 		if q[0].Bid <= 0 || q[0].BidSize <= 0 {
 			return
 		}
-		usdt[0] = q[0].Bid * q[0].BidSize
+		usdt0 = q[0].Bid * q[0].BidSize
 	}
 
 	if tri.Legs[1].IsBuy {
 		if q[1].Ask <= 0 || q[1].AskSize <= 0 || q[2].Bid <= 0 {
 			return
 		}
-		usdt[1] = q[1].Ask * q[1].AskSize * q[2].Bid
+		usdt1 = q[1].Ask * q[1].AskSize * q[2].Bid
 	} else {
 		if q[1].Bid <= 0 || q[1].BidSize <= 0 || q[2].Bid <= 0 {
 			return
 		}
-		usdt[1] = q[1].BidSize * q[2].Bid
+		usdt1 = q[1].BidSize * q[2].Bid
 	}
 
 	if q[2].Bid <= 0 || q[2].BidSize <= 0 {
 		return
 	}
-	usdt[2] = q[2].Bid * q[2].BidSize
+	usdt2 = q[2].Bid * q[2].BidSize
 
-	// минимальный объём
-	maxUSDT := usdt[0]
-	if usdt[1] < maxUSDT {
-		maxUSDT = usdt[1]
+	maxUSDT := usdt0
+	if usdt1 < maxUSDT {
+		maxUSDT = usdt1
 	}
-	if usdt[2] < maxUSDT {
-		maxUSDT = usdt[2]
+	if usdt2 < maxUSDT {
+		maxUSDT = usdt2
 	}
 	if maxUSDT < minVolumeUSDT {
 		return
 	}
 
-	// расчёт прибыли с учётом fee
 	amount := maxUSDT
-	for i := 0; i < 3; i++ {
-		if tri.Legs[i].IsBuy {
-			amount = amount / q[i].Ask * feeMul
-		} else {
-			amount = amount * q[i].Bid * feeMul
-		}
+	if tri.Legs[0].IsBuy {
+		amount = amount / q[0].Ask * feeMul
+	} else {
+		amount = amount * q[0].Bid * feeMul
+	}
+	if tri.Legs[1].IsBuy {
+		amount = amount / q[1].Ask * feeMul
+	} else {
+		amount = amount * q[1].Bid * feeMul
+	}
+	if tri.Legs[2].IsBuy {
+		amount = amount / q[2].Ask * feeMul
+	} else {
+		amount = amount * q[2].Bid * feeMul
 	}
 
 	profitUSDT := amount - maxUSDT
@@ -277,7 +273,7 @@ func (c *Calculator) calcTriangleWithQuotes(tri *Triangle, q *[3]queue.Quote) {
 	}
 }
 
-// CSV парсинг без изменений логики, сохраняем Symbol
+// ParseTrianglesFromCSV — читаем треугольники из CSV
 func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -291,7 +287,6 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	}
 
 	var res []*Triangle
-
 	for _, row := range rows[1:] {
 		if len(row) < 6 {
 			continue
@@ -331,6 +326,7 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 
 	return res, nil
 }
+
 
 
 
