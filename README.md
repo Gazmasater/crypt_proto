@@ -79,14 +79,6 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-type kucoinTickerData struct {
-	BestBid     string `json:"bestBid"`
-	BestAsk     string `json:"bestAsk"`
-	BestBidSize string `json:"bestBidSize"`
-	BestAskSize string `json:"bestAskSize"`
-}
-
-
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	if gjson.GetBytes(msg, "type").String() != "message" {
 		return
@@ -98,21 +90,19 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 	symbol := strings.TrimPrefix(topic, "/market/ticker:")
 
-	dataRaw := gjson.GetBytes(msg, "data").Raw
-	if dataRaw == "" {
+	data := gjson.GetBytes(msg, "data")
+	if !data.Exists() {
 		return
 	}
 
-	var d kucoinTickerData
-	if err := json.Unmarshal([]byte(dataRaw), &d); err != nil {
+	bidStr := data.Get("bestBid").String()
+	askStr := data.Get("bestAsk").String()
+	if bidStr == "" || askStr == "" {
 		return
 	}
 
-	bid, err1 := strconv.ParseFloat(d.BestBid, 64)
-	ask, err2 := strconv.ParseFloat(d.BestAsk, 64)
-	bidSize, _ := strconv.ParseFloat(d.BestBidSize, 64)
-	askSize, _ := strconv.ParseFloat(d.BestAskSize, 64)
-
+	bid, err1 := strconv.ParseFloat(bidStr, 64)
+	ask, err2 := strconv.ParseFloat(askStr, 64)
 	if err1 != nil || err2 != nil || bid <= 0 || ask <= 0 {
 		return
 	}
@@ -123,7 +113,9 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 	ws.last[symbol] = [2]float64{bid, ask}
 
-	// ❗ НЕ БЛОКИРУЕМ WS
+	bidSize, _ := strconv.ParseFloat(data.Get("bestBidSize").String(), 64)
+	askSize, _ := strconv.ParseFloat(data.Get("bestAskSize").String(), 64)
+
 	select {
 	case c.out <- &models.MarketData{
 		Exchange:  "KuCoin",
@@ -137,8 +129,6 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	default:
 	}
 }
-
-
 
 
 
