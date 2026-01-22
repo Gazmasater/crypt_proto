@@ -91,10 +91,7 @@ import (
 	"crypt_proto/pkg/models"
 )
 
-const (
-	minVolumeUSDT = 20.0
-	feeMul        = 0.999
-)
+const fee = 0.001
 
 type LegIndex struct {
 	Key    string
@@ -113,7 +110,7 @@ type Calculator struct {
 	fileLog  *log.Logger
 }
 
-// NewCalculator строит индекс symbol -> triangles
+// NewCalculator — строим индекс symbol -> triangles
 func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	f, err := os.OpenFile("arb_opportunities.log",
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -138,7 +135,7 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	}
 }
 
-// Run — считаем только нужные треугольники
+// Run — считаем ТОЛЬКО нужные треугольники
 func (c *Calculator) Run(in <-chan *models.MarketData) {
 	for md := range in {
 		c.mem.Push(md)
@@ -155,93 +152,79 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 }
 
 func (c *Calculator) calcTriangle(tri *Triangle) {
-	// достаем котировки напрямую
-	q0, ok0 := c.mem.Get("KuCoin", tri.Legs[0].Symbol)
-	q1, ok1 := c.mem.Get("KuCoin", tri.Legs[1].Symbol)
-	q2, ok2 := c.mem.Get("KuCoin", tri.Legs[2].Symbol)
-	if !ok0 || !ok1 || !ok2 {
-		return
+	var q [3]queue.Quote
+
+	for i, leg := range tri.Legs {
+		quote, ok := c.mem.Get("KuCoin", leg.Symbol)
+		if !ok {
+			return
+		}
+		q[i] = quote
 	}
 
-	// выбираем цену для rough check
-	v0 := q0.Bid
+	var usdtLimits [3]float64
+
+	// LEG 1
 	if tri.Legs[0].IsBuy {
-		v0 = q0.Ask
-	}
-	v1 := q1.Bid
-	if tri.Legs[1].IsBuy {
-		v1 = q1.Ask
-	}
-	v2 := q2.Bid
-	if tri.Legs[2].IsBuy {
-		v2 = q2.Ask
-	}
-
-	// грубая проверка на прибыль и минимальный объём
-	if v0 <= v1*v2 || v0 < minVolumeUSDT || v1 < minVolumeUSDT || v2 < minVolumeUSDT {
-		return
-	}
-
-	// точный расчет объёма
-	var usdt0, usdt1, usdt2 float64
-
-	if tri.Legs[0].IsBuy {
-		if q0.Ask <= 0 || q0.AskSize <= 0 {
+		if q[0].Ask <= 0 || q[0].AskSize <= 0 {
 			return
 		}
-		usdt0 = q0.Ask * q0.AskSize
+		usdtLimits[0] = q[0].Ask * q[0].AskSize
 	} else {
-		if q0.Bid <= 0 || q0.BidSize <= 0 {
+		if q[0].Bid <= 0 || q[0].BidSize <= 0 {
 			return
 		}
-		usdt0 = q0.Bid * q0.BidSize
+		usdtLimits[0] = q[0].Bid * q[0].BidSize
 	}
 
+	// LEG 2
 	if tri.Legs[1].IsBuy {
-		if q1.Ask <= 0 || q1.AskSize <= 0 || q2.Bid <= 0 {
+		if q[1].Ask <= 0 || q[1].AskSize <= 0 || q[2].Bid <= 0 {
 			return
 		}
-		usdt1 = q1.Ask * q1.AskSize * q2.Bid
+		usdtLimits[1] = q[1].Ask * q[1].AskSize * q[2].Bid
 	} else {
-		if q1.Bid <= 0 || q1.BidSize <= 0 || q2.Bid <= 0 {
+		if q[1].Bid <= 0 || q[1].BidSize <= 0 || q[2].Bid <= 0 {
 			return
 		}
-		usdt1 = q1.BidSize * q2.Bid
+		usdtLimits[1] = q[1].BidSize * q[2].Bid
 	}
 
-	if q2.Bid <= 0 || q2.BidSize <= 0 {
+	// LEG 3
+	if q[2].Bid <= 0 || q[2].BidSize <= 0 {
 		return
 	}
-	usdt2 = q2.Bid * q2.BidSize
+	usdtLimits[2] = q[2].Bid * q[2].BidSize
 
-	// проверка минимального объёма
-	maxUSDT := usdt0
-	if usdt1 < maxUSDT {
-		maxUSDT = usdt1
+	maxUSDT := usdtLimits[0]
+	if usdtLimits[1] < maxUSDT {
+		maxUSDT = usdtLimits[1]
 	}
-	if usdt2 < maxUSDT {
-		maxUSDT = usdt2
+	if usdtLimits[2] < maxUSDT {
+		maxUSDT = usdtLimits[2]
 	}
-	if maxUSDT < minVolumeUSDT {
+	if maxUSDT <= 0 {
 		return
 	}
 
-	// расчет прибыли с учетом feeMul
 	amount := maxUSDT
+
 	if tri.Legs[0].IsBuy {
-		amount = amount / q0.Ask * feeMul
+		amount = amount / q[0].Ask * (1 - fee)
 	} else {
-		amount = amount * q0.Bid * feeMul
+		amount = amount * q[0].Bid * (1 - fee)
 	}
+
 	if tri.Legs[1].IsBuy {
-		amount = amount / q1.Ask * feeMul
+		amount = amount / q[1].Ask * (1 - fee)
 	} else {
-		amount = amount * q1.Bid * feeMul
+		amount = amount * q[1].Bid * (1 - fee)
 	}
+
 	if tri.Legs[2].IsBuy {
-		amount = amount / q2.Ask * feeMul
+		amount = amount / q[2].Ask * (1 - fee)
 	} else {
-		amount = amount * q2.Bid * feeMul
+		amount = amount * q[2].Bid * (1 - fee)
 	}
 
 	profitUSDT := amount - maxUSDT
@@ -258,7 +241,7 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	}
 }
 
-// ParseTrianglesFromCSV — CSV без изменений логики, сохраняем Symbol
+// CSV без изменений логики, но сразу сохраняем Symbol
 func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	f, err := os.Open(path)
 	if err != nil {
