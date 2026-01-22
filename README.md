@@ -92,6 +92,11 @@ import (
 	"crypt_proto/pkg/models"
 )
 
+const (
+	minVolumeUSDT = 20.0
+	feeMul        = 0.999
+)
+
 type LegIndex struct {
 	Key    string
 	Symbol string
@@ -106,18 +111,14 @@ type Triangle struct {
 type Calculator struct {
 	mem      *queue.MemoryStore
 	bySymbol map[string][]*Triangle
-	fileLog  *log.Logger
-	quotes   [3]queue.Quote // единый массив для переиспользования
+
+	// roughMax для каждого треугольника, обновляемый при изменении котировок
+	roughMax map[*Triangle]float64
+
+	fileLog *log.Logger
 }
 
-const (
-	minVolumeUSDT = 20.0
-	feeMul        = 0.999
-	profitPctMin  = 0.001
-	profitUSDTMin = 0.02
-)
-
-// NewCalculator — строим индекс symbol -> triangles
+// NewCalculator — строим индекс symbol -> triangles и создаем roughMax map
 func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	f, err := os.OpenFile("arb_opportunities.log",
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -137,11 +138,12 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	return &Calculator{
 		mem:      mem,
 		bySymbol: bySymbol,
+		roughMax: make(map[*Triangle]float64, len(triangles)),
 		fileLog:  log.New(f, "", log.LstdFlags),
 	}
 }
 
-// Run — считаем ТОЛЬКО нужные треугольники
+// Run — обрабатываем поток котировок
 func (c *Calculator) Run(in <-chan *models.MarketData) {
 	for md := range in {
 		c.mem.Push(md)
@@ -151,93 +153,125 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 			continue
 		}
 
+		// пересчитываем roughMax для всех треугольников с этой парой
 		for _, tri := range tris {
+			c.updateRoughMax(tri)
 			c.calcTriangle(tri)
 		}
 	}
 }
 
+// updateRoughMax — грубая оценка прибыли (без объёмов и fee)
+func (c *Calculator) updateRoughMax(tri *Triangle) {
+	q0, ok0 := c.mem.Get("KuCoin", tri.Legs[0].Symbol)
+	q1, ok1 := c.mem.Get("KuCoin", tri.Legs[1].Symbol)
+	q2, ok2 := c.mem.Get("KuCoin", tri.Legs[2].Symbol)
+	if !ok0 || !ok1 || !ok2 {
+		c.roughMax[tri] = 0
+		return
+	}
+
+	v0 := q0.Bid
+	if tri.Legs[0].IsBuy {
+		v0 = q0.Ask
+	}
+	v1 := q1.Bid
+	if tri.Legs[1].IsBuy {
+		v1 = q1.Ask
+	}
+	v2 := q2.Bid
+	if tri.Legs[2].IsBuy {
+		v2 = q2.Ask
+	}
+
+	// грубая проверка минимальной возможности прибыли
+	if v0 <= v1*v2 || v0 < minVolumeUSDT || v1 < minVolumeUSDT || v2 < minVolumeUSDT {
+		c.roughMax[tri] = 0
+		return
+	}
+
+	c.roughMax[tri] = v0 - v1*v2
+}
+
+// calcTriangle — точный расчёт объёма и прибыли
 func (c *Calculator) calcTriangle(tri *Triangle) {
-	// достаем котировки напрямую в единый массив
-	for i, leg := range tri.Legs {
-		quote, ok := c.mem.Get("KuCoin", leg.Symbol)
-		if !ok {
+	// если roughMax <= 0, треугольник сразу пропускаем
+	if c.roughMax[tri] <= 0 {
+		return
+	}
+
+	q0, ok0 := c.mem.Get("KuCoin", tri.Legs[0].Symbol)
+	q1, ok1 := c.mem.Get("KuCoin", tri.Legs[1].Symbol)
+	q2, ok2 := c.mem.Get("KuCoin", tri.Legs[2].Symbol)
+	if !ok0 || !ok1 || !ok2 {
+		return
+	}
+
+	var usdt0, usdt1, usdt2 float64
+
+	if tri.Legs[0].IsBuy {
+		if q0.Ask <= 0 || q0.AskSize <= 0 {
 			return
 		}
-		c.quotes[i] = quote
-	}
-
-	// Rough check — выбрать цену для предварительной проверки
-	v := [3]float64{c.quotes[0].Bid, c.quotes[1].Bid, c.quotes[2].Bid}
-	for i, leg := range tri.Legs {
-		if leg.IsBuy {
-			v[i] = c.quotes[i].Ask
+		usdt0 = q0.Ask * q0.AskSize
+	} else {
+		if q0.Bid <= 0 || q0.BidSize <= 0 {
+			return
 		}
+		usdt0 = q0.Bid * q0.BidSize
 	}
 
-	// грубая проверка на потенциальную прибыль и минимальный объём
-	if v[0] <= v[1]*v[2] || v[0] < minVolumeUSDT || v[1] < minVolumeUSDT || v[2] < minVolumeUSDT {
-		return // треугольник явно невыгодный или слишком мал
-	}
-
-	// точный расчёт объёма
-	usdt := [3]float64{}
-	for i, leg := range tri.Legs {
-		q := c.quotes[i]
-		switch i {
-		case 0:
-			if leg.IsBuy {
-				if q.Ask <= 0 || q.AskSize <= 0 {
-					return
-				}
-				usdt[0] = q.Ask * q.AskSize
-			} else {
-				if q.Bid <= 0 || q.BidSize <= 0 {
-					return
-				}
-				usdt[0] = q.Bid * q.BidSize
-			}
-		case 1:
-			if leg.IsBuy {
-				if q.Ask <= 0 || q.AskSize <= 0 || c.quotes[2].Bid <= 0 {
-					return
-				}
-				usdt[1] = q.Ask * q.AskSize * c.quotes[2].Bid
-			} else {
-				if q.Bid <= 0 || q.BidSize <= 0 || c.quotes[2].Bid <= 0 {
-					return
-				}
-				usdt[1] = q.BidSize * c.quotes[2].Bid
-			}
-		case 2:
-			if q.Bid <= 0 || q.BidSize <= 0 {
-				return
-			}
-			usdt[2] = q.Bid * q.BidSize
+	if tri.Legs[1].IsBuy {
+		if q1.Ask <= 0 || q1.AskSize <= 0 || q2.Bid <= 0 {
+			return
 		}
+		usdt1 = q1.Ask * q1.AskSize * q2.Bid
+	} else {
+		if q1.Bid <= 0 || q1.BidSize <= 0 || q2.Bid <= 0 {
+			return
+		}
+		usdt1 = q1.BidSize * q2.Bid
 	}
 
-	// проверка минимального объёма
-	maxUSDT := min3(usdt[0], usdt[1], usdt[2])
+	if q2.Bid <= 0 || q2.BidSize <= 0 {
+		return
+	}
+	usdt2 = q2.Bid * q2.BidSize
+
+	// минимальный объём
+	maxUSDT := usdt0
+	if usdt1 < maxUSDT {
+		maxUSDT = usdt1
+	}
+	if usdt2 < maxUSDT {
+		maxUSDT = usdt2
+	}
 	if maxUSDT < minVolumeUSDT {
 		return
 	}
 
-	// расчёт прибыли с учётом fee
+	// расчет прибыли с учетом fee
 	amount := maxUSDT
-	for i, leg := range tri.Legs {
-		q := c.quotes[i]
-		if leg.IsBuy {
-			amount = amount / q.Ask * feeMul
-		} else {
-			amount = amount * q.Bid * feeMul
-		}
+	if tri.Legs[0].IsBuy {
+		amount = amount / q0.Ask * feeMul
+	} else {
+		amount = amount * q0.Bid * feeMul
+	}
+	if tri.Legs[1].IsBuy {
+		amount = amount / q1.Ask * feeMul
+	} else {
+		amount = amount * q1.Bid * feeMul
+	}
+	if tri.Legs[2].IsBuy {
+		amount = amount / q2.Ask * feeMul
+	} else {
+		amount = amount * q2.Bid * feeMul
 	}
 
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
 
-	if profitPct > profitPctMin && profitUSDT > profitUSDTMin {
+	if profitPct > 0.001 && profitUSDT > 0.02 {
 		msg := fmt.Sprintf(
 			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
 			tri.A, tri.B, tri.C,
@@ -246,19 +280,6 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 		log.Println(msg)
 		c.fileLog.Println(msg)
 	}
-}
-
-func min3(a, b, c float64) float64 {
-	if a < b {
-		if a < c {
-			return a
-		}
-		return c
-	}
-	if b < c {
-		return b
-	}
-	return c
 }
 
 // CSV без изменений логики, но сразу сохраняем Symbol
@@ -275,6 +296,7 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	}
 
 	var res []*Triangle
+
 	for _, row := range rows[1:] {
 		if len(row) < 6 {
 			continue
