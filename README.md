@@ -79,32 +79,59 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.142.pb.gz
-File: arb
-Build ID: 4e81efd69945c21c37fff699535a53c6e0bec3d6
-Type: cpu
-Time: 2026-01-22 01:19:31 MSK
-Duration: 30s, Total samples = 280ms ( 0.93%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 270ms, 96.43% of 280ms total
-Showing top 10 nodes out of 51
-      flat  flat%   sum%        cum   cum%
-     150ms 53.57% 53.57%      150ms 53.57%  internal/runtime/syscall.Syscall6
-      20ms  7.14% 60.71%       30ms 10.71%  runtime.pidleget
-      20ms  7.14% 67.86%       30ms 10.71%  runtime.reentersyscall
-      20ms  7.14% 75.00%       20ms  7.14%  runtime.write1
-      10ms  3.57% 78.57%       10ms  3.57%  github.com/tidwall/gjson.parseString
-      10ms  3.57% 82.14%      170ms 60.71%  net.(*conn).Read
-      10ms  3.57% 85.71%       10ms  3.57%  runtime.futex
-      10ms  3.57% 89.29%       10ms  3.57%  runtime.getitab
-      10ms  3.57% 92.86%       10ms  3.57%  runtime.memmove
-      10ms  3.57% 96.43%       10ms  3.57%  runtime.nanotime1
-(pprof) 
+type kucoinTickerData struct {
+	BestBid     float64 `json:"bestBid"`
+	BestAsk     float64 `json:"bestAsk"`
+	BestBidSize float64 `json:"bestBidSize"`
+	BestAskSize float64 `json:"bestAskSize"`
+}
 
 
+
+func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+	// быстрый фильтр
+	if gjson.GetBytes(msg, "type").String() != "message" {
+		return
+	}
+
+	topic := gjson.GetBytes(msg, "topic").String()
+	if !strings.HasPrefix(topic, "/market/ticker:") {
+		return
+	}
+	symbol := strings.TrimPrefix(topic, "/market/ticker:")
+
+	// забираем data целиком
+	dataRaw := gjson.GetBytes(msg, "data").Raw
+	if dataRaw == "" {
+		return
+	}
+
+	var d kucoinTickerData
+	if err := json.Unmarshal([]byte(dataRaw), &d); err != nil {
+		return
+	}
+
+	if d.BestBid == 0 || d.BestAsk == 0 {
+		return
+	}
+
+	last := ws.last[symbol]
+	if last[0] == d.BestBid && last[1] == d.BestAsk {
+		return
+	}
+
+	ws.last[symbol] = [2]float64{d.BestBid, d.BestAsk}
+
+	c.out <- &models.MarketData{
+		Exchange:  "KuCoin",
+		Symbol:    symbol,
+		Bid:       d.BestBid,
+		Ask:       d.BestAsk,
+		BidSize:   d.BestBidSize,
+		AskSize:   d.BestAskSize,
+		Timestamp: time.Now().UnixMilli(),
+	}
+}
 
 
 
