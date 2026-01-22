@@ -110,14 +110,10 @@ type Triangle struct {
 type Calculator struct {
 	mem      *queue.MemoryStore
 	bySymbol map[string][]*Triangle
-
-	// roughMax для каждого треугольника, обновляемый при изменении котировок
-	roughMax map[*Triangle]float64
-
-	fileLog *log.Logger
+	fileLog  *log.Logger
 }
 
-// NewCalculator — строим индекс symbol -> triangles и создаем roughMax map
+// NewCalculator строит индекс symbol -> triangles
 func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	f, err := os.OpenFile("arb_opportunities.log",
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -126,6 +122,7 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	}
 
 	bySymbol := make(map[string][]*Triangle, 1024)
+
 	for _, t := range triangles {
 		for _, leg := range t.Legs {
 			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
@@ -137,12 +134,11 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	return &Calculator{
 		mem:      mem,
 		bySymbol: bySymbol,
-		roughMax: make(map[*Triangle]float64, len(triangles)),
 		fileLog:  log.New(f, "", log.LstdFlags),
 	}
 }
 
-// Run — обрабатываем поток котировок
+// Run — считаем только нужные треугольники
 func (c *Calculator) Run(in <-chan *models.MarketData) {
 	for md := range in {
 		c.mem.Push(md)
@@ -152,24 +148,22 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 			continue
 		}
 
-		// пересчитываем roughMax для всех треугольников с этой парой
 		for _, tri := range tris {
-			c.updateRoughMax(tri)
 			c.calcTriangle(tri)
 		}
 	}
 }
 
-// updateRoughMax — грубая оценка прибыли (без объёмов и fee)
-func (c *Calculator) updateRoughMax(tri *Triangle) {
+func (c *Calculator) calcTriangle(tri *Triangle) {
+	// достаем котировки напрямую
 	q0, ok0 := c.mem.Get("KuCoin", tri.Legs[0].Symbol)
 	q1, ok1 := c.mem.Get("KuCoin", tri.Legs[1].Symbol)
 	q2, ok2 := c.mem.Get("KuCoin", tri.Legs[2].Symbol)
 	if !ok0 || !ok1 || !ok2 {
-		c.roughMax[tri] = 0
 		return
 	}
 
+	// выбираем цену для rough check
 	v0 := q0.Bid
 	if tri.Legs[0].IsBuy {
 		v0 = q0.Ask
@@ -183,29 +177,12 @@ func (c *Calculator) updateRoughMax(tri *Triangle) {
 		v2 = q2.Ask
 	}
 
-	// грубая проверка минимальной возможности прибыли
+	// грубая проверка на прибыль и минимальный объём
 	if v0 <= v1*v2 || v0 < minVolumeUSDT || v1 < minVolumeUSDT || v2 < minVolumeUSDT {
-		c.roughMax[tri] = 0
 		return
 	}
 
-	c.roughMax[tri] = v0 - v1*v2
-}
-
-// calcTriangle — точный расчёт объёма и прибыли
-func (c *Calculator) calcTriangle(tri *Triangle) {
-	// если roughMax <= 0, треугольник сразу пропускаем
-	if c.roughMax[tri] <= 0 {
-		return
-	}
-
-	q0, ok0 := c.mem.Get("KuCoin", tri.Legs[0].Symbol)
-	q1, ok1 := c.mem.Get("KuCoin", tri.Legs[1].Symbol)
-	q2, ok2 := c.mem.Get("KuCoin", tri.Legs[2].Symbol)
-	if !ok0 || !ok1 || !ok2 {
-		return
-	}
-
+	// точный расчет объёма
 	var usdt0, usdt1, usdt2 float64
 
 	if tri.Legs[0].IsBuy {
@@ -237,7 +214,7 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	}
 	usdt2 = q2.Bid * q2.BidSize
 
-	// минимальный объём
+	// проверка минимального объёма
 	maxUSDT := usdt0
 	if usdt1 < maxUSDT {
 		maxUSDT = usdt1
@@ -249,7 +226,7 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 		return
 	}
 
-	// расчет прибыли с учетом fee
+	// расчет прибыли с учетом feeMul
 	amount := maxUSDT
 	if tri.Legs[0].IsBuy {
 		amount = amount / q0.Ask * feeMul
@@ -281,7 +258,7 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	}
 }
 
-// CSV без изменений логики, но сразу сохраняем Symbol
+// ParseTrianglesFromCSV — CSV без изменений логики, сохраняем Symbol
 func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -335,6 +312,7 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 
 	return res, nil
 }
+
 
 
 
