@@ -78,7 +78,6 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-
 package calculator
 
 import (
@@ -112,11 +111,9 @@ type Calculator struct {
 	mem      *queue.MemoryStore
 	bySymbol map[string][]*Triangle
 
-	// roughMax для каждого треугольника
-	roughMax map[*Triangle]float64
+	roughMax map[*Triangle]float64 // грубая оценка прибыли
 
-	// временный массив котировок для каждого треугольника
-	tmpQuotes [3]queue.Quote
+	tmpQuotes [3]queue.Quote // временный массив для котировок
 
 	fileLog *log.Logger
 }
@@ -157,11 +154,16 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 		}
 
 		for _, tri := range tris {
+			// достаем котировки и сохраняем в tmpQuotes
 			if !c.prepareQuotes(tri) {
 				continue
 			}
-			c.updateRoughMaxWithQuotes(tri, c.tmpQuotes[:])
-			c.calcTriangleWithQuotes(tri, c.tmpQuotes[:])
+
+			// обновляем грубую оценку прибыли
+			c.updateRoughMaxWithQuotes(tri, &c.tmpQuotes)
+
+			// точный расчёт прибыли
+			c.calcTriangleWithQuotes(tri, &c.tmpQuotes)
 		}
 	}
 }
@@ -173,13 +175,13 @@ func (c *Calculator) prepareQuotes(tri *Triangle) bool {
 		if !ok {
 			return false
 		}
-		c.tmpQuotes[i] = *q
+		c.tmpQuotes[i] = q
 	}
 	return true
 }
 
-// updateRoughMaxWithQuotes — грубая оценка прибыли (без объёмов и fee)
-func (c *Calculator) updateRoughMaxWithQuotes(tri *Triangle, q []queue.Quote) {
+// updateRoughMaxWithQuotes — грубая оценка прибыли
+func (c *Calculator) updateRoughMaxWithQuotes(tri *Triangle, q *[3]queue.Quote) {
 	v0 := q[0].Bid
 	if tri.Legs[0].IsBuy {
 		v0 = q[0].Ask
@@ -202,47 +204,42 @@ func (c *Calculator) updateRoughMaxWithQuotes(tri *Triangle, q []queue.Quote) {
 }
 
 // calcTriangleWithQuotes — точный расчёт объёма и прибыли
-func (c *Calculator) calcTriangleWithQuotes(tri *Triangle, q []queue.Quote) {
+func (c *Calculator) calcTriangleWithQuotes(tri *Triangle, q *[3]queue.Quote) {
 	if c.roughMax[tri] <= 0 {
 		return
 	}
 
 	var usdt [3]float64
 
-	// расчёт объёмов для каждой ноги
-	for i, leg := range tri.Legs {
-		switch i {
-		case 0:
-			if leg.IsBuy {
-				if q[i].Ask <= 0 || q[i].AskSize <= 0 {
-					return
-				}
-				usdt[i] = q[i].Ask * q[i].AskSize
-			} else {
-				if q[i].Bid <= 0 || q[i].BidSize <= 0 {
-					return
-				}
-				usdt[i] = q[i].Bid * q[i].BidSize
-			}
-		case 1:
-			if leg.IsBuy {
-				if q[i].Ask <= 0 || q[i].AskSize <= 0 || q[2].Bid <= 0 {
-					return
-				}
-				usdt[i] = q[i].Ask * q[i].AskSize * q[2].Bid
-			} else {
-				if q[i].Bid <= 0 || q[i].BidSize <= 0 || q[2].Bid <= 0 {
-					return
-				}
-				usdt[i] = q[i].BidSize * q[2].Bid
-			}
-		case 2:
-			if q[i].Bid <= 0 || q[i].BidSize <= 0 {
-				return
-			}
-			usdt[i] = q[i].Bid * q[i].BidSize
+	// расчёт USDT по каждой ноге
+	if tri.Legs[0].IsBuy {
+		if q[0].Ask <= 0 || q[0].AskSize <= 0 {
+			return
 		}
+		usdt[0] = q[0].Ask * q[0].AskSize
+	} else {
+		if q[0].Bid <= 0 || q[0].BidSize <= 0 {
+			return
+		}
+		usdt[0] = q[0].Bid * q[0].BidSize
 	}
+
+	if tri.Legs[1].IsBuy {
+		if q[1].Ask <= 0 || q[1].AskSize <= 0 || q[2].Bid <= 0 {
+			return
+		}
+		usdt[1] = q[1].Ask * q[1].AskSize * q[2].Bid
+	} else {
+		if q[1].Bid <= 0 || q[1].BidSize <= 0 || q[2].Bid <= 0 {
+			return
+		}
+		usdt[1] = q[1].BidSize * q[2].Bid
+	}
+
+	if q[2].Bid <= 0 || q[2].BidSize <= 0 {
+		return
+	}
+	usdt[2] = q[2].Bid * q[2].BidSize
 
 	// минимальный объём
 	maxUSDT := usdt[0]
@@ -256,10 +253,10 @@ func (c *Calculator) calcTriangleWithQuotes(tri *Triangle, q []queue.Quote) {
 		return
 	}
 
-	// расчет прибыли с учетом fee
+	// расчёт прибыли с учётом fee
 	amount := maxUSDT
-	for i, leg := range tri.Legs {
-		if leg.IsBuy {
+	for i := 0; i < 3; i++ {
+		if tri.Legs[i].IsBuy {
 			amount = amount / q[i].Ask * feeMul
 		} else {
 			amount = amount * q[i].Bid * feeMul
@@ -280,7 +277,7 @@ func (c *Calculator) calcTriangleWithQuotes(tri *Triangle, q []queue.Quote) {
 	}
 }
 
-// CSV без изменений логики, но сразу сохраняем Symbol
+// CSV парсинг без изменений логики, сохраняем Symbol
 func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -336,30 +333,6 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 }
 
 
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/arb.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "InvalidIndirection",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "InvalidIndirection"
-		}
-	},
-	"severity": 8,
-	"message": "invalid operation: cannot indirect q (variable of struct type queue.Quote)",
-	"source": "compiler",
-	"startLineNumber": 95,
-	"startColumn": 21,
-	"endLineNumber": 95,
-	"endColumn": 22,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
 
 
 
