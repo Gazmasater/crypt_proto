@@ -337,7 +337,29 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 
 
 
-
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/arb.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "InvalidIndirection",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "InvalidIndirection"
+		}
+	},
+	"severity": 8,
+	"message": "invalid operation: cannot indirect q (variable of struct type queue.Quote)",
+	"source": "compiler",
+	"startLineNumber": 95,
+	"startColumn": 21,
+	"endLineNumber": 95,
+	"endColumn": 22,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
 
 
 
