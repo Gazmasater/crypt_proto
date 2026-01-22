@@ -164,12 +164,13 @@ func (e *Executor) execute(usdt float64) {
 	sendMarket(sym2, "sell", dash, oid2)
 
 	filledBTC := <-ch2
-	btc := roundDown(filledBTC*fee, stepBTC)
-	log.Println("LEG2 FILLED:", btc)
+	// учитываем комиссию takerFee 0.1% при продаже BTC
+	btc := roundDown(filledBTC*(1-0.001), stepBTC)
+	log.Println("LEG2 FILLED (after fee):", btc)
 
 	// ===== LEG3 =====
 	if btc < stepBTC {
-		log.Println("LEG3 skipped, BTC не хватает")
+		log.Println("LEG3 skipped, BTC меньше минимального шага после комиссии")
 		return
 	}
 
@@ -254,6 +255,9 @@ func main() {
 				log.Fatal(err)
 			}
 
+			// лог всех сообщений для дебага
+			log.Println("WS MSG:", string(msg))
+
 			if !bytes.Contains(msg, []byte("tradeOrders")) {
 				continue
 			}
@@ -267,7 +271,8 @@ func main() {
 				} `json:"data"`
 			}
 
-			if json.Unmarshal(msg, &evt) != nil {
+			if err := json.Unmarshal(msg, &evt); err != nil {
+				log.Println("WS unmarshal error:", err)
 				continue
 			}
 
@@ -276,18 +281,18 @@ func main() {
 			}
 
 			var filled float64
-			if evt.Data.FilledSize != "" {
-				filled, _ = strconv.ParseFloat(evt.Data.FilledSize, 64)
-			} else if evt.Data.FilledFunds != "" {
+			if evt.Data.FilledFunds != "" {
 				filled, _ = strconv.ParseFloat(evt.Data.FilledFunds, 64)
+			} else if evt.Data.FilledSize != "" {
+				filled, _ = strconv.ParseFloat(evt.Data.FilledSize, 64)
 			}
 
 			if filled > 0 {
+				log.Printf("RESOLVE %s filled=%f\n", evt.Data.ClientOid, filled)
 				router.Resolve(evt.Data.ClientOid, filled)
 			}
 		}
 	}()
-
 	exec.Start(startUSDT)
 
 	select {} // держим main
