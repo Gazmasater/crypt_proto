@@ -339,6 +339,59 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
+Saved profile in /home/gaz358/pprof/pprof.arb.alloc_objects.alloc_space.inuse_objects.inuse_space.007.pb.gz
+File: arb
+Build ID: 2c883718df17e94f03754d4a86aacb6161e54ba4
+Type: inuse_space
+Time: 2026-01-23 00:53:42 MSK
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 4078.44kB, 100% of 4078.44kB total
+Showing top 10 nodes out of 44
+      flat  flat%   sum%        cum   cum%
+    1539kB 37.74% 37.74%     1539kB 37.74%  runtime.allocm
+ 1000.34kB 24.53% 62.26%  1515.34kB 37.15%  main.main
+     515kB 12.63% 74.89%      515kB 12.63%  bytes.growSlice
+  512.05kB 12.55% 87.45%   512.05kB 12.55%  crypto/x509.(*CertPool).AppendCertsFromPEM
+  512.05kB 12.55%   100%   512.05kB 12.55%  runtime.acquireSudog
+         0     0%   100%      515kB 12.63%  bytes.(*Buffer).Grow (inline)
+         0     0%   100%      515kB 12.63%  bytes.(*Buffer).grow
+         0     0%   100%      515kB 12.63%  crypt_proto/internal/collector.(*KuCoinCollector).Start
+         0     0%   100%      515kB 12.63%  crypt_proto/internal/collector.(*kucoinWS).connect
+         0     0%   100%  1027.05kB 25.18%  crypto/tls.(*Conn).HandshakeContext (inline)
+(pprof) 
+
+
+
+
+(pprof) gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.211.pb.gz
+File: arb
+Build ID: 2c883718df17e94f03754d4a86aacb6161e54ba4
+Type: cpu
+Time: 2026-01-23 00:52:29 MSK
+Duration: 30s, Total samples = 1.37s ( 4.57%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 870ms, 63.50% of 1370ms total
+Showing top 10 nodes out of 165
+      flat  flat%   sum%        cum   cum%
+     520ms 37.96% 37.96%      520ms 37.96%  internal/runtime/syscall.Syscall6
+     130ms  9.49% 47.45%      130ms  9.49%  runtime.futex
+      50ms  3.65% 51.09%       60ms  4.38%  runtime.typePointers.next
+      30ms  2.19% 53.28%       90ms  6.57%  crypto/tls.(*halfConn).decrypt
+      30ms  2.19% 55.47%       30ms  2.19%  runtime.memclrNoHeapPointers
+      30ms  2.19% 57.66%       30ms  2.19%  runtime.nextFreeFast
+      20ms  1.46% 59.12%      720ms 52.55%  bufio.(*Reader).fill
+      20ms  1.46% 60.58%       20ms  1.46%  crypto/internal/fips140/aes/gcm.gcmAesData
+      20ms  1.46% 62.04%       20ms  1.46%  crypto/tls.(*halfConn).explicitNonceLen
+      20ms  1.46% 63.50%      750ms 54.74%  github.com/gorilla/websocket.(*Conn).NextReader
+(pprof) 
+
+
 
 
 
