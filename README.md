@@ -92,6 +92,11 @@ import (
 	"crypt_proto/pkg/models"
 )
 
+const (
+	minVolumeUSDT = 20.0
+	feeMul        = 0.999
+)
+
 type LegIndex struct {
 	Key    string
 	Symbol string
@@ -99,8 +104,9 @@ type LegIndex struct {
 }
 
 type Triangle struct {
-	A, B, C string
-	Legs    [3]LegIndex
+	A, B, C  string
+	Legs     [3]LegIndex
+	RoughMax float64 // грубая оценка для быстрого отсева
 }
 
 type Calculator struct {
@@ -109,7 +115,7 @@ type Calculator struct {
 	fileLog  *log.Logger
 }
 
-// NewCalculator — строим индекс symbol -> triangles
+// NewCalculator строит индекс symbol -> triangles
 func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	f, err := os.OpenFile("arb_opportunities.log",
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -118,7 +124,6 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	}
 
 	bySymbol := make(map[string][]*Triangle, 1024)
-
 	for _, t := range triangles {
 		for _, leg := range t.Legs {
 			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
@@ -134,7 +139,7 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	}
 }
 
-// Run — считаем ТОЛЬКО нужные треугольники
+// Run — считаем только нужные треугольники
 func (c *Calculator) Run(in <-chan *models.MarketData) {
 	for md := range in {
 		c.mem.Push(md)
@@ -159,10 +164,7 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 		return
 	}
 
-	const minVolumeUSDT = 20.0
-	const feeMul = 0.999
-
-	// выбираем цену для rough check
+	// выбираем цену для грубой проверки
 	v0 := q0.Bid
 	if tri.Legs[0].IsBuy {
 		v0 = q0.Ask
@@ -176,10 +178,9 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 		v2 = q2.Ask
 	}
 
-	// грубая проверка на прибыль и минимальный объём
-	//	roughMax := v0
+	// быстрый отбор треугольников
 	if v0 <= v1*v2 || v0 < minVolumeUSDT || v1 < minVolumeUSDT || v2 < minVolumeUSDT {
-		return // треугольник явно невыгодный или слишком мал
+		return
 	}
 
 	// точный расчет объёма
@@ -214,7 +215,7 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	}
 	usdt2 = q2.Bid * q2.BidSize
 
-	// точная проверка минимального объёма
+	// проверка минимального объёма
 	maxUSDT := usdt0
 	if usdt1 < maxUSDT {
 		maxUSDT = usdt1
@@ -258,7 +259,7 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	}
 }
 
-// CSV без изменений логики, но сразу сохраняем Symbol
+// ParseTrianglesFromCSV — загружаем треугольники из CSV
 func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -272,7 +273,6 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	}
 
 	var res []*Triangle
-
 	for _, row := range rows[1:] {
 		if len(row) < 6 {
 			continue
