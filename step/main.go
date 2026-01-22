@@ -13,8 +13,8 @@ import (
 const (
 	baseURL = "https://api.kucoin.com"
 
-	sym1 = "DASH-USDT"
-	sym2 = "DASH-BTC"
+	sym1 = "WAVES-USDT"
+	sym2 = "WAVES-BTC"
 	sym3 = "BTC-USDT"
 )
 
