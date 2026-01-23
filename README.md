@@ -78,171 +78,328 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-package calculator
+package collector
 
 import (
+	"context"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
-	"crypt_proto/internal/queue"
 	"crypt_proto/pkg/models"
+
+	"github.com/gorilla/websocket"
+	"github.com/tidwall/gjson"
 )
 
-const fee = 0.001
+const (
+	maxSubsPerWS = 126
+	subRate      = 120 * time.Millisecond
+	pingInterval = 20 * time.Second
 
-type LegIndex struct {
-	Key    string
-	Symbol string
-	IsBuy  bool
+	minVolumeUSDT = 10.0
+	volumeCheck   = time.Hour
+)
+
+/* ================= STRUCTS ================= */
+
+type KuCoinCollector struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	wsList []*kucoinWS
+	out    chan<- *models.MarketData
 }
 
-type Triangle struct {
-	A, B, C string
-	Legs    [3]LegIndex
+type kucoinWS struct {
+	id      int
+	conn    *websocket.Conn
+	symbols []string
+
+	last       map[string][2]float64
+	subscribed map[string]bool
 }
 
-type Calculator struct {
-	mem      *queue.MemoryStore
-	bySymbol map[string][]*Triangle
-	fileLog  *log.Logger
-}
+/* ================= INIT ================= */
 
-// NewCalculator — строим индекс symbol -> triangles
-func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
-	f, err := os.OpenFile("arb_opportunities.log",
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) {
+	symbols, err := readPairsFromCSV(path)
 	if err != nil {
-		log.Fatalf("failed to open log: %v", err)
+		return nil, nil, err
 	}
 
-	bySymbol := make(map[string][]*Triangle, 1024)
+	ctx, cancel := context.WithCancel(context.Background())
+	var wsList []*kucoinWS
 
-	for _, t := range triangles {
-		for _, leg := range t.Legs {
-			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
+	for i := 0; i < len(symbols); i += maxSubsPerWS {
+		end := i + maxSubsPerWS
+		if end > len(symbols) {
+			end = len(symbols)
 		}
+		wsList = append(wsList, &kucoinWS{
+			id:         len(wsList),
+			symbols:    symbols[i:end],
+			last:       make(map[string][2]float64),
+			subscribed: make(map[string]bool),
+		})
 	}
 
-	log.Printf("[Calculator] indexed %d symbols\n", len(bySymbol))
-
-	return &Calculator{
-		mem:      mem,
-		bySymbol: bySymbol,
-		fileLog:  log.New(f, "", log.LstdFlags),
-	}
+	return &KuCoinCollector{
+		ctx:    ctx,
+		cancel: cancel,
+		wsList: wsList,
+	}, symbols, nil
 }
 
-// Run — считаем ТОЛЬКО нужные треугольники
-func (c *Calculator) Run(in <-chan *models.MarketData) {
-	for md := range in {
-		c.mem.Push(md)
+func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
-		tris := c.bySymbol[md.Symbol]
-		if len(tris) == 0 {
-			continue
-		}
+/* ================= START / STOP ================= */
 
-		for _, tri := range tris {
-			c.calcTriangle(tri)
+func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
+	c.out = out
+
+	for _, ws := range c.wsList {
+		if err := ws.connect(); err != nil {
+			return err
 		}
+		go ws.readLoop(c)
+		go ws.subscribeLoop()
+		go ws.pingLoop()
 	}
+
+	go c.volumeWatcher()
+
+	log.Printf("[KuCoin] started (%d ws)\n", len(c.wsList))
+	return nil
 }
 
-func (c *Calculator) calcTriangle(tri *Triangle) {
-	var q [3]queue.Quote
-
-	for i, leg := range tri.Legs {
-		quote, ok := c.mem.Get("KuCoin", leg.Symbol)
-		if !ok {
-			return
+func (c *KuCoinCollector) Stop() error {
+	c.cancel()
+	for _, ws := range c.wsList {
+		if ws.conn != nil {
+			_ = ws.conn.Close()
 		}
-		q[i] = quote
+	}
+	return nil
+}
+
+/* ================= WS CONNECT ================= */
+
+func (ws *kucoinWS) connect() error {
+	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Data struct {
+			Token           string `json:"token"`
+			InstanceServers []struct {
+				Endpoint string `json:"endpoint"`
+			} `json:"instanceServers"`
+		} `json:"data"`
 	}
 
-	var usdtLimits [3]float64
-
-	// LEG 1
-	if tri.Legs[0].IsBuy {
-		if q[0].Ask <= 0 || q[0].AskSize <= 0 {
-			return
-		}
-		usdtLimits[0] = q[0].Ask * q[0].AskSize
-	} else {
-		if q[0].Bid <= 0 || q[0].BidSize <= 0 {
-			return
-		}
-		usdtLimits[0] = q[0].Bid * q[0].BidSize
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return err
 	}
 
-	// LEG 2
-	if tri.Legs[1].IsBuy {
-		if q[1].Ask <= 0 || q[1].AskSize <= 0 || q[2].Bid <= 0 {
-			return
-		}
-		usdtLimits[1] = q[1].Ask * q[1].AskSize * q[2].Bid
-	} else {
-		if q[1].Bid <= 0 || q[1].BidSize <= 0 || q[2].Bid <= 0 {
-			return
-		}
-		usdtLimits[1] = q[1].BidSize * q[2].Bid
+	url := fmt.Sprintf(
+		"%s?token=%s&connectId=%d",
+		r.Data.InstanceServers[0].Endpoint,
+		r.Data.Token,
+		time.Now().UnixNano(),
+	)
+
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		return err
 	}
 
-	// LEG 3
-	if q[2].Bid <= 0 || q[2].BidSize <= 0 {
+	ws.conn = conn
+	log.Printf("[KuCoin WS %d] connected\n", ws.id)
+	return nil
+}
+
+/* ================= SUB / UNSUB ================= */
+
+func (ws *kucoinWS) subscribe(symbol string) {
+	if ws.subscribed[symbol] {
 		return
 	}
-	usdtLimits[2] = q[2].Bid * q[2].BidSize
+	_ = ws.conn.WriteJSON(map[string]any{
+		"id":       time.Now().UnixNano(),
+		"type":     "subscribe",
+		"topic":    "/market/ticker:" + symbol,
+		"response": true,
+	})
+	ws.subscribed[symbol] = true
+}
 
-	maxUSDT := usdtLimits[0]
-	if usdtLimits[1] < maxUSDT {
-		maxUSDT = usdtLimits[1]
-	}
-	if usdtLimits[2] < maxUSDT {
-		maxUSDT = usdtLimits[2]
-	}
-	if maxUSDT <= 0 {
+func (ws *kucoinWS) unsubscribe(symbol string) {
+	if !ws.subscribed[symbol] {
 		return
 	}
+	_ = ws.conn.WriteJSON(map[string]any{
+		"id":       time.Now().UnixNano(),
+		"type":     "unsubscribe",
+		"topic":    "/market/ticker:" + symbol,
+		"response": true,
+	})
+	delete(ws.subscribed, symbol)
+	delete(ws.last, symbol)
+}
 
-	amount := maxUSDT
+/* ================= LOOPS ================= */
 
-	if tri.Legs[0].IsBuy {
-		amount = amount / q[0].Ask * (1 - fee)
-	} else {
-		amount = amount * q[0].Bid * (1 - fee)
-	}
+func (ws *kucoinWS) subscribeLoop() {
+	t := time.NewTicker(subRate)
+	defer t.Stop()
 
-	if tri.Legs[1].IsBuy {
-		amount = amount / q[1].Ask * (1 - fee)
-	} else {
-		amount = amount * q[1].Bid * (1 - fee)
-	}
-
-	if tri.Legs[2].IsBuy {
-		amount = amount / q[2].Ask * (1 - fee)
-	} else {
-		amount = amount * q[2].Bid * (1 - fee)
-	}
-
-	profitUSDT := amount - maxUSDT
-	profitPct := profitUSDT / maxUSDT
-
-	if profitPct > 0.001 && profitUSDT > 0.02 {
-		msg := fmt.Sprintf(
-			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
-			tri.A, tri.B, tri.C,
-			profitPct*100, maxUSDT, profitUSDT,
-		)
-		log.Println(msg)
-		c.fileLog.Println(msg)
+	for _, s := range ws.symbols {
+		<-t.C
+		ws.subscribe(s)
 	}
 }
 
-// CSV без изменений логики, но сразу сохраняем Symbol
-func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
+func (ws *kucoinWS) pingLoop() {
+	t := time.NewTicker(pingInterval)
+	defer t.Stop()
+
+	for range t.C {
+		_ = ws.conn.WriteJSON(map[string]any{
+			"id":   time.Now().UnixNano(),
+			"type": "ping",
+		})
+	}
+}
+
+func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
+	for {
+		_, msg, err := ws.conn.ReadMessage()
+		if err != nil {
+			log.Printf("[WS %d] read error: %v\n", ws.id, err)
+			return
+		}
+		ws.handle(c, msg)
+	}
+}
+
+/* ================= HANDLE ================= */
+
+func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+	if gjson.GetBytes(msg, "type").String() != "message" {
+		return
+	}
+
+	topic := gjson.GetBytes(msg, "topic").String()
+	if !strings.HasPrefix(topic, "/market/ticker:") {
+		return
+	}
+
+	symbol := strings.TrimPrefix(topic, "/market/ticker:")
+	data := gjson.GetBytes(msg, "data")
+
+	bid := data.Get("bestBid").Float()
+	ask := data.Get("bestAsk").Float()
+	bidSize := data.Get("bestBidSize").Float()
+	askSize := data.Get("bestAskSize").Float()
+
+	if bid == 0 || ask == 0 {
+		return
+	}
+
+	last := ws.last[symbol]
+	if last[0] == bid && last[1] == ask {
+		return
+	}
+
+	ws.last[symbol] = [2]float64{bid, ask}
+
+	c.out <- &models.MarketData{
+		Exchange:  "KuCoin",
+		Symbol:    symbol,
+		Bid:       bid,
+		Ask:       ask,
+		BidSize:   bidSize,
+		AskSize:   askSize,
+		Timestamp: time.Now().UnixMilli(),
+	}
+}
+
+/* ================= VOLUME WATCHER ================= */
+
+func (c *KuCoinCollector) volumeWatcher() {
+	t := time.NewTicker(volumeCheck)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			active, err := loadActivePairs(minVolumeUSDT)
+			if err != nil {
+				log.Println("[KuCoin] volume check error:", err)
+				continue
+			}
+
+			for _, ws := range c.wsList {
+				for _, s := range ws.symbols {
+					if active[s] {
+						ws.subscribe(s)
+					} else {
+						ws.unsubscribe(s)
+					}
+				}
+			}
+
+			log.Printf("[KuCoin] volume refreshed (active=%d)\n", len(active))
+		}
+	}
+}
+
+/* ================= REST ================= */
+
+func loadActivePairs(minUSDT float64) (map[string]bool, error) {
+	resp, err := http.Get("https://api.kucoin.com/api/v1/market/allTickers")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Data struct {
+			Ticker []struct {
+				Symbol   string `json:"symbol"`
+				VolValue string `json:"volValue"`
+			} `json:"ticker"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, err
+	}
+
+	active := make(map[string]bool)
+	for _, t := range r.Data.Ticker {
+		if v, _ := strconv.ParseFloat(t.VolValue, 64); v >= minUSDT {
+			active[t.Symbol] = true
+		}
+	}
+
+	return active, nil
+}
+
+/* ================= CSV ================= */
+
+func readPairsFromCSV(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -254,48 +411,32 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 		return nil, err
 	}
 
-	var res []*Triangle
-
+	set := make(map[string]struct{})
 	for _, row := range rows[1:] {
-		if len(row) < 6 {
-			continue
-		}
-
-		t := &Triangle{
-			A: strings.TrimSpace(row[0]),
-			B: strings.TrimSpace(row[1]),
-			C: strings.TrimSpace(row[2]),
-		}
-
-		for i, leg := range []string{row[3], row[4], row[5]} {
-			leg = strings.ToUpper(strings.TrimSpace(leg))
-			parts := strings.Fields(leg)
-			if len(parts) != 2 {
-				continue
-			}
-
-			isBuy := parts[0] == "BUY"
-			pair := strings.Split(parts[1], "/")
-			if len(pair) != 2 {
-				continue
-			}
-
-			symbol := pair[0] + "-" + pair[1]
-			key := "KuCoin|" + symbol
-
-			t.Legs[i] = LegIndex{
-				Key:    key,
-				Symbol: symbol,
-				IsBuy:  isBuy,
+		for i := 3; i <= 5 && i < len(row); i++ {
+			if p := parseLeg(row[i]); p != "" {
+				set[p] = struct{}{}
 			}
 		}
-
-		res = append(res, t)
 	}
 
+	res := make([]string, 0, len(set))
+	for k := range set {
+		res = append(res, k)
+	}
 	return res, nil
 }
 
-
+func parseLeg(s string) string {
+	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
+	if len(parts) < 2 {
+		return ""
+	}
+	p := strings.Split(parts[1], "/")
+	if len(p) != 2 {
+		return ""
+	}
+	return p[0] + "-" + p[1]
+}
 
 
