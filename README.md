@@ -99,11 +99,11 @@ import (
 )
 
 const (
-	maxSubsPerWS   = 126
-	subRate        = 120 * time.Millisecond
-	pingInterval   = 20 * time.Second
-	deadAfter      = 120 * time.Second
-	unsubInterval  = 60 * time.Second
+	maxSubsPerWS  = 126
+	subRate       = 120 * time.Millisecond
+	pingInterval  = 20 * time.Second
+	inactiveAfter = 3 * time.Minute
+	checkInterval = 30 * time.Second
 )
 
 type KuCoinCollector struct {
@@ -113,20 +113,26 @@ type KuCoinCollector struct {
 	out    chan<- *models.MarketData
 }
 
-type quoteState struct {
-	bid  float64
-	ask  float64
-	ts   int64
+type pairStat struct {
+	lastUpdate int64
+	updates    int64
 }
 
 type kucoinWS struct {
-	id      int
-	conn    *websocket.Conn
-	symbols []string
-
-	mu        sync.RWMutex
-	last      map[string]quoteState
+	id int
+	// connection
+	conn *websocket.Conn
+	// subscription
+	symbols    []string
 	subscribed map[string]struct{}
+	// last bid/ask per symbol
+	last map[string][2]float64
+	// stats for activity
+	stats map[string]*pairStat
+	// channel to serialize writes to WS
+	writeCh chan any
+	// mutex for last/stats/subscribed
+	mu sync.RWMutex
 }
 
 func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) {
@@ -140,43 +146,40 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) 
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wsList []*kucoinWS
-
 	for i := 0; i < len(symbols); i += maxSubsPerWS {
 		end := i + maxSubsPerWS
 		if end > len(symbols) {
 			end = len(symbols)
 		}
-
-		wsList = append(wsList, &kucoinWS{
+		ws := &kucoinWS{
 			id:         len(wsList),
 			symbols:    symbols[i:end],
-			last:       make(map[string]quoteState),
+			last:       make(map[string][2]float64),
+			stats:      make(map[string]*pairStat),
 			subscribed: make(map[string]struct{}),
-		})
+			writeCh:    make(chan any, 500),
+		}
+		wsList = append(wsList, ws)
 	}
 
-	return &KuCoinCollector{
-		ctx:    ctx,
-		cancel: cancel,
-		wsList: wsList,
-	}, symbols, nil
+	return &KuCoinCollector{ctx: ctx, cancel: cancel, wsList: wsList}, symbols, nil
 }
 
 func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	c.out = out
-
 	for _, ws := range c.wsList {
 		if err := ws.connect(); err != nil {
 			return err
 		}
 		go ws.readLoop(c)
+		go ws.writeLoop()
 		go ws.subscribeLoop()
 		go ws.pingLoop()
-		go ws.unsubscribeLoop()
+		go ws.activityLoop()
+		go ws.logStatsLoop()
 	}
-
 	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
 	return nil
 }
@@ -190,8 +193,6 @@ func (c *KuCoinCollector) Stop() error {
 	}
 	return nil
 }
-
-/* ================= WS ================= */
 
 func (ws *kucoinWS) connect() error {
 	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
@@ -231,48 +232,27 @@ func (ws *kucoinWS) connect() error {
 	return nil
 }
 
+// serialize all writes through channel
+func (ws *kucoinWS) writeLoop() {
+	for msg := range ws.writeCh {
+		_ = ws.conn.WriteJSON(msg)
+	}
+}
+
 func (ws *kucoinWS) subscribeLoop() {
 	t := time.NewTicker(subRate)
 	defer t.Stop()
-
 	for _, s := range ws.symbols {
 		<-t.C
-		_ = ws.conn.WriteJSON(map[string]any{
+		ws.mu.Lock()
+		ws.subscribed[s] = struct{}{}
+		ws.mu.Unlock()
+		ws.writeCh <- map[string]any{
 			"id":       time.Now().UnixNano(),
 			"type":     "subscribe",
 			"topic":    "/market/ticker:" + s,
 			"response": true,
-		})
-
-		ws.mu.Lock()
-		ws.subscribed[s] = struct{}{}
-		ws.mu.Unlock()
-	}
-}
-
-func (ws *kucoinWS) unsubscribeLoop() {
-	t := time.NewTicker(unsubInterval)
-	defer t.Stop()
-
-	for range t.C {
-		now := time.Now().UnixMilli()
-		deadBefore := now - deadAfter.Milliseconds()
-
-		ws.mu.Lock()
-		for sym := range ws.subscribed {
-			qs, ok := ws.last[sym]
-			if !ok || qs.ts < deadBefore {
-				_ = ws.conn.WriteJSON(map[string]any{
-					"id":    time.Now().UnixNano(),
-					"type":  "unsubscribe",
-					"topic": "/market/ticker:" + sym,
-				})
-				delete(ws.subscribed, sym)
-				delete(ws.last, sym)
-				log.Printf("[KuCoin WS %d] unsubscribe %s\n", ws.id, sym)
-			}
 		}
-		ws.mu.Unlock()
 	}
 }
 
@@ -280,10 +260,7 @@ func (ws *kucoinWS) pingLoop() {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
 	for range t.C {
-		_ = ws.conn.WriteJSON(map[string]any{
-			"id":   time.Now().UnixNano(),
-			"type": "ping",
-		})
+		ws.writeCh <- map[string]any{"id": time.Now().UnixNano(), "type": "ping"}
 	}
 }
 
@@ -302,34 +279,34 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	if gjson.GetBytes(msg, "type").String() != "message" {
 		return
 	}
-
 	topic := gjson.GetBytes(msg, "topic").String()
 	if !strings.HasPrefix(topic, "/market/ticker:") {
 		return
 	}
-
 	symbol := strings.TrimPrefix(topic, "/market/ticker:")
 	data := gjson.GetBytes(msg, "data")
-
-	bid := data.Get("bestBid").Float()
-	ask := data.Get("bestAsk").Float()
+	bid, ask := data.Get("bestBid").Float(), data.Get("bestAsk").Float()
+	bidSize, askSize := data.Get("bestBidSize").Float(), data.Get("bestAskSize").Float()
 	if bid == 0 || ask == 0 {
 		return
 	}
 
-	bidSize := data.Get("bestBidSize").Float()
-	askSize := data.Get("bestAskSize").Float()
-
-	now := time.Now().UnixMilli()
-
 	ws.mu.Lock()
-	prev, ok := ws.last[symbol]
-	if ok && prev.bid == bid && prev.ask == ask {
-		ws.last[symbol] = quoteState{bid, ask, now}
+	last := ws.last[symbol]
+	if last[0] == bid && last[1] == ask {
 		ws.mu.Unlock()
 		return
 	}
-	ws.last[symbol] = quoteState{bid, ask, now}
+	ws.last[symbol] = [2]float64{bid, ask}
+
+	now := time.Now().UnixMilli()
+	st, ok := ws.stats[symbol]
+	if !ok {
+		st = &pairStat{}
+		ws.stats[symbol] = st
+	}
+	st.lastUpdate = now
+	st.updates++
 	ws.mu.Unlock()
 
 	c.out <- &models.MarketData{
@@ -343,7 +320,49 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 }
 
-/* ================= CSV ================= */
+// check for inactive pairs and unsubscribe
+func (ws *kucoinWS) activityLoop() {
+	t := time.NewTicker(checkInterval)
+	defer t.Stop()
+
+	for range t.C {
+		now := time.Now().UnixMilli()
+		ws.mu.Lock()
+		for symbol, st := range ws.stats {
+			if _, ok := ws.subscribed[symbol]; !ok {
+				continue
+			}
+			if time.Duration(now-st.lastUpdate)*time.Millisecond > inactiveAfter {
+				ws.unsubscribe(symbol)
+			}
+		}
+		ws.mu.Unlock()
+	}
+}
+
+func (ws *kucoinWS) unsubscribe(symbol string) {
+	delete(ws.subscribed, symbol)
+	ws.writeCh <- map[string]any{
+		"id":       time.Now().UnixNano(),
+		"type":     "unsubscribe",
+		"topic":    "/market/ticker:" + symbol,
+		"response": true,
+	}
+	log.Printf("[KuCoin WS %d] unsubscribe %s (inactive)", ws.id, symbol)
+}
+
+func (ws *kucoinWS) logStatsLoop() {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+
+	for range t.C {
+		ws.mu.RLock()
+		total := len(ws.stats)
+		active := len(ws.subscribed)
+		ws.mu.RUnlock()
+		log.Printf("[KuCoin WS %d] total=%d subscribed=%d filtered=%d", ws.id, total, active, total-active)
+	}
+}
 
 func readPairsFromCSV(path string) ([]string, error) {
 	f, err := os.Open(path)
@@ -351,12 +370,10 @@ func readPairsFromCSV(path string) ([]string, error) {
 		return nil, err
 	}
 	defer f.Close()
-
 	rows, err := csv.NewReader(f).ReadAll()
 	if err != nil {
 		return nil, err
 	}
-
 	set := make(map[string]struct{})
 	for _, row := range rows[1:] {
 		for i := 3; i <= 5 && i < len(row); i++ {
@@ -365,7 +382,6 @@ func readPairsFromCSV(path string) ([]string, error) {
 			}
 		}
 	}
-
 	res := make([]string, 0, len(set))
 	for k := range set {
 		res = append(res, k)
@@ -384,32 +400,4 @@ func parseLeg(s string) string {
 	}
 	return p[0] + "-" + p[1]
 }
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
-2026/01/24 00:00:01 pprof on http://localhost:6060/debug/pprof/
-2026/01/24 00:00:07 [KuCoin WS 0] connected
-2026/01/24 00:00:09 [KuCoin WS 1] connected
-2026/01/24 00:00:09 [KuCoin] started with 2 WS
-2026/01/24 00:00:09 [Main] KuCoinCollector started
-2026/01/24 00:00:09 [Calculator] indexed 214 symbols
-panic: concurrent write to websocket connection
-
-goroutine 71 [running]:
-github.com/gorilla/websocket.(*messageWriter).flushFrame(0xc000394930, 0x1, {0x0?, 0x0?, 0x0?})
-        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:617 +0x4af
-github.com/gorilla/websocket.(*messageWriter).Close(0x4267bc?)
-        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:731 +0x35
-github.com/gorilla/websocket.(*Conn).beginMessage(0xc00016b760, 0xc0005d03f0, 0x1)
-        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:480 +0x37
-github.com/gorilla/websocket.(*Conn).NextWriter(0xc00016b760, 0x1)
-        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:520 +0x3f
-github.com/gorilla/websocket.(*Conn).WriteJSON(0x85f200?, {0x85f200, 0xc0005d03c0})
-        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/json.go:24 +0x34
-crypt_proto/internal/collector.(*kucoinWS).unsubscribeLoop(0xc0001d23c0)
-        /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go:185 +0x398
-created by crypt_proto/internal/collector.(*KuCoinCollector).Start in goroutine 1
-        /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go:97 +0x5d
-exit status 2
-
 
