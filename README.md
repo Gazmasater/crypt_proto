@@ -328,3 +328,16 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 }
 
 
+
+2026/01/23 16:46:21 pprof on http://localhost:6060/debug/pprof/
+2026/01/23 16:46:23 [KuCoin WS 0] connected
+2026/01/23 16:46:25 [KuCoin WS 1] connected
+2026/01/23 16:46:25 [KuCoin] started with 2 WS
+2026/01/23 16:46:25 [Main] KuCoinCollector started
+2026/01/23 16:46:25 [Calculator] indexed 214 symbols
+2026/01/23 16:46:35 [KuCoin WS 1] subscribed=88
+2026/01/23 16:46:38 [KuCoin WS 0] subscribed=126
+2026/01/23 16:46:55 [KuCoin] subscribed=214 active=1519 filtered=-1305
+2026/01/23 16:47:25 [KuCoin] subscribed=214 active=3592 filtered=-3378
+2026/01/23 16:47:55 [KuCoin] subscribed=214 active=5783 filtered=-5569
+
