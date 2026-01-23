@@ -98,78 +98,71 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-/* ================= CONFIG ================= */
-
 const (
-	maxSubsPerWS = 120
-	subRate      = 120 * time.Millisecond
-	pingInterval = 20 * time.Second
-	liveWindow   = 30 * time.Second
+	maxSubsPerWS   = 126
+	subRate        = 120 * time.Millisecond
+	pingInterval   = 20 * time.Second
+	deadAfter      = 120 * time.Second
+	unsubInterval  = 60 * time.Second
 )
-
-/* ================= COLLECTOR ================= */
 
 type KuCoinCollector struct {
 	ctx    context.Context
 	cancel context.CancelFunc
-
 	wsList []*kucoinWS
 	out    chan<- *models.MarketData
-
-	mu        sync.RWMutex
-	lastSeen  map[string]int64
-	totalSyms int
 }
 
-/* ================= WS ================= */
+type quoteState struct {
+	bid  float64
+	ask  float64
+	ts   int64
+}
 
 type kucoinWS struct {
 	id      int
 	conn    *websocket.Conn
 	symbols []string
-	last    map[string][2]float64
+
+	mu        sync.RWMutex
+	last      map[string]quoteState
+	subscribed map[string]struct{}
 }
 
-/* ================= INIT ================= */
-
-func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, error) {
+func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) {
 	symbols, err := readPairsFromCSV(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(symbols) == 0 {
-		return nil, fmt.Errorf("no symbols")
+		return nil, nil, fmt.Errorf("no symbols")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	var wsList []*kucoinWS
 
-	wsList := make([]*kucoinWS, 0)
 	for i := 0; i < len(symbols); i += maxSubsPerWS {
 		end := i + maxSubsPerWS
 		if end > len(symbols) {
 			end = len(symbols)
 		}
+
 		wsList = append(wsList, &kucoinWS{
-			id:      len(wsList),
-			symbols: symbols[i:end],
-			last:    make(map[string][2]float64),
+			id:         len(wsList),
+			symbols:    symbols[i:end],
+			last:       make(map[string]quoteState),
+			subscribed: make(map[string]struct{}),
 		})
 	}
 
-	c := &KuCoinCollector{
-		ctx:       ctx,
-		cancel:    cancel,
-		wsList:    wsList,
-		lastSeen:  make(map[string]int64, len(symbols)),
-		totalSyms: len(symbols),
-	}
-
-	return c, nil
+	return &KuCoinCollector{
+		ctx:    ctx,
+		cancel: cancel,
+		wsList: wsList,
+	}, symbols, nil
 }
 
 func (c *KuCoinCollector) Name() string { return "KuCoin" }
-
-/* ================= START / STOP ================= */
 
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	c.out = out
@@ -181,11 +174,10 @@ func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 		go ws.readLoop(c)
 		go ws.subscribeLoop()
 		go ws.pingLoop()
+		go ws.unsubscribeLoop()
 	}
 
-	go c.logStats()
-
-	log.Printf("[KuCoin] started ws=%d symbols=%d\n", len(c.wsList), c.totalSyms)
+	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
 	return nil
 }
 
@@ -199,7 +191,7 @@ func (c *KuCoinCollector) Stop() error {
 	return nil
 }
 
-/* ================= WS LOGIC ================= */
+/* ================= WS ================= */
 
 func (ws *kucoinWS) connect() error {
 	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
@@ -249,15 +241,44 @@ func (ws *kucoinWS) subscribeLoop() {
 			"id":       time.Now().UnixNano(),
 			"type":     "subscribe",
 			"topic":    "/market/ticker:" + s,
-			"response": false,
+			"response": true,
 		})
+
+		ws.mu.Lock()
+		ws.subscribed[s] = struct{}{}
+		ws.mu.Unlock()
+	}
+}
+
+func (ws *kucoinWS) unsubscribeLoop() {
+	t := time.NewTicker(unsubInterval)
+	defer t.Stop()
+
+	for range t.C {
+		now := time.Now().UnixMilli()
+		deadBefore := now - deadAfter.Milliseconds()
+
+		ws.mu.Lock()
+		for sym := range ws.subscribed {
+			qs, ok := ws.last[sym]
+			if !ok || qs.ts < deadBefore {
+				_ = ws.conn.WriteJSON(map[string]any{
+					"id":    time.Now().UnixNano(),
+					"type":  "unsubscribe",
+					"topic": "/market/ticker:" + sym,
+				})
+				delete(ws.subscribed, sym)
+				delete(ws.last, sym)
+				log.Printf("[KuCoin WS %d] unsubscribe %s\n", ws.id, sym)
+			}
+		}
+		ws.mu.Unlock()
 	}
 }
 
 func (ws *kucoinWS) pingLoop() {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
-
 	for range t.C {
 		_ = ws.conn.WriteJSON(map[string]any{
 			"id":   time.Now().UnixNano(),
@@ -268,12 +289,6 @@ func (ws *kucoinWS) pingLoop() {
 
 func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
 	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-		}
-
 		_, msg, err := ws.conn.ReadMessage()
 		if err != nil {
 			log.Printf("[KuCoin WS %d] read error: %v\n", ws.id, err)
@@ -282,8 +297,6 @@ func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
 		ws.handle(c, msg)
 	}
 }
-
-/* ================= MESSAGE ================= */
 
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	if gjson.GetBytes(msg, "type").String() != "message" {
@@ -304,53 +317,29 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	last := ws.last[symbol]
-	if last[0] == bid && last[1] == ask {
+	bidSize := data.Get("bestBidSize").Float()
+	askSize := data.Get("bestAskSize").Float()
+
+	now := time.Now().UnixMilli()
+
+	ws.mu.Lock()
+	prev, ok := ws.last[symbol]
+	if ok && prev.bid == bid && prev.ask == ask {
+		ws.last[symbol] = quoteState{bid, ask, now}
+		ws.mu.Unlock()
 		return
 	}
-	ws.last[symbol] = [2]float64{bid, ask}
-
-	ts := time.Now().UnixMilli()
-
-	c.mu.Lock()
-	c.lastSeen[symbol] = ts
-	c.mu.Unlock()
+	ws.last[symbol] = quoteState{bid, ask, now}
+	ws.mu.Unlock()
 
 	c.out <- &models.MarketData{
 		Exchange:  "KuCoin",
 		Symbol:    symbol,
 		Bid:       bid,
 		Ask:       ask,
-		BidSize:   data.Get("bestBidSize").Float(),
-		AskSize:   data.Get("bestAskSize").Float(),
-		Timestamp: ts,
-	}
-}
-
-/* ================= STATS ================= */
-
-func (c *KuCoinCollector) logStats() {
-	t := time.NewTicker(30 * time.Second)
-	defer t.Stop()
-
-	for range t.C {
-		now := time.Now().Add(-liveWindow).UnixMilli()
-
-		c.mu.RLock()
-		live := 0
-		for _, ts := range c.lastSeen {
-			if ts >= now {
-				live++
-			}
-		}
-		c.mu.RUnlock()
-
-		log.Printf(
-			"[KuCoin stats] total=%d live=%d dead=%d",
-			c.totalSyms,
-			live,
-			c.totalSyms-live,
-		)
+		BidSize:   bidSize,
+		AskSize:   askSize,
+		Timestamp: now,
 	}
 }
 
