@@ -386,3 +386,30 @@ func parseLeg(s string) string {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run .
+2026/01/24 00:00:01 pprof on http://localhost:6060/debug/pprof/
+2026/01/24 00:00:07 [KuCoin WS 0] connected
+2026/01/24 00:00:09 [KuCoin WS 1] connected
+2026/01/24 00:00:09 [KuCoin] started with 2 WS
+2026/01/24 00:00:09 [Main] KuCoinCollector started
+2026/01/24 00:00:09 [Calculator] indexed 214 symbols
+panic: concurrent write to websocket connection
+
+goroutine 71 [running]:
+github.com/gorilla/websocket.(*messageWriter).flushFrame(0xc000394930, 0x1, {0x0?, 0x0?, 0x0?})
+        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:617 +0x4af
+github.com/gorilla/websocket.(*messageWriter).Close(0x4267bc?)
+        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:731 +0x35
+github.com/gorilla/websocket.(*Conn).beginMessage(0xc00016b760, 0xc0005d03f0, 0x1)
+        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:480 +0x37
+github.com/gorilla/websocket.(*Conn).NextWriter(0xc00016b760, 0x1)
+        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/conn.go:520 +0x3f
+github.com/gorilla/websocket.(*Conn).WriteJSON(0x85f200?, {0x85f200, 0xc0005d03c0})
+        /home/gaz358/go/pkg/mod/github.com/gorilla/websocket@v1.5.3/json.go:24 +0x34
+crypt_proto/internal/collector.(*kucoinWS).unsubscribeLoop(0xc0001d23c0)
+        /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go:185 +0x398
+created by crypt_proto/internal/collector.(*KuCoinCollector).Start in goroutine 1
+        /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go:97 +0x5d
+exit status 2
+
+
