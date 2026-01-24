@@ -81,12 +81,8 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 go run -race main.go
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ go run -race main.go
-2026/01/24 23:07:31 pprof on http://localhost:6060/debug/pprof/
-2026/01/24 23:07:33 [KuCoin WS 0] connected
-2026/01/24 23:07:33 [KuCoin] started with 1 WS
-2026/01/24 23:07:33 [Main] KuCoinCollector started
-2026/01/24 23:07:33 [Calculator] indexed 84 symbols
+GOMAXPROCS=8 go run -race main.go
+
 
 
 
