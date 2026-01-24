@@ -78,30 +78,8 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.249.pb.gz
-File: arb
-Build ID: 7540ef780f428f30ea5490419d6c0666ea347d2a
-Type: cpu
-Time: 2026-01-24 02:15:33 MSK
-Duration: 30s, Total samples = 630ms ( 2.10%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 420ms, 66.67% of 630ms total
-Showing top 10 nodes out of 118
-      flat  flat%   sum%        cum   cum%
-     270ms 42.86% 42.86%      270ms 42.86%  internal/runtime/syscall.Syscall6
-      30ms  4.76% 47.62%       30ms  4.76%  runtime.futex
-      30ms  4.76% 52.38%       30ms  4.76%  runtime.typePointers.next
-      20ms  3.17% 55.56%       30ms  4.76%  github.com/tidwall/gjson.parseObject
-      20ms  3.17% 58.73%       20ms  3.17%  runtime.memclrNoHeapPointers
-      10ms  1.59% 60.32%       10ms  1.59%  bufio.(*Reader).Discard
-      10ms  1.59% 61.90%       10ms  1.59%  bytes.(*Buffer).Bytes (inline)
-      10ms  1.59% 63.49%       10ms  1.59%  crypto/internal/fips140/aes/gcm.gcmAesData
-      10ms  1.59% 65.08%       20ms  3.17%  crypto/tls.(*halfConn).decrypt
-      10ms  1.59% 66.67%      250ms 39.68%  github.com/gorilla/websocket.(*Conn).read
-(pprof) 
+go run -race main.go
+
 
 
 
