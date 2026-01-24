@@ -85,6 +85,13 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ cd cmd/arb
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ GOMAXPROCS=8 go run -race main.go
+2026/01/24 23:15:15 pprof on http://localhost:6060/debug/pprof/
+2026/01/24 23:15:17 [KuCoin WS 0] connected
+2026/01/24 23:15:17 [KuCoin] started with 1 WS
+2026/01/24 23:15:17 [Main] KuCoinCollector started
+2026/01/24 23:15:17 [Calculator] indexed 84 symbols
 
 
 
