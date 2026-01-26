@@ -85,14 +85,30 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ cd cmd/arb
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb$ GOMAXPROCS=8 go run -race main.go
-2026/01/24 23:15:15 pprof on http://localhost:6060/debug/pprof/
-2026/01/24 23:15:17 [KuCoin WS 0] connected
-2026/01/24 23:15:17 [KuCoin] started with 1 WS
-2026/01/24 23:15:17 [Main] KuCoinCollector started
-2026/01/24 23:15:17 [Calculator] indexed 84 symbols
-
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.253.pb.gz
+File: arb
+Build ID: 92d6ab1c7fab5e78cad537019b70c12c249448f3
+Type: cpu
+Time: 2026-01-26 16:31:09 MSK
+Duration: 30s, Total samples = 690ms ( 2.30%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 520ms, 75.36% of 690ms total
+Showing top 10 nodes out of 86
+      flat  flat%   sum%        cum   cum%
+     350ms 50.72% 50.72%      350ms 50.72%  internal/runtime/syscall.Syscall6
+      60ms  8.70% 59.42%       60ms  8.70%  runtime.futex
+      20ms  2.90% 62.32%      410ms 59.42%  bufio.(*Reader).fill
+      20ms  2.90% 65.22%      150ms 21.74%  runtime.findRunnable
+      20ms  2.90% 68.12%       70ms 10.14%  runtime.reentersyscall
+      10ms  1.45% 69.57%      350ms 50.72%  bytes.(*Buffer).ReadFrom
+      10ms  1.45% 71.01%       10ms  1.45%  crypt_proto/internal/queue.(*MemoryStore).apply
+      10ms  1.45% 72.46%       10ms  1.45%  crypto/internal/fips140/aes.encryptBlock
+      10ms  1.45% 73.91%       20ms  2.90%  crypto/internal/fips140/aes/gcm.open
+      10ms  1.45% 75.36%       50ms  7.25%  github.com/tidwall/gjson.Get
+(pprof) 
 
 
 
