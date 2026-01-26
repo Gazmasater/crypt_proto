@@ -85,30 +85,103 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.253.pb.gz
-File: arb
-Build ID: 92d6ab1c7fab5e78cad537019b70c12c249448f3
-Type: cpu
-Time: 2026-01-26 16:31:09 MSK
-Duration: 30s, Total samples = 690ms ( 2.30%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 520ms, 75.36% of 690ms total
-Showing top 10 nodes out of 86
-      flat  flat%   sum%        cum   cum%
-     350ms 50.72% 50.72%      350ms 50.72%  internal/runtime/syscall.Syscall6
-      60ms  8.70% 59.42%       60ms  8.70%  runtime.futex
-      20ms  2.90% 62.32%      410ms 59.42%  bufio.(*Reader).fill
-      20ms  2.90% 65.22%      150ms 21.74%  runtime.findRunnable
-      20ms  2.90% 68.12%       70ms 10.14%  runtime.reentersyscall
-      10ms  1.45% 69.57%      350ms 50.72%  bytes.(*Buffer).ReadFrom
-      10ms  1.45% 71.01%       10ms  1.45%  crypt_proto/internal/queue.(*MemoryStore).apply
-      10ms  1.45% 72.46%       10ms  1.45%  crypto/internal/fips140/aes.encryptBlock
-      10ms  1.45% 73.91%       20ms  2.90%  crypto/internal/fips140/aes/gcm.open
-      10ms  1.45% 75.36%       50ms  7.25%  github.com/tidwall/gjson.Get
-(pprof) 
+package queue
+
+import (
+	"sync/atomic"
+	"time"
+
+	"crypt_proto/pkg/models"
+)
+
+type Quote struct {
+	Bid, Ask         float64
+	BidSize, AskSize float64
+	Timestamp        int64
+}
+
+type MemoryStore struct {
+	data  atomic.Value           // map[string]Quote
+	batch chan *models.MarketData
+}
+
+// NewMemoryStore создаёт MemoryStore с буфером batch
+func NewMemoryStore() *MemoryStore {
+	s := &MemoryStore{
+		batch: make(chan *models.MarketData, 10_000),
+	}
+	s.data.Store(make(map[string]Quote))
+	return s
+}
+
+// Run обрабатывает входящие данные с минимальной задержкой
+func (s *MemoryStore) Run() {
+	const microBatch = 5 // применяем батч каждые 5 котировок
+
+	batch := make([]*models.MarketData, 0, microBatch)
+
+	for md := range s.batch {
+		// фильтруем котировки с нулевым объемом
+		if md.BidSize == 0 && md.AskSize == 0 {
+			continue
+		}
+
+		batch = append(batch, md)
+
+		// применяем батч
+		if len(batch) >= microBatch {
+			s.applyBatch(batch)
+			batch = batch[:0]
+		}
+	}
+
+	// оставшиеся котировки при завершении
+	if len(batch) > 0 {
+		s.applyBatch(batch)
+	}
+}
+
+// Push добавляет MarketData в очередь
+func (s *MemoryStore) Push(md *models.MarketData) {
+	select {
+	case s.batch <- md:
+	default:
+		// drop if full
+	}
+}
+
+// Get возвращает snapshot lock-free
+func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
+	m := s.data.Load().(map[string]Quote)
+	q, ok := m[exchange+"|"+symbol]
+	return q, ok
+}
+
+// applyBatch применяет несколько котировок сразу
+func (s *MemoryStore) applyBatch(batch []*models.MarketData) {
+	oldMap := s.data.Load().(map[string]Quote)
+	newMap := make(map[string]Quote, len(oldMap)+len(batch))
+
+	// копируем старые данные
+	for k, v := range oldMap {
+		newMap[k] = v
+	}
+
+	// применяем новые котировки
+	now := time.Now().UnixMilli()
+	for _, md := range batch {
+		key := md.Exchange + "|" + md.Symbol
+		newMap[key] = Quote{
+			Bid: md.Bid,
+			Ask: md.Ask,
+			BidSize: md.BidSize,
+			AskSize: md.AskSize,
+			Timestamp: now,
+		}
+	}
+
+	s.data.Store(newMap)
+}
 
 
 
