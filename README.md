@@ -477,3 +477,31 @@ go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 go tool pprof http://localhost:6060/debug/pprof/heap
 (pprof) top
 
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
+Saved profile in /home/gaz358/pprof/pprof.arb.alloc_objects.alloc_space.inuse_objects.inuse_space.008.pb.gz
+File: arb
+Build ID: b6b2e5615b7516cbc5189db116aa14d0d394ed12
+Type: inuse_space
+Time: 2026-01-28 02:46:07 MSK
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 8780.40kB, 100% of 8780.40kB total
+Showing top 10 nodes out of 48
+      flat  flat%   sum%        cum   cum%
+ 3193.56kB 36.37% 36.37%  3193.56kB 36.37%  crypt_proto/internal/queue.NewRingBuffer (inline)
+    1026kB 11.69% 48.06%     1026kB 11.69%  runtime.allocm
+ 1024.09kB 11.66% 59.72%  1024.09kB 11.66%  runtime.acquireSudog
+ 1000.34kB 11.39% 71.11%  1000.34kB 11.39%  crypt_proto/internal/queue.NewMemoryStore (inline)
+ 1000.34kB 11.39% 82.51%  2000.68kB 22.79%  main.main
+  512.05kB  5.83% 88.34%  3705.61kB 42.20%  crypt_proto/internal/queue.(*MemoryStore).Run
+  512.01kB  5.83% 94.17%   512.01kB  5.83%  crypto/internal/fips140/nistec.NewP384Point (inline)
+  512.01kB  5.83%   100%   512.01kB  5.83%  crypto/x509.(*CertPool).AppendCertsFromPEM
+         0     0%   100%  3193.56kB 36.37%  crypt_proto/internal/queue.(*MemoryStore).apply
+         0     0%   100%   512.01kB  5.83%  crypto/ecdsa.VerifyASN1
+(pprof) 
+
+
+
