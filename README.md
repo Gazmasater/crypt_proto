@@ -469,27 +469,11 @@ func main() {
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.285.pb.gz
-File: arb
-Build ID: b6b2e5615b7516cbc5189db116aa14d0d394ed12
-Type: cpu
-Time: 2026-01-28 02:33:34 MSK
-Duration: 30s, Total samples = 790ms ( 2.63%)
-Entering interactive mode (type "help" for commands, "o" for options)
+go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 (pprof) top
-Showing nodes accounting for 590ms, 74.68% of 790ms total
-Showing top 10 nodes out of 96
-      flat  flat%   sum%        cum   cum%
-     380ms 48.10% 48.10%      380ms 48.10%  internal/runtime/syscall.Syscall6
-      30ms  3.80% 51.90%      350ms 44.30%  bufio.(*Reader).fill
-      30ms  3.80% 55.70%       70ms  8.86%  github.com/tidwall/gjson.getBytes
-      30ms  3.80% 59.49%       30ms  3.80%  runtime.futex
-      20ms  2.53% 62.03%       40ms  5.06%  github.com/tidwall/gjson.parseObject
-      20ms  2.53% 64.56%       20ms  2.53%  github.com/tidwall/gjson.parseSquash
-      20ms  2.53% 67.09%       20ms  2.53%  runtime.gopark
-      20ms  2.53% 69.62%       20ms  2.53%  runtime.memclrNoHeapPointers
-      20ms  2.53% 72.15%       20ms  2.53%  runtime.nextFreeFast
-      20ms  2.53% 74.68%      210ms 26.58%  runtime.schedule
-(pprof) 
+(pprof) list queue.MemoryStore.apply
+
+
+go tool pprof http://localhost:6060/debug/pprof/heap
+(pprof) top
+
