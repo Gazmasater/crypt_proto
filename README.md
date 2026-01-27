@@ -100,8 +100,9 @@ import (
 
 const feeM = 0.999
 
+/* ===================== MODELS ===================== */
+
 type LegIndex struct {
-	Key    string
 	Symbol string
 	IsBuy  bool
 }
@@ -114,18 +115,22 @@ type Triangle struct {
 type Calculator struct {
 	mem      *queue.MemoryStore
 	bySymbol map[string][]*Triangle
-	fileLog  *log.Logger
+	log      *log.Logger
 }
 
-// NewCalculator — строим индекс symbol -> triangles
+/* ===================== CONSTRUCTOR ===================== */
+
 func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
-	f, err := os.OpenFile("arb_opportunities.log",
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(
+		"arb_opportunities.log",
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+		0644,
+	)
 	if err != nil {
 		log.Fatalf("failed to open log: %v", err)
 	}
 
-	bySymbol := make(map[string][]*Triangle, 1024)
+	bySymbol := make(map[string][]*Triangle, 512)
 
 	for _, t := range triangles {
 		for _, leg := range t.Legs {
@@ -138,17 +143,35 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	return &Calculator{
 		mem:      mem,
 		bySymbol: bySymbol,
-		fileLog:  log.New(f, "", log.LstdFlags),
+		log:      log.New(f, "", log.LstdFlags),
 	}
 }
 
-// Run — считаем ТОЛЬКО нужные треугольники
+/* ===================== RUN LOOP ===================== */
+
+// Run — периодический пересчёт (pull-модель)
 func (c *Calculator) Run() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		c.calculate()
+	}
+}
+
+/* ===================== CORE ===================== */
+
+func (c *Calculator) calculate() {
+	seen := make(map[*Triangle]struct{}, 256)
+
+	for _, tris := range c.bySymbol {
+		for _, tri := range tris {
+			if _, ok := seen[tri]; ok {
+				continue
+			}
+			seen[tri] = struct{}{}
+			c.calcTriangle(tri)
+		}
 	}
 }
 
@@ -163,90 +186,95 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 		q[i] = quote
 	}
 
-	var usdtLimits [3]float64
+	maxUSDT := min(
+		legLimitUSDT(tri.Legs[0], q[0], 0),
+		legLimitUSDT(tri.Legs[1], q[1], q[2].Bid),
+		legLimitUSDT(tri.Legs[2], q[2], 0),
+	)
 
-	// LEG 1
-	if tri.Legs[0].IsBuy {
-		if q[0].Ask <= 0 || q[0].AskSize <= 0 {
-			return
-		}
-		usdtLimits[0] = q[0].Ask * q[0].AskSize
-	} else {
-		if q[0].Bid <= 0 || q[0].BidSize <= 0 {
-			return
-		}
-		usdtLimits[0] = q[0].Bid * q[0].BidSize
-	}
-
-	// LEG 2
-	if tri.Legs[1].IsBuy {
-		if q[1].Ask <= 0 || q[1].AskSize <= 0 || q[2].Bid <= 0 {
-			return
-		}
-		usdtLimits[1] = q[1].Ask * q[1].AskSize * q[2].Bid
-	} else {
-		if q[1].Bid <= 0 || q[1].BidSize <= 0 || q[2].Bid <= 0 {
-			return
-		}
-		usdtLimits[1] = q[1].BidSize * q[2].Bid
-	}
-
-	// LEG 3
-	if q[2].Bid <= 0 || q[2].BidSize <= 0 {
-		return
-	}
-	usdtLimits[2] = q[2].Bid * q[2].BidSize
-
-	maxUSDT := usdtLimits[0]
-	if usdtLimits[1] < maxUSDT {
-		maxUSDT = usdtLimits[1]
-	}
-	if usdtLimits[2] < maxUSDT {
-		maxUSDT = usdtLimits[2]
-	}
 	if maxUSDT <= 0 {
 		return
 	}
 
 	amount := maxUSDT
 
-	if tri.Legs[0].IsBuy {
-		amount = amount / q[0].Ask * feeM
-	} else {
-		amount = amount * q[0].Bid * feeM
-	}
-
-	if tri.Legs[1].IsBuy {
-		amount = amount / q[1].Ask * feeM
-	} else {
-		amount = amount * q[1].Bid * feeM
-	}
-
-	if tri.Legs[2].IsBuy {
-		amount = amount / q[2].Ask * feeM
-	} else {
-		amount = amount * q[2].Bid * feeM
-	}
+	amount = applyLeg(amount, tri.Legs[0], q[0])
+	amount = applyLeg(amount, tri.Legs[1], q[1])
+	amount = applyLeg(amount, tri.Legs[2], q[2])
 
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
 
 	if profitPct > 0.001 && profitUSDT > 0.02 {
-		ts := time.Now().Format("2006/01/02 15:04:05.000")
 		msg := fmt.Sprintf(
 			"%s [ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
-			ts,
+			time.Now().Format("2006/01/02 15:04:05.000"),
 			tri.A, tri.B, tri.C,
-			profitPct*100, maxUSDT, profitUSDT,
+			profitPct*100,
+			maxUSDT,
+			profitUSDT,
 		)
 
 		log.Println(msg)
-		c.fileLog.Println(msg)
-
+		c.log.Println(msg)
 	}
 }
 
-// CSV без изменений логики, но сразу сохраняем Symbol
+/* ===================== HELPERS ===================== */
+
+func legLimitUSDT(leg LegIndex, q queue.Quote, extra float64) float64 {
+	if leg.IsBuy {
+		if q.Ask <= 0 || q.AskSize <= 0 {
+			return 0
+		}
+		limit := q.Ask * q.AskSize
+		if extra > 0 {
+			limit *= extra
+		}
+		return limit
+	}
+
+	if q.Bid <= 0 || q.BidSize <= 0 {
+		return 0
+	}
+	limit := q.Bid * q.BidSize
+	if extra > 0 {
+		limit = q.BidSize * extra
+	}
+	return limit
+}
+
+func applyLeg(amount float64, leg LegIndex, q queue.Quote) float64 {
+	if leg.IsBuy {
+		if q.Ask <= 0 {
+			return 0
+		}
+		return amount / q.Ask * feeM
+	}
+	if q.Bid <= 0 {
+		return 0
+	}
+	return amount * q.Bid * feeM
+}
+
+func min(a, b, c float64) float64 {
+	if a <= 0 || b <= 0 || c <= 0 {
+		return 0
+	}
+	if a < b {
+		if a < c {
+			return a
+		}
+		return c
+	}
+	if b < c {
+		return b
+	}
+	return c
+}
+
+/* ===================== CSV PARSER ===================== */
+
 func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -272,9 +300,8 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 			C: strings.TrimSpace(row[2]),
 		}
 
-		for i, leg := range []string{row[3], row[4], row[5]} {
-			leg = strings.ToUpper(strings.TrimSpace(leg))
-			parts := strings.Fields(leg)
+		for i, raw := range row[3:6] {
+			parts := strings.Fields(strings.ToUpper(strings.TrimSpace(raw)))
 			if len(parts) != 2 {
 				continue
 			}
@@ -285,12 +312,8 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 				continue
 			}
 
-			symbol := pair[0] + "-" + pair[1]
-			key := "KuCoin|" + symbol
-
 			t.Legs[i] = LegIndex{
-				Key:    key,
-				Symbol: symbol,
+				Symbol: pair[0] + "-" + pair[1],
 				IsBuy:  isBuy,
 			}
 		}
@@ -301,30 +324,6 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	return res, nil
 }
 
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/arb.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "c.calculate undefined (type *Calculator has no field or method calculate)",
-	"source": "compiler",
-	"startLineNumber": 64,
-	"startColumn": 5,
-	"endLineNumber": 64,
-	"endColumn": 14,
-	"modelVersionId": 3,
-	"origin": "extHost1"
-}]
 
 
 
