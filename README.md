@@ -729,5 +729,31 @@ Showing top 10 nodes out of 158
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.284.pb.gz
+File: arb
+Build ID: e1f97f19b4005e7c00459e4ff590268a861df570
+Type: cpu
+Time: 2026-01-28 00:33:34 MSK
+Duration: 30s, Total samples = 970ms ( 3.23%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top 
+Showing nodes accounting for 660ms, 68.04% of 970ms total
+Showing top 10 nodes out of 102
+      flat  flat%   sum%        cum   cum%
+     380ms 39.18% 39.18%      380ms 39.18%  internal/runtime/syscall.Syscall6
+      90ms  9.28% 48.45%       90ms  9.28%  runtime.futex
+      60ms  6.19% 54.64%       90ms  9.28%  github.com/tidwall/gjson.parseObject
+      40ms  4.12% 58.76%       40ms  4.12%  runtime.nextFreeFast
+      20ms  2.06% 60.82%      120ms 12.37%  github.com/tidwall/gjson.Get
+      20ms  2.06% 62.89%       20ms  2.06%  runtime.nanotime
+      20ms  2.06% 64.95%      150ms 15.46%  runtime.netpoll
+      10ms  1.03% 65.98%       10ms  1.03%  bytes.(*Buffer).Len
+      10ms  1.03% 67.01%      370ms 38.14%  bytes.(*Buffer).ReadFrom
+      10ms  1.03% 68.04%       10ms  1.03%  bytes.(*Reader).Read
+(pprof) 
+
+
 
 
