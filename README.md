@@ -85,177 +85,64 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-package queue
+package calculator
 
 import (
-	"sync/atomic"
-
-	"crypt_proto/pkg/models"
-)
-
-type ringBuffer struct {
-	buf   []*models.MarketData
-	size  uint64
-	write uint64
-	read  uint64
-}
-
-func newRingBuffer(size int) *ringBuffer {
-	return &ringBuffer{
-		buf:  make([]*models.MarketData, size),
-		size: uint64(size),
-	}
-}
-
-func (r *ringBuffer) push(md *models.MarketData) {
-	w := atomic.AddUint64(&r.write, 1) - 1
-	r.buf[w%r.size] = md
-}
-
-func (r *ringBuffer) drain(fn func(*models.MarketData)) {
-	for {
-		rp := atomic.LoadUint64(&r.read)
-		wp := atomic.LoadUint64(&r.write)
-		if rp >= wp {
-			return
-		}
-		md := r.buf[rp%r.size]
-		atomic.AddUint64(&r.read, 1)
-		if md != nil {
-			fn(md)
-		}
-	}
-}
-
-
-package queue
-
-import (
-	"sync/atomic"
+	"encoding/csv"
+	"fmt"
+	"log"
+	"os"
+	"strings"
 	"time"
 
-	"crypt_proto/pkg/models"
+	"crypt_proto/internal/queue"
 )
 
-type Quote struct {
-	Bid, Ask         float64
-	BidSize, AskSize float64
-	Timestamp        int64
+const feeM = 0.999
+
+type LegIndex struct {
+	Key    string
+	Symbol string
+	IsBuy  bool
 }
 
-type MemoryStore struct {
-	data atomic.Value // map[string]Quote
-	ring *ringBuffer
+type Triangle struct {
+	A, B, C string
+	Legs    [3]LegIndex
 }
 
-func NewMemoryStore(bufferSize int) *MemoryStore {
-	s := &MemoryStore{
-		ring: newRingBuffer(bufferSize),
-	}
-	s.data.Store(make(map[string]Quote))
-	return s
+type Calculator struct {
+	mem      *queue.MemoryStore
+	bySymbol map[string][]*Triangle
+	fileLog  *log.Logger
 }
 
-func (s *MemoryStore) Push(md *models.MarketData) {
-	s.ring.push(md)
-}
-
-func (s *MemoryStore) Run() {
-	for {
-		s.ring.drain(s.apply)
-		time.Sleep(1 * time.Millisecond) // минимальный yield
-	}
-}
-
-func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
-	m := s.data.Load().(map[string]Quote)
-	q, ok := m[exchange+"|"+symbol]
-	return q, ok
-}
-
-func (s *MemoryStore) apply(md *models.MarketData) {
-	key := md.Exchange + "|" + md.Symbol
-
-	old := s.data.Load().(map[string]Quote)
-	q := Quote{
-		Bid: md.Bid, Ask: md.Ask,
-		BidSize: md.BidSize, AskSize: md.AskSize,
-		Timestamp: md.Timestamp,
-	}
-
-	// copy-on-write snapshot
-	nm := make(map[string]Quote, len(old)+1)
-	for k, v := range old {
-		nm[k] = v
-	}
-	nm[key] = q
-	s.data.Store(nm)
-}
-
-
-
-type KuCoinCollector struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	wsList []*kucoinWS
-	store  *queue.MemoryStore
-}
-
-
-func (c *KuCoinCollector) Start(store *queue.MemoryStore) error {
-	c.store = store
-	for _, ws := range c.wsList {
-		if err := ws.connect(); err != nil {
-			return err
-		}
-		go ws.readLoop(c)
-		go ws.subscribeLoop()
-		go ws.pingLoop()
-	}
-	return nil
-}
-
-
-
-
-c.store.Push(&models.MarketData{
-	Exchange:  "KuCoin",
-	Symbol:    symbol,
-	Bid:       bid,
-	Ask:       ask,
-	BidSize:   bidSize,
-	AskSize:   askSize,
-	Timestamp: time.Now().UnixMilli(),
-})
-
-
-
-
-func main() {
-	mem := queue.NewMemoryStore(50_000)
-	go mem.Run()
-
-	kc, _, err := collector.NewKuCoinCollectorFromCSV(
-		"../exchange/data/kucoin_triangles_usdt.csv",
-	)
+// NewCalculator — строим индекс symbol -> triangles
+func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
+	f, err := os.OpenFile("arb_opportunities.log",
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		log.Fatal(err)
-	}
-	if err := kc.Start(mem); err != nil {
-		log.Fatal(err)
+		log.Fatalf("failed to open log: %v", err)
 	}
 
-	triangles, _ := calculator.ParseTrianglesFromCSV(
-		"../exchange/data/kucoin_triangles_usdt.csv",
-	)
-	calc := calculator.NewCalculator(mem, triangles)
-	go calc.Run()
+	bySymbol := make(map[string][]*Triangle, 1024)
 
-	select {}
+	for _, t := range triangles {
+		for _, leg := range t.Legs {
+			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
+		}
+	}
+
+	log.Printf("[Calculator] indexed %d symbols\n", len(bySymbol))
+
+	return &Calculator{
+		mem:      mem,
+		bySymbol: bySymbol,
+		fileLog:  log.New(f, "", log.LstdFlags),
+	}
 }
 
-
-
+// Run — считаем ТОЛЬКО нужные треугольники
 func (c *Calculator) Run() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -264,6 +151,180 @@ func (c *Calculator) Run() {
 		c.calculate()
 	}
 }
+
+func (c *Calculator) calcTriangle(tri *Triangle) {
+	var q [3]queue.Quote
+
+	for i, leg := range tri.Legs {
+		quote, ok := c.mem.Get("KuCoin", leg.Symbol)
+		if !ok {
+			return
+		}
+		q[i] = quote
+	}
+
+	var usdtLimits [3]float64
+
+	// LEG 1
+	if tri.Legs[0].IsBuy {
+		if q[0].Ask <= 0 || q[0].AskSize <= 0 {
+			return
+		}
+		usdtLimits[0] = q[0].Ask * q[0].AskSize
+	} else {
+		if q[0].Bid <= 0 || q[0].BidSize <= 0 {
+			return
+		}
+		usdtLimits[0] = q[0].Bid * q[0].BidSize
+	}
+
+	// LEG 2
+	if tri.Legs[1].IsBuy {
+		if q[1].Ask <= 0 || q[1].AskSize <= 0 || q[2].Bid <= 0 {
+			return
+		}
+		usdtLimits[1] = q[1].Ask * q[1].AskSize * q[2].Bid
+	} else {
+		if q[1].Bid <= 0 || q[1].BidSize <= 0 || q[2].Bid <= 0 {
+			return
+		}
+		usdtLimits[1] = q[1].BidSize * q[2].Bid
+	}
+
+	// LEG 3
+	if q[2].Bid <= 0 || q[2].BidSize <= 0 {
+		return
+	}
+	usdtLimits[2] = q[2].Bid * q[2].BidSize
+
+	maxUSDT := usdtLimits[0]
+	if usdtLimits[1] < maxUSDT {
+		maxUSDT = usdtLimits[1]
+	}
+	if usdtLimits[2] < maxUSDT {
+		maxUSDT = usdtLimits[2]
+	}
+	if maxUSDT <= 0 {
+		return
+	}
+
+	amount := maxUSDT
+
+	if tri.Legs[0].IsBuy {
+		amount = amount / q[0].Ask * feeM
+	} else {
+		amount = amount * q[0].Bid * feeM
+	}
+
+	if tri.Legs[1].IsBuy {
+		amount = amount / q[1].Ask * feeM
+	} else {
+		amount = amount * q[1].Bid * feeM
+	}
+
+	if tri.Legs[2].IsBuy {
+		amount = amount / q[2].Ask * feeM
+	} else {
+		amount = amount * q[2].Bid * feeM
+	}
+
+	profitUSDT := amount - maxUSDT
+	profitPct := profitUSDT / maxUSDT
+
+	if profitPct > 0.001 && profitUSDT > 0.02 {
+		ts := time.Now().Format("2006/01/02 15:04:05.000")
+		msg := fmt.Sprintf(
+			"%s [ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
+			ts,
+			tri.A, tri.B, tri.C,
+			profitPct*100, maxUSDT, profitUSDT,
+		)
+
+		log.Println(msg)
+		c.fileLog.Println(msg)
+
+	}
+}
+
+// CSV без изменений логики, но сразу сохраняем Symbol
+func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	rows, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	var res []*Triangle
+
+	for _, row := range rows[1:] {
+		if len(row) < 6 {
+			continue
+		}
+
+		t := &Triangle{
+			A: strings.TrimSpace(row[0]),
+			B: strings.TrimSpace(row[1]),
+			C: strings.TrimSpace(row[2]),
+		}
+
+		for i, leg := range []string{row[3], row[4], row[5]} {
+			leg = strings.ToUpper(strings.TrimSpace(leg))
+			parts := strings.Fields(leg)
+			if len(parts) != 2 {
+				continue
+			}
+
+			isBuy := parts[0] == "BUY"
+			pair := strings.Split(parts[1], "/")
+			if len(pair) != 2 {
+				continue
+			}
+
+			symbol := pair[0] + "-" + pair[1]
+			key := "KuCoin|" + symbol
+
+			t.Legs[i] = LegIndex{
+				Key:    key,
+				Symbol: symbol,
+				IsBuy:  isBuy,
+			}
+		}
+
+		res = append(res, t)
+	}
+
+	return res, nil
+}
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/arb.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "c.calculate undefined (type *Calculator has no field or method calculate)",
+	"source": "compiler",
+	"startLineNumber": 64,
+	"startColumn": 5,
+	"endLineNumber": 64,
+	"endColumn": 14,
+	"modelVersionId": 3,
+	"origin": "extHost1"
+}]
 
 
 
