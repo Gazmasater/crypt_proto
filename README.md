@@ -85,16 +85,6 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-ts := time.Now().Format("2006/01/02 15:04:05.000")
-msg := fmt.Sprintf(
-    "%s [ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
-    ts,
-    tri.A, tri.B, tri.C,
-    profitPct*100, maxUSDT, profitUSDT,
-)
-
-log.Println(msg)
-c.fileLog.Println(msg)
 
 
 
