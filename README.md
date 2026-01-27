@@ -256,51 +256,14 @@ func main() {
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "WrongArgCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongArgCount"
-		}
-	},
-	"severity": 8,
-	"message": "not enough arguments in call to calc.Run\n\thave ()\n\twant (<-chan *models.MarketData)",
-	"source": "compiler",
-	"startLineNumber": 30,
-	"startColumn": 14,
-	"endLineNumber": 30,
-	"endColumn": 14,
-	"modelVersionId": 5,
-	"origin": "extHost1"
-}][{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/arb/main.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "WrongArgCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongArgCount"
-		}
-	},
-	"severity": 8,
-	"message": "not enough arguments in call to calc.Run\n\thave ()\n\twant (<-chan *models.MarketData)",
-	"source": "compiler",
-	"startLineNumber": 30,
-	"startColumn": 14,
-	"endLineNumber": 30,
-	"endColumn": 14,
-	"modelVersionId": 5,
-	"origin": "extHost1"
-}]
+func (c *Calculator) Run() {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		c.calculate()
+	}
+}
 
 
 
