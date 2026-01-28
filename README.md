@@ -85,146 +85,105 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-(pprof) list queue                     
-Total: 11.62MB
-ROUTINE ======================== crypt_proto/internal/queue.(*MemoryStore).Run in /home/gaz358/myprog/crypt_proto/internal/queue/in_memory_queue.go
-         0     6.09MB (flat, cum) 52.46% of Total
-         .          .     73:func (s *MemoryStore) Run() {
-         .          .     74:   for md := range s.batch {
-         .     6.09MB     75:           s.apply(md)
-         .          .     76:   }
-         .          .     77:}
-         .          .     78:
-         .          .     79:func (s *MemoryStore) Push(md *models.MarketData) {
-         .          .     80:   select {
-ROUTINE ======================== crypt_proto/internal/queue.(*MemoryStore).apply in /home/gaz358/myprog/crypt_proto/internal/queue/in_memory_queue.go
-         0     6.09MB (flat, cum) 52.46% of Total
-         .          .     96:func (s *MemoryStore) apply(md *models.MarketData) {
-         .          .     97:   key := md.Exchange + "|" + md.Symbol
-         .          .     98:
-         .          .     99:   buf, ok := s.buffers[key]
-         .          .    100:   if !ok {
-         .     6.09MB    101:           buf = NewRingBuffer(s.BufSize)
-         .          .    102:           s.buffers[key] = buf
-         .          .    103:   }
-         .          .    104:
-         .          .    105:   buf.Push(Quote{
-         .          .    106:           Bid:       md.Bid,
-ROUTINE ======================== crypt_proto/internal/queue.NewMemoryStore in /home/gaz358/myprog/crypt_proto/internal/queue/in_memory_queue.go
-  553.04kB   553.04kB (flat, cum)  4.65% of Total
-         .          .     64:func NewMemoryStore(bufSize int) *MemoryStore {
-         .          .     65:   return &MemoryStore{
-         .          .     66:           buffers: make(map[string]*RingBuffer),
-  553.04kB   553.04kB     67:           batch:   make(chan *models.MarketData, 10_000),
-         .          .     68:           BufSize: bufSize,
-         .          .     69:   }
-         .          .     70:}
-         .          .     71:
-         .          .     72:// Run — писатель, один поток
-ROUTINE ======================== crypt_proto/internal/queue.NewRingBuffer in /home/gaz358/myprog/crypt_proto/internal/queue/in_memory_queue.go
-    6.09MB     6.09MB (flat, cum) 52.46% of Total
-         .          .     25:func NewRingBuffer(size int) *RingBuffer {
-         .          .     26:   r := &RingBuffer{
-    3.09MB     3.09MB     27:           data: make([]*atomic.Pointer[Quote], size),
-         .          .     28:           size: size,
-         .          .     29:           pos:  0,
-         .          .     30:   }
-         .          .     31:   for i := 0; i < size; i++ {
-       3MB        3MB     32:           var ptr atomic.Pointer[Quote]
-         .          .     33:           r.data[i] = &ptr
-         .          .     34:   }
-         .          .     35:   return r
-         .          .     36:}
-         .          .     37:
-(pprof) 
-
-
-
 package queue
 
 import (
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"crypt_proto/pkg/models"
 )
 
-// Quote — отдельная котировка
+/* =========================
+   Quote
+========================= */
+
 type Quote struct {
 	Bid, Ask         float64
 	BidSize, AskSize float64
 	Timestamp        int64
 }
 
-// lock-free ring buffer для одного писателя и многих читателей
+/* =========================
+   Lock-free RingBuffer
+   1 writer / many readers
+========================= */
+
 type RingBuffer struct {
-	data []*atomic.Pointer[Quote]
-	size int
-	pos  int64 // atomic
+	data []Quote
+	size uint64
+	pos  uint64 // atomic
 }
 
 func NewRingBuffer(size int) *RingBuffer {
-	r := &RingBuffer{
-		data: make([]*atomic.Pointer[Quote], size),
-		size: size,
-		pos:  0,
+	return &RingBuffer{
+		data: make([]Quote, size),
+		size: uint64(size),
 	}
-	for i := 0; i < size; i++ {
-		var ptr atomic.Pointer[Quote]
-		r.data[i] = &ptr
-	}
-	return r
 }
 
+// Push — lock-free, no heap, single writer
 func (r *RingBuffer) Push(q Quote) {
-	idx := int(atomic.LoadInt64(&r.pos)) % r.size
-	atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(r.data[idx])), unsafe.Pointer(&q))
-	atomic.AddInt64(&r.pos, 1)
+	i := atomic.AddUint64(&r.pos, 1) - 1
+	r.data[i%r.size] = q
 }
 
+// GetLast — snapshot read
 func (r *RingBuffer) GetLast() (Quote, bool) {
-	curr := atomic.LoadInt64(&r.pos)
-	if curr == 0 {
+	p := atomic.LoadUint64(&r.pos)
+	if p == 0 {
 		return Quote{}, false
 	}
-	idx := int((curr - 1) % int64(r.size))
-	ptr := atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(r.data[idx])))
-	if ptr == nil {
-		return Quote{}, false
-	}
-	return *(*Quote)(ptr), true
+	return r.data[(p-1)%r.size], true
 }
 
-// MemoryStore с lock-free ring buffer
+/* =========================
+   MemoryStore
+========================= */
+
 type MemoryStore struct {
 	buffers map[string]*RingBuffer
 	batch   chan *models.MarketData
-	BufSize int
+	bufSize int
 }
+
+/* =========================
+   Constructor
+========================= */
 
 func NewMemoryStore(bufSize int) *MemoryStore {
 	return &MemoryStore{
 		buffers: make(map[string]*RingBuffer),
 		batch:   make(chan *models.MarketData, 10_000),
-		BufSize: bufSize,
+		bufSize: bufSize,
 	}
 }
 
-// Run — писатель, один поток
+/* =========================
+   Writer loop (single goroutine)
+========================= */
+
 func (s *MemoryStore) Run() {
 	for md := range s.batch {
 		s.apply(md)
 	}
 }
 
+/* =========================
+   Non-blocking push
+========================= */
+
 func (s *MemoryStore) Push(md *models.MarketData) {
 	select {
 	case s.batch <- md:
 	default:
-		// drop if full
+		// drop if overloaded
 	}
 }
+
+/* =========================
+   Read API
+========================= */
 
 func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
 	key := exchange + "|" + symbol
@@ -235,12 +194,16 @@ func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
 	return buf.GetLast()
 }
 
+/* =========================
+   Internal apply
+========================= */
+
 func (s *MemoryStore) apply(md *models.MarketData) {
 	key := md.Exchange + "|" + md.Symbol
 
 	buf, ok := s.buffers[key]
 	if !ok {
-		buf = NewRingBuffer(s.BufSize)
+		buf = NewRingBuffer(s.bufSize)
 		s.buffers[key] = buf
 	}
 
@@ -252,5 +215,6 @@ func (s *MemoryStore) apply(md *models.MarketData) {
 		Timestamp: time.Now().UnixMilli(),
 	})
 }
+
 
 
