@@ -167,7 +167,6 @@ func parseFloat(msg []byte, key string) float64 {
 
 
 
-log.Println("raw msg:", string(msg))
-
+2026/01/28 19:23:06 raw msg: {"topic":"/market/ticker:AAVE-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"159.849","bestAskSize":"0.0218","bestBid":"159.821","bestBidSize":"0.72","price":"159.869","sequence":"8534195815","size":"0.4045","time":1769617378217}}
 
 
