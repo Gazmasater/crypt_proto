@@ -85,6 +85,37 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-bid := gjson.GetBytes(msg, "data.bestBid").Float()
-ask := gjson.GetBytes(msg, "data.bestAsk").Float()
+ROUTINE ======================== crypt_proto/internal/collector.(*kucoinWS).handle in /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go
+         0      140ms (flat, cum) 16.87% of Total
+         .          .    163:func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+         .       20ms    164:   parsed := gjson.ParseBytes(msg)
+         .       30ms    165:   if parsed.Get("type").String() != "message" {
+         .          .    166:           return
+         .          .    167:   }
+         .          .    168:
+         .          .    169:   topic := parsed.Get("topic").String()
+         .          .    170:   const prefix = "/market/ticker:"
+         .          .    171:   if !strings.HasPrefix(topic, prefix) {
+         .          .    172:           return
+         .          .    173:   }
+         .          .    174:   symbol := strings.TrimPrefix(topic, prefix)
+         .          .    175:
+         .       50ms    176:   bid := gjson.GetBytes(msg, "data.bestBid").Float()
+         .       20ms    177:   ask := gjson.GetBytes(msg, "data.bestAsk").Float()
+         .          .    178:   if bid == 0 || ask == 0 {
+         .          .    179:           return
+         .          .    180:   }
+         .          .    181:
+         .          .    182:   // проверяем изменения
+         .       10ms    183:   if last, ok := ws.last[symbol]; ok && last[0] == bid && last[1] == ask {
+         .          .    184:           return
+         .          .    185:   }
+         .          .    186:
+         .          .    187:   // вычисляем размеры только если цены изменились
+         .       10ms    188:   bidSize := parsed.Get("data.bestBidSize").Float()
+         .          .    189:   askSize := parsed.Get("data.bestAskSize").Float()
+         .          .    190:
+         .          .    191:   // обновляем last
+         .          .    192:   ws.last[symbol] = [2]float64{bid, ask}
+         .          .    193:
 
