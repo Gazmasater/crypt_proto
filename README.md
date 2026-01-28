@@ -85,86 +85,80 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.299.pb.gz
-File: arb
-Build ID: 6ecf4917e7db0b58eb9a9f93fd4c58e027784165
-Type: cpu
-Time: 2026-01-28 15:37:07 MSK
-Duration: 30s, Total samples = 950ms ( 3.17%)
-Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) list crypt_proto
-Total: 950ms
-ROUTINE ======================== crypt_proto/internal/collector.(*kucoinWS).handle in /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go
-         0       90ms (flat, cum)  9.47% of Total
-         .          .    163:func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-         .       30ms    164:   if gjson.GetBytes(msg, "type").String() != "message" {
-         .          .    165:           return
-         .          .    166:   }
-         .          .    167:   topic := gjson.GetBytes(msg, "topic").String()
-         .          .    168:   if !strings.HasPrefix(topic, "/market/ticker:") {
-         .          .    169:           return
-         .          .    170:   }
-         .          .    171:   symbol := strings.TrimPrefix(topic, "/market/ticker:")
-         .       10ms    172:   data := gjson.GetBytes(msg, "data")
-         .       30ms    173:   bid, ask := data.Get("bestBid").Float(), data.Get("bestAsk").Float()
-         .       10ms    174:   bidSize, askSize := data.Get("bestBidSize").Float(), data.Get("bestAskSize").Float()
-         .          .    175:   if bid == 0 || ask == 0 {
-         .          .    176:           return
-         .          .    177:   }
-         .          .    178:   last := ws.last[symbol]
-         .          .    179:   if last[0] == bid && last[1] == ask {
-         .          .    180:           return
-         .          .    181:   }
-         .          .    182:   ws.last[symbol] = [2]float64{bid, ask}
-         .       10ms    183:   c.out <- &models.MarketData{
-         .          .    184:           Exchange:  "KuCoin",
-         .          .    185:           Symbol:    symbol,
-         .          .    186:           Bid:       bid,
-         .          .    187:           Ask:       ask,
-         .          .    188:           BidSize:   bidSize,
-ROUTINE ======================== crypt_proto/internal/collector.(*kucoinWS).readLoop in /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go
-         0      640ms (flat, cum) 67.37% of Total
-         .          .    152:func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
-         .          .    153:   for {
-         .      550ms    154:           _, msg, err := ws.conn.ReadMessage()
-         .          .    155:           if err != nil {
-         .          .    156:                   log.Printf("[KuCoin WS %d] read error: %v\n", ws.id, err)
-         .          .    157:                   return
-         .          .    158:           }
-         .       90ms    159:           ws.handle(c, msg)
-         .          .    160:   }
-         .          .    161:}
-         .          .    162:
-         .          .    163:func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-         .          .    164:   if gjson.GetBytes(msg, "type").String() != "message" {
-ROUTINE ======================== crypt_proto/internal/queue.(*MemoryStore).Run in /home/gaz358/myprog/crypt_proto/internal/queue/in_memory_queue.go
-         0       40ms (flat, cum)  4.21% of Total
-         .          .     30:func (s *MemoryStore) Run() {
-         .          .     31:   for md := range s.batch {
-         .       40ms     32:           s.apply(md)
-         .          .     33:   }
-         .          .     34:}
-         .          .     35:
-         .          .     36:func (s *MemoryStore) Push(md *models.MarketData) {
-         .          .     37:   select {
-ROUTINE ======================== crypt_proto/internal/queue.(*MemoryStore).apply in /home/gaz358/myprog/crypt_proto/internal/queue/in_memory_queue.go
-      10ms       40ms (flat, cum)  4.21% of Total
-         .          .     51:func (s *MemoryStore) apply(md *models.MarketData) {
-         .          .     52:   key := md.Exchange + "|" + md.Symbol
-         .          .     53:   quote := Quote{
-         .          .     54:           Bid: md.Bid, Ask: md.Ask,
-         .          .     55:           BidSize: md.BidSize, AskSize: md.AskSize,
-         .          .     56:           Timestamp: time.Now().UnixMilli(),
-         .          .     57:   }
-         .          .     58:
-         .          .     59:   oldMap := s.data.Load().(map[string]Quote)
-         .       20ms     60:   newMap := make(map[string]Quote, len(oldMap)+1)
-      10ms       10ms     61:   for k, v := range oldMap {
-         .       10ms     62:           newMap[k] = v
-         .          .     63:   }
-         .          .     64:   newMap[key] = quote
-         .          .     65:   s.data.Store(newMap)
-         .          .     66:}
-(pprof) 
+func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+	// проверяем, что тип "message"
+	if !bytes.Contains(msg, []byte(`"type":"message"`)) {
+		return
+	}
+
+	// получаем symbol после "/market/ticker:"
+	topicKey := []byte(`"topic":"/market/ticker:`)
+	topicIdx := bytes.Index(msg, topicKey)
+	if topicIdx < 0 {
+		return
+	}
+	symbolStart := topicIdx + len(topicKey)
+	symbolEnd := bytes.IndexByte(msg[symbolStart:], '"')
+	if symbolEnd < 0 {
+		return
+	}
+	symbol := string(msg[symbolStart : symbolStart+symbolEnd])
+
+	// получаем данные "data"
+	dataKey := []byte(`"data":{`)
+	dataIdx := bytes.Index(msg, dataKey)
+	if dataIdx < 0 {
+		return
+	}
+	dataStart := dataIdx + len(dataKey)
+	dataEnd := bytes.IndexByte(msg[dataStart:], '}')
+	if dataEnd < 0 {
+		return
+	}
+	data := msg[dataStart : dataStart+dataEnd]
+
+	// парсим числа
+	bid := parseFloat(data, "bestBid")
+	ask := parseFloat(data, "bestAsk")
+	bidSize := parseFloat(data, "bestBidSize")
+	askSize := parseFloat(data, "bestAskSize")
+
+	if bid == 0 || ask == 0 {
+		return
+	}
+
+	last := ws.last[symbol]
+	if last[0] == bid && last[1] == ask {
+		return
+	}
+
+	ws.last[symbol] = [2]float64{bid, ask}
+
+	c.out <- &models.MarketData{
+		Exchange:  "KuCoin",
+		Symbol:    symbol,
+		Bid:       bid,
+		Ask:       ask,
+		BidSize:   bidSize,
+		AskSize:   askSize,
+		Timestamp: time.Now().UnixMilli(),
+	}
+}
+
+// минимальный быстрый парсер float из []byte
+func parseFloat(data []byte, key string) float64 {
+	keyBytes := []byte(`"` + key + `":`)
+	idx := bytes.Index(data, keyBytes)
+	if idx < 0 {
+		return 0
+	}
+	start := idx + len(keyBytes)
+	// ищем конец числа (',' или конец данных)
+	end := start
+	for end < len(data) && (data[end] == '.' || data[end] == '-' || (data[end] >= '0' && data[end] <= '9')) {
+		end++
+	}
+	f, _ := strconv.ParseFloat(string(data[start:end]), 64)
+	return f
+}
+
