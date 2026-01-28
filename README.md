@@ -123,3 +123,76 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		AskSize:  askSize,
 	}
 }
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "last.Bid undefined (type [2]float64 has no field or method Bid)",
+	"source": "compiler",
+	"startLineNumber": 182,
+	"startColumn": 10,
+	"endLineNumber": 182,
+	"endColumn": 13,
+	"modelVersionId": 2,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "last.Ask undefined (type [2]float64 has no field or method Ask)",
+	"source": "compiler",
+	"startLineNumber": 182,
+	"startColumn": 29,
+	"endLineNumber": 182,
+	"endColumn": 32,
+	"modelVersionId": 2,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: Last",
+	"source": "compiler",
+	"startLineNumber": 190,
+	"startColumn": 20,
+	"endLineNumber": 190,
+	"endColumn": 24,
+	"modelVersionId": 2,
+	"origin": "extHost1"
+}]
