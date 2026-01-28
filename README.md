@@ -85,7 +85,7 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-package collector
+package collector_test
 
 import (
 	"testing"
@@ -186,6 +186,20 @@ func BenchmarkHandleGetMany(b *testing.B) {
 
 
 go test -bench=. ./internal/collector/collector_test
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go test -bench=. ./internal/collector/collector_test
+goos: linux
+goarch: amd64
+pkg: crypt_proto/internal/collector/collector_test
+cpu: 11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz
+BenchmarkHandleOld-8             1592011               738.7 ns/op
+BenchmarkHandleWithData-8        1787144               673.4 ns/op
+BenchmarkHandleGetMany-8         1378279               873.0 ns/op
+PASS
+ok      crypt_proto/internal/collector/collector_test   5.914s
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ 
+
 
 
 
