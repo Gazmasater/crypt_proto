@@ -132,3 +132,40 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 
 
 
+ROUTINE ======================== crypt_proto/internal/collector.(*kucoinWS).handle in /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go
+         0       60ms (flat, cum)  7.14% of Total
+         .          .    177:func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+         .          .    178:   const prefixLen = len("/market/ticker:")
+         .          .    179:
+         .          .    180:   // достаём топик сразу
+         .       30ms    181:   topic := gjson.GetBytes(msg, "topic").String()
+         .          .    182:   if len(topic) <= prefixLen {
+         .          .    183:           return
+         .          .    184:   }
+         .          .    185:   symbol := topic[prefixLen:]
+         .          .    186:
+         .          .    187:   // извлекаем bid, ask и размеры одним вызовом
+         .       20ms    188:   values := gjson.GetManyBytes(msg,
+         .          .    189:           "data.bestBid",
+         .          .    190:           "data.bestAsk",
+         .          .    191:           "data.bestBidSize",
+         .          .    192:           "data.bestAskSize",
+         .          .    193:   )
+         .          .    194:   bid := values[0].Float()
+         .          .    195:   ask := values[1].Float()
+         .          .    196:   bidSize := values[2].Float()
+         .          .    197:   askSize := values[3].Float()
+         .          .    198:
+         .          .    199:   if bid == 0 || ask == 0 {
+         .          .    200:           return
+         .          .    201:   }
+         .          .    202:
+         .          .    203:   // проверяем, изменились ли цены
+         .       10ms    204:   if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask {
+         .          .    205:           return
+         .          .    206:   }
+         .          .    207:
+         .          .    208:   // обновляем last
+         .          .    209:   ws.last[symbol] = Last{Bid: bid, Ask: ask}
+
+
