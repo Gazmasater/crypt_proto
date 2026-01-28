@@ -91,7 +91,7 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	// поиск топика
+	// проверка топика
 	const prefix = `/market/ticker:`
 	topicIdx := bytes.Index(msg, []byte(`"topic":"`))
 	if topicIdx == -1 {
@@ -106,18 +106,21 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	if !strings.HasPrefix(topic, prefix) {
 		return
 	}
-	symbol := strings.ToUpper(strings.TrimPrefix(topic, prefix))
+	symbol := strings.TrimPrefix(topic, prefix)
 
-	// парсим числа
+	// парс чисел (строковые числа KuCoin)
 	bid := parseFloat(msg, `"bestBid":`)
 	ask := parseFloat(msg, `"bestAsk":`)
 	bidSize := parseFloat(msg, `"bestBidSize":`)
 	askSize := parseFloat(msg, `"bestAskSize":`)
 
-	// проверка корректности
 	if bid == 0 || ask == 0 {
 		return
 	}
+
+	// Логируем после парсинга
+	log.Printf("[KuCoin WS %d] parsed %s bid=%.6f ask=%.6f bidSize=%.6f askSize=%.6f",
+		ws.id, symbol, bid, ask, bidSize, askSize)
 
 	last := ws.last[symbol]
 	if last[0] == bid && last[1] == ask {
@@ -125,7 +128,7 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 	ws.last[symbol] = [2]float64{bid, ask}
 
-	md := &models.MarketData{
+	c.out <- &models.MarketData{
 		Exchange:  "KuCoin",
 		Symbol:    symbol,
 		Bid:       bid,
@@ -134,29 +137,29 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		AskSize:   askSize,
 		Timestamp: time.Now().UnixMilli(),
 	}
-
-	// логируем после успешного парсинга
-	log.Printf("[WS %d] parsed: %s | bid=%.8f ask=%.8f bidSize=%.8f askSize=%.8f\n",
-		ws.id, symbol, bid, ask, bidSize, askSize)
-
-	// отправляем в канал
-	c.out <- md
 }
 
-// parseFloat ищет число после ключа, например `"bestBid":123.45`
+// parseFloat ищет число после ключа, учитывая, что KuCoin присылает числа в кавычках
 func parseFloat(msg []byte, key string) float64 {
 	idx := bytes.Index(msg, []byte(key))
 	if idx == -1 {
 		return 0
 	}
 	start := idx + len(key)
+
+	// пропускаем пробелы и кавычки
+	for start < len(msg) && (msg[start] == '"' || msg[start] == ' ') {
+		start++
+	}
 	end := start
-	for end < len(msg) && ((msg[end] >= '0' && msg[end] <= '9') || msg[end] == '.') {
+	for end < len(msg) && ((msg[end] >= '0' && msg[end] <= '9') || msg[end] == '.' || msg[end] == 'e' || msg[end] == 'E' || msg[end] == '-') {
 		end++
 	}
+
 	if end == start {
 		return 0
 	}
+
 	val, err := strconv.ParseFloat(string(msg[start:end]), 64)
 	if err != nil {
 		return 0
@@ -165,8 +168,5 @@ func parseFloat(msg []byte, key string) float64 {
 }
 
 
-
-
-2026/01/28 19:23:06 raw msg: {"topic":"/market/ticker:AAVE-USDT","type":"message","subject":"trade.ticker","data":{"bestAsk":"159.849","bestAskSize":"0.0218","bestBid":"159.821","bestBidSize":"0.72","price":"159.869","sequence":"8534195815","size":"0.4045","time":1769617378217}}
 
 
