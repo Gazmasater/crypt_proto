@@ -86,42 +86,33 @@ GOMAXPROCS=8 go run -race main.go
 
 
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	// проверяем, что тип "message"
+	// проверка типа
 	if !bytes.Contains(msg, []byte(`"type":"message"`)) {
 		return
 	}
 
-	// получаем symbol после "/market/ticker:"
-	topicKey := []byte(`"topic":"/market/ticker:`)
-	topicIdx := bytes.Index(msg, topicKey)
-	if topicIdx < 0 {
+	// проверка топика
+	const prefix = `/market/ticker:`
+	topicIdx := bytes.Index(msg, []byte(`"topic":"`))
+	if topicIdx == -1 {
 		return
 	}
-	symbolStart := topicIdx + len(topicKey)
-	symbolEnd := bytes.IndexByte(msg[symbolStart:], '"')
-	if symbolEnd < 0 {
+	topicStart := topicIdx + len(`"topic":"`)
+	topicEnd := bytes.IndexByte(msg[topicStart:], '"')
+	if topicEnd == -1 {
 		return
 	}
-	symbol := string(msg[symbolStart : symbolStart+symbolEnd])
+	topic := string(msg[topicStart : topicStart+topicEnd])
+	if !strings.HasPrefix(topic, prefix) {
+		return
+	}
+	symbol := strings.TrimPrefix(topic, prefix)
 
-	// получаем данные "data"
-	dataKey := []byte(`"data":{`)
-	dataIdx := bytes.Index(msg, dataKey)
-	if dataIdx < 0 {
-		return
-	}
-	dataStart := dataIdx + len(dataKey)
-	dataEnd := bytes.IndexByte(msg[dataStart:], '}')
-	if dataEnd < 0 {
-		return
-	}
-	data := msg[dataStart : dataStart+dataEnd]
-
-	// парсим числа
-	bid := parseFloat(data, "bestBid")
-	ask := parseFloat(data, "bestAsk")
-	bidSize := parseFloat(data, "bestBidSize")
-	askSize := parseFloat(data, "bestAskSize")
+	// парс чисел
+	bid := parseFloat(msg, `"bestBid":`)
+	ask := parseFloat(msg, `"bestAsk":`)
+	bidSize := parseFloat(msg, `"bestBidSize":`)
+	askSize := parseFloat(msg, `"bestAskSize":`)
 
 	if bid == 0 || ask == 0 {
 		return
@@ -131,7 +122,6 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	if last[0] == bid && last[1] == ask {
 		return
 	}
-
 	ws.last[symbol] = [2]float64{bid, ask}
 
 	c.out <- &models.MarketData{
@@ -145,20 +135,26 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 }
 
-// минимальный быстрый парсер float из []byte
-func parseFloat(data []byte, key string) float64 {
-	keyBytes := []byte(`"` + key + `":`)
-	idx := bytes.Index(data, keyBytes)
-	if idx < 0 {
+// parseFloat ищет число после ключа, например `"bestBid":123.45`
+func parseFloat(msg []byte, key []byte) float64 {
+	idx := bytes.Index(msg, key)
+	if idx == -1 {
 		return 0
 	}
-	start := idx + len(keyBytes)
-	// ищем конец числа (',' или конец данных)
+	start := idx + len(key)
+	// ищем конец числа — любой символ, который не цифра и не точка
 	end := start
-	for end < len(data) && (data[end] == '.' || data[end] == '-' || (data[end] >= '0' && data[end] <= '9')) {
+	for end < len(msg) && ((msg[end] >= '0' && msg[end] <= '9') || msg[end] == '.') {
 		end++
 	}
-	f, _ := strconv.ParseFloat(string(data[start:end]), 64)
-	return f
+	if end == start {
+		return 0
+	}
+	val, err := strconv.ParseFloat(string(msg[start:end]), 64)
+	if err != nil {
+		return 0
+	}
+	return val
 }
+
 
