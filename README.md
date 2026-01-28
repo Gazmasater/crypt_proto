@@ -86,44 +86,55 @@ GOMAXPROCS=8 go run -race main.go
 
 
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	// проверка типа
+	// проверка типа сообщения
 	if !bytes.Contains(msg, []byte(`"type":"message"`)) {
 		return
 	}
 
-	// проверка топика
+	// ищем topic
 	const prefix = `/market/ticker:`
-	topicIdx := bytes.Index(msg, []byte(`"topic":"`))
+	topicKey := []byte(`"topic":"`)
+	topicIdx := bytes.Index(msg, topicKey)
 	if topicIdx == -1 {
 		return
 	}
-	topicStart := topicIdx + len(`"topic":"`)
+	topicStart := topicIdx + len(topicKey)
 	topicEnd := bytes.IndexByte(msg[topicStart:], '"')
 	if topicEnd == -1 {
 		return
 	}
-	topic := string(msg[topicStart : topicStart+topicEnd])
-	if !strings.HasPrefix(topic, prefix) {
+	topic := msg[topicStart : topicStart+topicEnd]
+	if !bytes.HasPrefix(topic, []byte(prefix)) {
 		return
 	}
-	symbol := strings.TrimPrefix(topic, prefix)
+	symbol := string(topic[len(prefix):])
 
-	// парс чисел
-	bid := parseFloat(msg, `"bestBid":`)
-	ask := parseFloat(msg, `"bestAsk":`)
-	bidSize := parseFloat(msg, `"bestBidSize":`)
-	askSize := parseFloat(msg, `"bestAskSize":`)
+	// ищем поле "data": {...}
+	dataKey := []byte(`"data":`)
+	dataIdx := bytes.Index(msg, dataKey)
+	if dataIdx == -1 {
+		return
+	}
+	dataStart := dataIdx + len(dataKey)
+
+	// парсим числа из блока data
+	bid := parseFloat(msg[dataStart:], []byte(`"bestBid":`))
+	ask := parseFloat(msg[dataStart:], []byte(`"bestAsk":`))
+	bidSize := parseFloat(msg[dataStart:], []byte(`"bestBidSize":`))
+	askSize := parseFloat(msg[dataStart:], []byte(`"bestAskSize":`))
 
 	if bid == 0 || ask == 0 {
 		return
 	}
 
+	// проверка на изменения
 	last := ws.last[symbol]
 	if last[0] == bid && last[1] == ask {
 		return
 	}
 	ws.last[symbol] = [2]float64{bid, ask}
 
+	// отправляем в канал
 	c.out <- &models.MarketData{
 		Exchange:  "KuCoin",
 		Symbol:    symbol,
@@ -136,12 +147,14 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 }
 
 // parseFloat ищет число после ключа, например `"bestBid":123.45`
+// работает с []byte, без аллокаций кроме strconv.ParseFloat
 func parseFloat(msg []byte, key []byte) float64 {
 	idx := bytes.Index(msg, key)
 	if idx == -1 {
 		return 0
 	}
 	start := idx + len(key)
+
 	// ищем конец числа — любой символ, который не цифра и не точка
 	end := start
 	for end < len(msg) && ((msg[end] >= '0' && msg[end] <= '9') || msg[end] == '.') {
@@ -150,6 +163,7 @@ func parseFloat(msg []byte, key []byte) float64 {
 	if end == start {
 		return 0
 	}
+
 	val, err := strconv.ParseFloat(string(msg[start:end]), 64)
 	if err != nil {
 		return 0
@@ -157,29 +171,5 @@ func parseFloat(msg []byte, key []byte) float64 {
 	return val
 }
 
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": {
-		"value": "IncompatibleAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "IncompatibleAssign"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use `\"bestBid\":` (untyped string constant \"\\\"bestBid\\\":\") as []byte value in argument to parseFloat",
-	"source": "compiler",
-	"startLineNumber": 188,
-	"startColumn": 25,
-	"endLineNumber": 188,
-	"endColumn": 37,
-	"modelVersionId": 3,
-	"origin": "extHost1"
-}]
 
 
