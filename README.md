@@ -167,3 +167,7 @@ func parseFloat(msg []byte, key string) float64 {
 
 
 
+log.Println("raw msg:", string(msg))
+
+
+
