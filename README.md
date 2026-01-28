@@ -88,63 +88,47 @@ GOMAXPROCS=8 go run -race main.go
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	const prefixLen = len("/market/ticker:")
 
+	// достаём топик сразу
 	topic := gjson.GetBytes(msg, "topic").String()
 	if len(topic) <= prefixLen {
 		return
 	}
 	symbol := topic[prefixLen:]
 
-	bid := gjson.GetBytes(msg, "data.bestBid").Float()
-	ask := gjson.GetBytes(msg, "data.bestAsk").Float()
+	// извлекаем bid, ask и размеры одним вызовом
+	values := gjson.GetManyBytes(msg,
+		"data.bestBid",
+		"data.bestAsk",
+		"data.bestBidSize",
+		"data.bestAskSize",
+	)
+	bid := values[0].Float()
+	ask := values[1].Float()
+	bidSize := values[2].Float()
+	askSize := values[3].Float()
+
 	if bid == 0 || ask == 0 {
 		return
 	}
 
+	// проверяем, изменились ли цены
 	if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask {
 		return
 	}
 
-	// сразу извлекаем объёмы
+	// обновляем last
+	ws.last[symbol] = Last{Bid: bid, Ask: ask}
+
+	// отправляем в канал
 	c.out <- &models.MarketData{
 		Exchange: "KuCoin",
 		Symbol:   symbol,
 		Bid:      bid,
 		Ask:      ask,
-		BidSize:  gjson.GetBytes(msg, "data.bestBidSize").Float(),
-		AskSize:  gjson.GetBytes(msg, "data.bestAskSize").Float(),
+		BidSize:  bidSize,
+		AskSize:  askSize,
 	}
-
-	ws.last[symbol] = Last{Bid: bid, Ask: ask}
 }
 
-
-ROUTINE ======================== crypt_proto/internal/collector.(*kucoinWS).handle in /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go
-      10ms       70ms (flat, cum)  8.97% of Total
-         .          .    177:func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-         .          .    178:   const prefixLen = len("/market/ticker:")
-         .          .    179:
-         .       20ms    180:   topic := gjson.GetBytes(msg, "topic").String()
-         .          .    181:   if len(topic) <= prefixLen {
-         .          .    182:           return
-         .          .    183:   }
-         .          .    184:   symbol := topic[prefixLen:]
-         .          .    185:
-         .       30ms    186:   bid := gjson.GetBytes(msg, "data.bestBid").Float()
-         .          .    187:   ask := gjson.GetBytes(msg, "data.bestAsk").Float()
-         .          .    188:   if bid == 0 || ask == 0 {
-         .          .    189:           return
-         .          .    190:   }
-         .          .    191:
-      10ms       10ms    192:   if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask {
-         .          .    193:           return
-         .          .    194:   }
-         .          .    195:
-         .          .    196:   // сразу извлекаем объёмы
-         .       10ms    197:   c.out <- &models.MarketData{
-         .          .    198:           Exchange: "KuCoin",
-         .          .    199:           Symbol:   symbol,
-         .          .    200:           Bid:      bid,
-         .          .    201:           Ask:      ask,
-         .          .    202:           BidSize:  gjson.GetBytes(msg, "data.bestBidSize").Float(),
 
 
