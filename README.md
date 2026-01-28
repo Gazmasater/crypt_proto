@@ -171,3 +171,14 @@ func BenchmarkHandleMany(b *testing.B) {
 go test -bench=. ./internal/collector
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go test -bench=. ./internal/collector/collector_test
+goos: linux
+goarch: amd64
+pkg: crypt_proto/internal/collector/collector_test
+cpu: 11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz
+BenchmarkHandleOld-8             1902133               647.3 ns/op
+BenchmarkHandleMany-8            1283359               913.7 ns/op
+PASS
+ok      crypt_proto/internal/collector/collector_test   3.994s
+
+
