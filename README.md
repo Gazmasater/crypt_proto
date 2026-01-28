@@ -104,5 +104,30 @@ ws := &kucoinWS{
 }
 
 
+func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) {
+	symbols, err := readPairsFromCSV(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(symbols) == 0 {
+		return nil, nil, fmt.Errorf("no symbols")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wsList []*kucoinWS
+	for i := 0; i < len(symbols); i += maxSubsPerWS {
+		end := i + maxSubsPerWS
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		wsList = append(wsList, &kucoinWS{
+			id:      len(wsList),
+			symbols: symbols[i:end],
+			last:    make(map[string][2]float64),
+		})
+	}
+
+
+
 
 
