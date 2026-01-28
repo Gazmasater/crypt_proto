@@ -30,11 +30,17 @@ type KuCoinCollector struct {
 	out    chan<- *models.MarketData
 }
 
+type Last struct {
+	Bid float64
+	Ask float64
+}
+
 type kucoinWS struct {
 	id      int
 	conn    *websocket.Conn
 	symbols []string
-	last    map[string][2]float64
+
+	last map[string]Last
 }
 
 func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) {
@@ -47,20 +53,28 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) 
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+
 	var wsList []*kucoinWS
 	for i := 0; i < len(symbols); i += maxSubsPerWS {
 		end := i + maxSubsPerWS
 		if end > len(symbols) {
 			end = len(symbols)
 		}
+
 		wsList = append(wsList, &kucoinWS{
 			id:      len(wsList),
 			symbols: symbols[i:end],
-			last:    make(map[string][2]float64),
+			last:    make(map[string]Last),
 		})
 	}
 
-	return &KuCoinCollector{ctx: ctx, cancel: cancel, wsList: wsList}, symbols, nil
+	c := &KuCoinCollector{
+		ctx:    ctx,
+		cancel: cancel,
+		wsList: wsList,
+	}
+
+	return c, symbols, nil
 }
 
 func (c *KuCoinCollector) Name() string { return "KuCoin" }
@@ -161,33 +175,39 @@ func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
 }
 
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	if gjson.GetBytes(msg, "type").String() != "message" {
+	root := gjson.ParseBytes(msg)
+
+	topic := root.Get("topic").String()
+	const prefix = "/market/ticker:"
+	if len(topic) <= len(prefix) || topic[:len(prefix)] != prefix {
 		return
 	}
-	topic := gjson.GetBytes(msg, "topic").String()
-	if !strings.HasPrefix(topic, "/market/ticker:") {
-		return
-	}
-	symbol := strings.TrimPrefix(topic, "/market/ticker:")
-	data := gjson.GetBytes(msg, "data")
-	bid, ask := data.Get("bestBid").Float(), data.Get("bestAsk").Float()
-	bidSize, askSize := data.Get("bestBidSize").Float(), data.Get("bestAskSize").Float()
+	symbol := topic[len(prefix):]
+
+	data := root.Get("data")
+	bid := data.Get("bestBid").Float()
+	ask := data.Get("bestAsk").Float()
 	if bid == 0 || ask == 0 {
 		return
 	}
+
 	last := ws.last[symbol]
-	if last[0] == bid && last[1] == ask {
+	if last.Bid == bid && last.Ask == ask {
 		return
 	}
-	ws.last[symbol] = [2]float64{bid, ask}
+
+	bidSize := data.Get("bestBidSize").Float()
+	askSize := data.Get("bestAskSize").Float()
+
+	ws.last[symbol] = Last{Bid: bid, Ask: ask}
+
 	c.out <- &models.MarketData{
-		Exchange:  "KuCoin",
-		Symbol:    symbol,
-		Bid:       bid,
-		Ask:       ask,
-		BidSize:   bidSize,
-		AskSize:   askSize,
-		Timestamp: time.Now().UnixMilli(),
+		Exchange: "KuCoin",
+		Symbol:   symbol,
+		Bid:      bid,
+		Ask:      ask,
+		BidSize:  bidSize,
+		AskSize:  askSize,
 	}
 }
 
