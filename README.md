@@ -86,37 +86,45 @@ GOMAXPROCS=8 go run -race main.go
 
 
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	// быстро проверяем тип сообщения
+	// проверка типа
 	if !bytes.Contains(msg, []byte(`"type":"message"`)) {
 		return
 	}
 
-	// ищем topic
+	// поиск топика
 	const prefix = `/market/ticker:`
-	topic := parseString(msg, `"topic":"`)
-	if topic == "" || !strings.HasPrefix(topic, prefix) {
+	topicIdx := bytes.Index(msg, []byte(`"topic":"`))
+	if topicIdx == -1 {
 		return
 	}
-	symbol := strings.TrimSpace(topic[len(prefix):])
+	topicStart := topicIdx + len(`"topic":"`)
+	topicEnd := bytes.IndexByte(msg[topicStart:], '"')
+	if topicEnd == -1 {
+		return
+	}
+	topic := string(msg[topicStart : topicStart+topicEnd])
+	if !strings.HasPrefix(topic, prefix) {
+		return
+	}
+	symbol := strings.ToUpper(strings.TrimPrefix(topic, prefix))
 
 	// парсим числа
-	bid := parseNumber(msg, `"bestBid":`)
-	ask := parseNumber(msg, `"bestAsk":`)
-	bidSize := parseNumber(msg, `"bestBidSize":`)
-	askSize := parseNumber(msg, `"bestAskSize":`)
+	bid := parseFloat(msg, `"bestBid":`)
+	ask := parseFloat(msg, `"bestAsk":`)
+	bidSize := parseFloat(msg, `"bestBidSize":`)
+	askSize := parseFloat(msg, `"bestAskSize":`)
 
+	// проверка корректности
 	if bid == 0 || ask == 0 {
 		return
 	}
 
-	// проверка изменений
 	last := ws.last[symbol]
 	if last[0] == bid && last[1] == ask {
 		return
 	}
 	ws.last[symbol] = [2]float64{bid, ask}
 
-	// формируем структуру
 	md := &models.MarketData{
 		Exchange:  "KuCoin",
 		Symbol:    symbol,
@@ -127,30 +135,16 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		Timestamp: time.Now().UnixMilli(),
 	}
 
-	// отправка в канал без блокировки
-	select {
-	case c.out <- md:
-	default:
-		log.Printf("[KuCoin WS %d] drop MarketData %s\n", ws.id, symbol)
-	}
+	// логируем после успешного парсинга
+	log.Printf("[WS %d] parsed: %s | bid=%.8f ask=%.8f bidSize=%.8f askSize=%.8f\n",
+		ws.id, symbol, bid, ask, bidSize, askSize)
+
+	// отправляем в канал
+	c.out <- md
 }
 
-// parseString возвращает строку после ключа, до следующей кавычки
-func parseString(msg []byte, key string) string {
-	idx := bytes.Index(msg, []byte(key))
-	if idx == -1 {
-		return ""
-	}
-	start := idx + len(key)
-	end := bytes.IndexByte(msg[start:], '"')
-	if end == -1 {
-		return ""
-	}
-	return string(msg[start : start+end])
-}
-
-// parseNumber возвращает число float64 после ключа
-func parseNumber(msg []byte, key string) float64 {
+// parseFloat ищет число после ключа, например `"bestBid":123.45`
+func parseFloat(msg []byte, key string) float64 {
 	idx := bytes.Index(msg, []byte(key))
 	if idx == -1 {
 		return 0
@@ -163,9 +157,13 @@ func parseNumber(msg []byte, key string) float64 {
 	if end == start {
 		return 0
 	}
-	val, _ := strconv.ParseFloat(string(msg[start:end]), 64)
+	val, err := strconv.ParseFloat(string(msg[start:end]), 64)
+	if err != nil {
+		return 0
+	}
 	return val
 }
+
 
 
 
