@@ -218,52 +218,146 @@ func (s *MemoryStore) apply(md *models.MarketData) {
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
 Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
-Saved profile in /home/gaz358/pprof/pprof.arb.alloc_objects.alloc_space.inuse_objects.inuse_space.012.pb.gz
+Saved profile in /home/gaz358/pprof/pprof.arb.alloc_objects.alloc_space.inuse_objects.inuse_space.013.pb.gz
 File: arb
 Build ID: 2d9348127d2f3102690db75c2474cd12f2fed507
 Type: inuse_space
-Time: 2026-01-28 11:14:37 MSK
+Time: 2026-01-28 11:24:23 MSK
 Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 9692.30kB, 100% of 9692.30kB total
-Showing top 10 nodes out of 18
-      flat  flat%   sum%        cum   cum%
- 7153.92kB 73.81% 73.81%  7153.92kB 73.81%  crypt_proto/internal/queue.NewRingBuffer (inline)
-    1026kB 10.59% 84.40%     1026kB 10.59%  runtime.allocm
- 1000.34kB 10.32% 94.72%  1000.34kB 10.32%  main.main
-  512.05kB  5.28%   100%   512.05kB  5.28%  runtime.acquireSudog
-         0     0%   100%  7153.92kB 73.81%  crypt_proto/internal/queue.(*MemoryStore).Run
-         0     0%   100%  7153.92kB 73.81%  crypt_proto/internal/queue.(*MemoryStore).apply
-         0     0%   100%   512.05kB  5.28%  runtime.chanrecv
-         0     0%   100%   512.05kB  5.28%  runtime.chanrecv1
-         0     0%   100%  1000.34kB 10.32%  runtime.main
-         0     0%   100%     1026kB 10.59%  runtime.mstart
+(pprof) list queue
+Total: 6.89MB
+ROUTINE ======================== crypt_proto/internal/queue.(*MemoryStore).Run in /home/gaz358/myprog/crypt_proto/internal/queue/in_memory_queue.go
+  512.05kB     3.41MB (flat, cum) 49.50% of Total
+         .          .     79:func (s *MemoryStore) Run() {
+  512.05kB   512.05kB     80:   for md := range s.batch {
+         .     2.91MB     81:           s.apply(md)
+         .          .     82:   }
+         .          .     83:}
+         .          .     84:
+         .          .     85:/* =========================
+         .          .     86:   Non-blocking push
+ROUTINE ======================== crypt_proto/internal/queue.(*MemoryStore).apply in /home/gaz358/myprog/crypt_proto/internal/queue/in_memory_queue.go
+         0     2.91MB (flat, cum) 42.24% of Total
+         .          .    114:func (s *MemoryStore) apply(md *models.MarketData) {
+         .          .    115:   key := md.Exchange + "|" + md.Symbol
+         .          .    116:
+         .          .    117:   buf, ok := s.buffers[key]
+         .          .    118:   if !ok {
+         .     2.91MB    119:           buf = NewRingBuffer(s.bufSize)
+         .          .    120:           s.buffers[key] = buf
+         .          .    121:   }
+         .          .    122:
+         .          .    123:   buf.Push(Quote{
+         .          .    124:           Bid:       md.Bid,
+ROUTINE ======================== crypt_proto/internal/queue.NewRingBuffer in /home/gaz358/myprog/crypt_proto/internal/queue/in_memory_queue.go
+    2.91MB     2.91MB (flat, cum) 42.24% of Total
+         .          .     31:func NewRingBuffer(size int) *RingBuffer {
+         .          .     32:   return &RingBuffer{
+    2.91MB     2.91MB     33:           data: make([]Quote, size),
+         .          .     34:           size: uint64(size),
+         .          .     35:   }
+         .          .     36:}
+         .          .     37:
+         .          .     38:// Push — lock-free, no heap, single writer
 (pprof) 
 
 
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
-Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.290.pb.gz
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.291.pb.gz
 File: arb
 Build ID: 2d9348127d2f3102690db75c2474cd12f2fed507
 Type: cpu
-Time: 2026-01-28 11:14:24 MSK
-Duration: 30s, Total samples = 720ms ( 2.40%)
+Time: 2026-01-28 11:25:50 MSK
+Duration: 30s, Total samples = 770ms ( 2.57%)
 Entering interactive mode (type "help" for commands, "o" for options)
-(pprof) top
-Showing nodes accounting for 560ms, 77.78% of 720ms total
-Showing top 10 nodes out of 110
-      flat  flat%   sum%        cum   cum%
-     360ms 50.00% 50.00%      360ms 50.00%  internal/runtime/syscall.Syscall6
-      50ms  6.94% 56.94%       50ms  6.94%  runtime.futex
-      30ms  4.17% 61.11%      280ms 38.89%  runtime.findRunnable
-      20ms  2.78% 63.89%       50ms  6.94%  github.com/tidwall/gjson.parseObject
-      20ms  2.78% 66.67%       20ms  2.78%  github.com/tidwall/gjson.parseSquash
-      20ms  2.78% 69.44%       20ms  2.78%  runtime.nextFreeFast
-      20ms  2.78% 72.22%       20ms  2.78%  runtime.pMask.read (inline)
-      20ms  2.78% 75.00%       20ms  2.78%  runtime.stealWork
-      10ms  1.39% 76.39%       10ms  1.39%  crypt_proto/internal/queue.(*RingBuffer).Push
-      10ms  1.39% 77.78%       10ms  1.39%  crypto/tls.(*Conn).handshakeContext
+(pprof) list crypt_proto
+Total: 770ms
+ROUTINE ======================== crypt_proto/internal/calculator.(*Calculator).Run in /home/gaz358/myprog/crypt_proto/internal/calculator/arb.go
+         0       10ms (flat, cum)  1.30% of Total
+         .          .     56:func (c *Calculator) Run(in <-chan *models.MarketData) {
+         .          .     57:   for md := range in {
+         .          .     58:           c.mem.Push(md)
+         .          .     59:
+         .          .     60:           tris := c.bySymbol[md.Symbol]
+         .          .     61:           if len(tris) == 0 {
+         .          .     62:                   continue
+         .          .     63:           }
+         .          .     64:
+         .          .     65:           for _, tri := range tris {
+         .       10ms     66:                   c.calcTriangle(tri)
+         .          .     67:           }
+         .          .     68:   }
+         .          .     69:}
+         .          .     70:
+         .          .     71:func (c *Calculator) calcTriangle(tri *Triangle) {
+ROUTINE ======================== crypt_proto/internal/calculator.(*Calculator).calcTriangle in /home/gaz358/myprog/crypt_proto/internal/calculator/arb.go
+         0       10ms (flat, cum)  1.30% of Total
+         .          .     71:func (c *Calculator) calcTriangle(tri *Triangle) {
+         .          .     72:   var q [3]queue.Quote
+         .          .     73:
+         .          .     74:   for i, leg := range tri.Legs {
+         .       10ms     75:           quote, ok := c.mem.Get("KuCoin", leg.Symbol)
+         .          .     76:           if !ok {
+         .          .     77:                   return
+         .          .     78:           }
+         .          .     79:           q[i] = quote
+         .          .     80:   }
+ROUTINE ======================== crypt_proto/internal/collector.(*kucoinWS).handle in /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go
+         0      130ms (flat, cum) 16.88% of Total
+         .          .    163:func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+         .       10ms    164:   if gjson.GetBytes(msg, "type").String() != "message" {
+         .          .    165:           return
+         .          .    166:   }
+         .       10ms    167:   topic := gjson.GetBytes(msg, "topic").String()
+         .          .    168:   if !strings.HasPrefix(topic, "/market/ticker:") {
+         .          .    169:           return
+         .          .    170:   }
+         .          .    171:   symbol := strings.TrimPrefix(topic, "/market/ticker:")
+         .       30ms    172:   data := gjson.GetBytes(msg, "data")
+         .       10ms    173:   bid, ask := data.Get("bestBid").Float(), data.Get("bestAsk").Float()
+         .       30ms    174:   bidSize, askSize := data.Get("bestBidSize").Float(), data.Get("bestAskSize").Float()
+         .          .    175:   if bid == 0 || ask == 0 {
+         .          .    176:           return
+         .          .    177:   }
+         .          .    178:   last := ws.last[symbol]
+         .          .    179:   if last[0] == bid && last[1] == ask {
+         .          .    180:           return
+         .          .    181:   }
+         .          .    182:   ws.last[symbol] = [2]float64{bid, ask}
+         .       40ms    183:   c.out <- &models.MarketData{
+         .          .    184:           Exchange:  "KuCoin",
+         .          .    185:           Symbol:    symbol,
+         .          .    186:           Bid:       bid,
+         .          .    187:           Ask:       ask,
+         .          .    188:           BidSize:   bidSize,
+ROUTINE ======================== crypt_proto/internal/collector.(*kucoinWS).readLoop in /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go
+         0      600ms (flat, cum) 77.92% of Total
+         .          .    152:func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
+         .          .    153:   for {
+         .      470ms    154:           _, msg, err := ws.conn.ReadMessage()
+         .          .    155:           if err != nil {
+         .          .    156:                   log.Printf("[KuCoin WS %d] read error: %v\n", ws.id, err)
+         .          .    157:                   return
+         .          .    158:           }
+         .      130ms    159:           ws.handle(c, msg)
+         .          .    160:   }
+         .          .    161:}
+         .          .    162:
+         .          .    163:func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+         .          .    164:   if gjson.GetBytes(msg, "type").String() != "message" {
+ROUTINE ======================== crypt_proto/internal/queue.(*MemoryStore).Get in /home/gaz358/myprog/crypt_proto/internal/queue/in_memory_queue.go
+         0       10ms (flat, cum)  1.30% of Total
+         .          .    101:func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
+         .          .    102:   key := exchange + "|" + symbol
+         .       10ms    103:   buf, ok := s.buffers[key]
+         .          .    104:   if !ok {
+         .          .    105:           return Quote{}, false
+         .          .    106:   }
+         .          .    107:   return buf.GetLast()
+         .          .    108:}
 (pprof) 
 
