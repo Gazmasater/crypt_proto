@@ -138,3 +138,16 @@ ROUTINE ======================== crypt_proto/internal/queue.NewRingBuffer in /ho
          .          .     37:
 (pprof) 
 
+
+
+type RingBuffer struct {
+    data []Quote
+    size uint64
+    pos  uint64 // atomic
+}
+
+func (r *RingBuffer) Push(q Quote) {
+    i := atomic.AddUint64(&r.pos, 1) - 1
+    r.data[i%r.size] = q
+}
+
