@@ -140,14 +140,117 @@ ROUTINE ======================== crypt_proto/internal/queue.NewRingBuffer in /ho
 
 
 
+package queue
+
+import (
+	"sync/atomic"
+	"time"
+	"unsafe"
+
+	"crypt_proto/pkg/models"
+)
+
+// Quote — отдельная котировка
+type Quote struct {
+	Bid, Ask         float64
+	BidSize, AskSize float64
+	Timestamp        int64
+}
+
+// lock-free ring buffer для одного писателя и многих читателей
 type RingBuffer struct {
-    data []Quote
-    size uint64
-    pos  uint64 // atomic
+	data []*atomic.Pointer[Quote]
+	size int
+	pos  int64 // atomic
+}
+
+func NewRingBuffer(size int) *RingBuffer {
+	r := &RingBuffer{
+		data: make([]*atomic.Pointer[Quote], size),
+		size: size,
+		pos:  0,
+	}
+	for i := 0; i < size; i++ {
+		var ptr atomic.Pointer[Quote]
+		r.data[i] = &ptr
+	}
+	return r
 }
 
 func (r *RingBuffer) Push(q Quote) {
-    i := atomic.AddUint64(&r.pos, 1) - 1
-    r.data[i%r.size] = q
+	idx := int(atomic.LoadInt64(&r.pos)) % r.size
+	atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(r.data[idx])), unsafe.Pointer(&q))
+	atomic.AddInt64(&r.pos, 1)
 }
+
+func (r *RingBuffer) GetLast() (Quote, bool) {
+	curr := atomic.LoadInt64(&r.pos)
+	if curr == 0 {
+		return Quote{}, false
+	}
+	idx := int((curr - 1) % int64(r.size))
+	ptr := atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(r.data[idx])))
+	if ptr == nil {
+		return Quote{}, false
+	}
+	return *(*Quote)(ptr), true
+}
+
+// MemoryStore с lock-free ring buffer
+type MemoryStore struct {
+	buffers map[string]*RingBuffer
+	batch   chan *models.MarketData
+	BufSize int
+}
+
+func NewMemoryStore(bufSize int) *MemoryStore {
+	return &MemoryStore{
+		buffers: make(map[string]*RingBuffer),
+		batch:   make(chan *models.MarketData, 10_000),
+		BufSize: bufSize,
+	}
+}
+
+// Run — писатель, один поток
+func (s *MemoryStore) Run() {
+	for md := range s.batch {
+		s.apply(md)
+	}
+}
+
+func (s *MemoryStore) Push(md *models.MarketData) {
+	select {
+	case s.batch <- md:
+	default:
+		// drop if full
+	}
+}
+
+func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
+	key := exchange + "|" + symbol
+	buf, ok := s.buffers[key]
+	if !ok {
+		return Quote{}, false
+	}
+	return buf.GetLast()
+}
+
+func (s *MemoryStore) apply(md *models.MarketData) {
+	key := md.Exchange + "|" + md.Symbol
+
+	buf, ok := s.buffers[key]
+	if !ok {
+		buf = NewRingBuffer(s.BufSize)
+		s.buffers[key] = buf
+	}
+
+	buf.Push(Quote{
+		Bid:       md.Bid,
+		Ask:       md.Ask,
+		BidSize:   md.BidSize,
+		AskSize:   md.AskSize,
+		Timestamp: time.Now().UnixMilli(),
+	})
+}
+
 
