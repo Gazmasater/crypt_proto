@@ -11,7 +11,7 @@ import (
 	"crypt_proto/pkg/models"
 )
 
-const fee = 0.001
+const feeM = 0.999
 
 type LegIndex struct {
 	Key    string
@@ -130,35 +130,35 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	amount := maxUSDT
 
 	if tri.Legs[0].IsBuy {
-		amount = amount / q[0].Ask * (1 - fee)
+		amount = amount / q[0].Ask * feeM
 	} else {
-		amount = amount * q[0].Bid * (1 - fee)
+		amount = amount * q[0].Bid * feeM
 	}
 
 	if tri.Legs[1].IsBuy {
-		amount = amount / q[1].Ask * (1 - fee)
+		amount = amount / q[1].Ask * feeM
 	} else {
-		amount = amount * q[1].Bid * (1 - fee)
+		amount = amount * q[1].Bid * feeM
 	}
 
 	if tri.Legs[2].IsBuy {
-		amount = amount / q[2].Ask * (1 - fee)
+		amount = amount / q[2].Ask * feeM
 	} else {
-		amount = amount * q[2].Bid * (1 - fee)
+		amount = amount * q[2].Bid * feeM
 	}
 
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
 
-	if profitPct > 0.001 && profitUSDT > 0.02 {
-		msg := fmt.Sprintf(
-			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
-			tri.A, tri.B, tri.C,
-			profitPct*100, maxUSDT, profitUSDT,
-		)
-		log.Println(msg)
-		c.fileLog.Println(msg)
-	}
+	//	if profitPct > 0.0 && profitUSDT > 0.02 {
+	msg := fmt.Sprintf(
+		"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
+		tri.A, tri.B, tri.C,
+		profitPct*100, maxUSDT, profitUSDT,
+	)
+	log.Println(msg)
+	c.fileLog.Println(msg)
+	// }
 }
 
 // CSV без изменений логики, но сразу сохраняем Symbol

@@ -1,7 +1,7 @@
 package queue
 
 import (
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"crypt_proto/pkg/models"
@@ -14,16 +14,16 @@ type Quote struct {
 }
 
 type MemoryStore struct {
-	data  atomic.Value // map[string]Quote
+	mu    sync.RWMutex
+	data  map[string]Quote
 	batch chan *models.MarketData
 }
 
 func NewMemoryStore() *MemoryStore {
-	s := &MemoryStore{
+	return &MemoryStore{
+		data:  make(map[string]Quote),
 		batch: make(chan *models.MarketData, 10_000),
 	}
-	s.data.Store(make(map[string]Quote))
-	return s
 }
 
 // Run обрабатывает входящие данные и обновляет snapshot
@@ -41,26 +41,26 @@ func (s *MemoryStore) Push(md *models.MarketData) {
 	}
 }
 
-// Get snapshot lock-free
+// Get snapshot lock-safe
 func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
-	m := s.data.Load().(map[string]Quote)
-	q, ok := m[exchange+"|"+symbol]
+	s.mu.RLock()
+	q, ok := s.data[exchange+"|"+symbol]
+	s.mu.RUnlock()
 	return q, ok
 }
 
+// apply обновляет тикер на месте без копирования всей карты
 func (s *MemoryStore) apply(md *models.MarketData) {
 	key := md.Exchange + "|" + md.Symbol
 	quote := Quote{
-		Bid: md.Bid, Ask: md.Ask,
-		BidSize: md.BidSize, AskSize: md.AskSize,
+		Bid:       md.Bid,
+		Ask:       md.Ask,
+		BidSize:   md.BidSize,
+		AskSize:   md.AskSize,
 		Timestamp: time.Now().UnixMilli(),
 	}
 
-	oldMap := s.data.Load().(map[string]Quote)
-	newMap := make(map[string]Quote, len(oldMap)+1)
-	for k, v := range oldMap {
-		newMap[k] = v
-	}
-	newMap[key] = quote
-	s.data.Store(newMap)
+	s.mu.Lock()
+	s.data[key] = quote
+	s.mu.Unlock()
 }
