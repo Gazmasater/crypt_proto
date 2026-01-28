@@ -85,87 +85,89 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	const prefixLen = len("/market/ticker:")
+package collector_test
 
-	// достаём топик сразу
-	topic := gjson.GetBytes(msg, "topic").String()
-	if len(topic) <= prefixLen {
-		return
+import (
+	"testing"
+
+	"crypt_proto/internal/collector"
+	"github.com/tidwall/gjson"
+)
+
+// имитируем структуру collector
+type Last struct {
+	Bid float64
+	Ask float64
+}
+
+type kucoinWS struct {
+	last map[string]Last
+}
+
+type KuCoinCollector struct {
+	out chan<- interface{}
+}
+
+var testMsg = []byte(`{
+	"topic": "/market/ticker:BTC-USDT",
+	"data": {
+		"bestBid": 50000.12,
+		"bestAsk": 50001.34,
+		"bestBidSize": 0.5,
+		"bestAskSize": 0.6
 	}
-	symbol := topic[prefixLen:]
+}`)
 
-	// извлекаем bid, ask и размеры одним вызовом
-	values := gjson.GetManyBytes(msg,
-		"data.bestBid",
-		"data.bestAsk",
-		"data.bestBidSize",
-		"data.bestAskSize",
-	)
-	bid := values[0].Float()
-	ask := values[1].Float()
-	bidSize := values[2].Float()
-	askSize := values[3].Float()
+func BenchmarkHandleOld(b *testing.B) {
+	ws := &kucoinWS{last: make(map[string]Last)}
+	c := &KuCoinCollector{}
 
-	if bid == 0 || ask == 0 {
-		return
+	for i := 0; i < b.N; i++ {
+		// старый способ — отдельные вызовы GetBytes
+		data := gjson.GetBytes(testMsg, "data")
+		bid := data.Get("bestBid").Float()
+		ask := data.Get("bestAsk").Float()
+		bidSize := data.Get("bestBidSize").Float()
+		askSize := data.Get("bestAskSize").Float()
+
+		// обновление last
+		ws.last["BTC-USDT"] = Last{Bid: bid, Ask: ask}
+
+		// имитация вывода
+		_ = bidSize
+		_ = askSize
+		_ = c
 	}
+}
 
-	// проверяем, изменились ли цены
-	if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask {
-		return
-	}
+func BenchmarkHandleMany(b *testing.B) {
+	ws := &kucoinWS{last: make(map[string]Last)}
+	c := &KuCoinCollector{}
 
-	// обновляем last
-	ws.last[symbol] = Last{Bid: bid, Ask: ask}
+	for i := 0; i < b.N; i++ {
+		// новый способ — GetManyBytes
+		values := gjson.GetManyBytes(testMsg,
+			"data.bestBid",
+			"data.bestAsk",
+			"data.bestBidSize",
+			"data.bestAskSize",
+		)
+		bid := values[0].Float()
+		ask := values[1].Float()
+		bidSize := values[2].Float()
+		askSize := values[3].Float()
 
-	// отправляем в канал
-	c.out <- &models.MarketData{
-		Exchange: "KuCoin",
-		Symbol:   symbol,
-		Bid:      bid,
-		Ask:      ask,
-		BidSize:  bidSize,
-		AskSize:  askSize,
+		ws.last["BTC-USDT"] = Last{Bid: bid, Ask: ask}
+
+		// имитация вывода
+		_ = bidSize
+		_ = askSize
+		_ = c
 	}
 }
 
 
 
-ROUTINE ======================== crypt_proto/internal/collector.(*kucoinWS).handle in /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go
-         0       60ms (flat, cum)  7.14% of Total
-         .          .    177:func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-         .          .    178:   const prefixLen = len("/market/ticker:")
-         .          .    179:
-         .          .    180:   // достаём топик сразу
-         .       30ms    181:   topic := gjson.GetBytes(msg, "topic").String()
-         .          .    182:   if len(topic) <= prefixLen {
-         .          .    183:           return
-         .          .    184:   }
-         .          .    185:   symbol := topic[prefixLen:]
-         .          .    186:
-         .          .    187:   // извлекаем bid, ask и размеры одним вызовом
-         .       20ms    188:   values := gjson.GetManyBytes(msg,
-         .          .    189:           "data.bestBid",
-         .          .    190:           "data.bestAsk",
-         .          .    191:           "data.bestBidSize",
-         .          .    192:           "data.bestAskSize",
-         .          .    193:   )
-         .          .    194:   bid := values[0].Float()
-         .          .    195:   ask := values[1].Float()
-         .          .    196:   bidSize := values[2].Float()
-         .          .    197:   askSize := values[3].Float()
-         .          .    198:
-         .          .    199:   if bid == 0 || ask == 0 {
-         .          .    200:           return
-         .          .    201:   }
-         .          .    202:
-         .          .    203:   // проверяем, изменились ли цены
-         .       10ms    204:   if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask {
-         .          .    205:           return
-         .          .    206:   }
-         .          .    207:
-         .          .    208:   // обновляем last
-         .          .    209:   ws.last[symbol] = Last{Bid: bid, Ask: ask}
+go test -bench=. ./internal/collector
 
 
