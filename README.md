@@ -125,4 +125,40 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 
 
 
+ROUTINE ======================== crypt_proto/internal/collector.(*kucoinWS).handle in /home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go
+         0      150ms (flat, cum) 15.00% of Total
+         .          .    177:func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+         .          .    178:   root := gjson.ParseBytes(msg)
+         .          .    179:
+         .       50ms    180:   topic := root.Get("topic").String()
+         .          .    181:   const prefix = "/market/ticker:"
+         .          .    182:   if len(topic) <= len(prefix) || topic[:len(prefix)] != prefix {
+         .          .    183:           return
+         .          .    184:   }
+         .          .    185:   symbol := topic[len(prefix):]
+         .          .    186:
+         .       10ms    187:   data := root.Get("data")
+         .       30ms    188:   bid := data.Get("bestBid").Float()
+         .       20ms    189:   ask := data.Get("bestAsk").Float()
+         .          .    190:   if bid == 0 || ask == 0 {
+         .          .    191:           return
+         .          .    192:   }
+         .          .    193:
+         .       10ms    194:   last := ws.last[symbol]
+         .          .    195:   if last.Bid == bid && last.Ask == ask {
+         .          .    196:           return
+         .          .    197:   }
+         .          .    198:
+         .          .    199:   bidSize := data.Get("bestBidSize").Float()
+         .       10ms    200:   askSize := data.Get("bestAskSize").Float()
+         .          .    201:
+         .          .    202:   ws.last[symbol] = Last{Bid: bid, Ask: ask}
+         .          .    203:
+         .       20ms    204:   c.out <- &models.MarketData{
+         .          .    205:           Exchange: "KuCoin",
+         .          .    206:           Symbol:   symbol,
+         .          .    207:           Bid:      bid,
+         .          .    208:           Ask:      ask,
+         .          .    209:           BidSize:  bidSize,
+
 
