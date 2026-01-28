@@ -85,120 +85,46 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-package collector_test
+func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+	const prefixLen = len("/market/ticker:")
 
-import (
-	"testing"
-
-	"github.com/tidwall/gjson"
-)
-
-// структуры, как в collector.go
-type Last struct {
-	Bid float64
-	Ask float64
-}
-
-type kucoinWS struct {
-	last map[string]Last
-}
-
-// пример сообщения от KuCoin
-var sampleMsg = []byte(`{
-	"topic": "/market/ticker:BTC-USDT",
-	"data": {
-		"bestBid": 30000.5,
-		"bestAsk": 30001.5,
-		"bestBidSize": 0.123,
-		"bestAskSize": 0.456
+	// достаём topic сразу
+	topic := gjson.GetBytes(msg, "topic").String()
+	if len(topic) <= prefixLen {
+		return
 	}
-}`)
+	symbol := topic[prefixLen:]
 
-func BenchmarkHandleOld(b *testing.B) {
-	ws := &kucoinWS{last: make(map[string]Last)}
-	for i := 0; i < b.N; i++ {
-		symbol := "BTC-USDT"
-		bid := gjson.GetBytes(sampleMsg, "data.bestBid").Float()
-		ask := gjson.GetBytes(sampleMsg, "data.bestAsk").Float()
-		bidSize := gjson.GetBytes(sampleMsg, "data.bestBidSize").Float()
-		askSize := gjson.GetBytes(sampleMsg, "data.bestAskSize").Float()
+	// достаём данные одного разом
+	data := gjson.GetBytes(msg, "data")
+	bid := data.Get("bestBid").Float()
+	ask := data.Get("bestAsk").Float()
+	if bid == 0 || ask == 0 {
+		return
+	}
 
-		last := ws.last[symbol]
-		if last.Bid == bid && last.Ask == ask {
-			continue
-		}
-		ws.last[symbol] = Last{Bid: bid, Ask: ask}
+	// проверка изменения цен
+	if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask {
+		return
+	}
 
-		_ = bidSize
-		_ = askSize
+	// извлекаем объёмы сразу
+	bidSize := data.Get("bestBidSize").Float()
+	askSize := data.Get("bestAskSize").Float()
+
+	// обновляем last
+	ws.last[symbol] = Last{Bid: bid, Ask: ask}
+
+	// отправка на выход
+	c.out <- &models.MarketData{
+		Exchange: "KuCoin",
+		Symbol:   symbol,
+		Bid:      bid,
+		Ask:      ask,
+		BidSize:  bidSize,
+		AskSize:  askSize,
 	}
 }
-
-func BenchmarkHandleWithData(b *testing.B) {
-	ws := &kucoinWS{last: make(map[string]Last)}
-	for i := 0; i < b.N; i++ {
-		symbol := "BTC-USDT"
-		root := gjson.ParseBytes(sampleMsg)
-		data := root.Get("data")
-		bid := data.Get("bestBid").Float()
-		ask := data.Get("bestAsk").Float()
-		bidSize := data.Get("bestBidSize").Float()
-		askSize := data.Get("bestAskSize").Float()
-
-		last := ws.last[symbol]
-		if last.Bid == bid && last.Ask == ask {
-			continue
-		}
-		ws.last[symbol] = Last{Bid: bid, Ask: ask}
-
-		_ = bidSize
-		_ = askSize
-	}
-}
-
-func BenchmarkHandleGetMany(b *testing.B) {
-	ws := &kucoinWS{last: make(map[string]Last)}
-	for i := 0; i < b.N; i++ {
-		symbol := "BTC-USDT"
-		values := gjson.GetManyBytes(sampleMsg,
-			"data.bestBid",
-			"data.bestAsk",
-			"data.bestBidSize",
-			"data.bestAskSize",
-		)
-		bid := values[0].Float()
-		ask := values[1].Float()
-		bidSize := values[2].Float()
-		askSize := values[3].Float()
-
-		last := ws.last[symbol]
-		if last.Bid == bid && last.Ask == ask {
-			continue
-		}
-		ws.last[symbol] = Last{Bid: bid, Ask: ask}
-
-		_ = bidSize
-		_ = askSize
-	}
-}
-
-
-
-
-go test -bench=. ./internal/collector/collector_test
-
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go test -bench=. ./internal/collector/collector_test
-goos: linux
-goarch: amd64
-pkg: crypt_proto/internal/collector/collector_test
-cpu: 11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz
-BenchmarkHandleOld-8             1592011               738.7 ns/op
-BenchmarkHandleWithData-8        1787144               673.4 ns/op
-BenchmarkHandleGetMany-8         1378279               873.0 ns/op
-PASS
-ok      crypt_proto/internal/collector/collector_test   5.914s
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ 
 
 
 
