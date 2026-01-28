@@ -114,18 +114,29 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) 
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+
 	var wsList []*kucoinWS
 	for i := 0; i < len(symbols); i += maxSubsPerWS {
 		end := i + maxSubsPerWS
 		if end > len(symbols) {
 			end = len(symbols)
 		}
+
 		wsList = append(wsList, &kucoinWS{
 			id:      len(wsList),
 			symbols: symbols[i:end],
-			last:    make(map[string][2]float64),
+			last:    make(map[string]Last),
 		})
 	}
+
+	c := &KuCoinCollector{
+		ctx:    ctx,
+		cancel: cancel,
+		wsList: wsList,
+	}
+
+	return c, symbols, nil
+}
 
 
 
