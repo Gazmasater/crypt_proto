@@ -85,22 +85,17 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-type Last struct {
-	Bid float64
-	Ask float64
-}
-
 type kucoinWS struct {
-	id   int
-	conn *websocket.Conn
+	id      int
+	conn    *websocket.Conn
+	symbols []string
+
 	last map[string]Last
 }
 
-
-ws := &kucoinWS{
-	id:   i,
-	conn: conn,
-	last: make(map[string]Last),
+type Last struct {
+	Bid float64
+	Ask float64
 }
 
 
@@ -138,54 +133,6 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) 
 	return c, symbols, nil
 }
 
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingLitField",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingLitField"
-		}
-	},
-	"severity": 8,
-	"message": "unknown field symbols in struct literal of type kucoinWS",
-	"source": "compiler",
-	"startLineNumber": 64,
-	"startColumn": 4,
-	"endLineNumber": 64,
-	"endColumn": 11,
-	"modelVersionId": 3,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "ws.symbols undefined (type *kucoinWS has no field or method symbols)",
-	"source": "compiler",
-	"startLineNumber": 145,
-	"startColumn": 23,
-	"endLineNumber": 145,
-	"endColumn": 30,
-	"modelVersionId": 3,
-	"origin": "extHost1"
-}]
 
 
 
