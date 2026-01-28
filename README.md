@@ -85,114 +85,24 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	if gjson.GetBytes(msg, "type").String() != "message" {
-		return
-	}
+type Last struct {
+	Bid float64
+	Ask float64
+}
 
-	topic := gjson.GetBytes(msg, "topic").String()
-	const prefix = "/market/ticker:"
-	if len(topic) <= len(prefix) || topic[:len(prefix)] != prefix {
-		return
-	}
-	symbol := topic[len(prefix):]
-
-	bid := gjson.GetBytes(msg, "data.bestBid").Float()
-	ask := gjson.GetBytes(msg, "data.bestAsk").Float()
-	if bid == 0 || ask == 0 {
-		return
-	}
-
-	last := ws.last[symbol]
-	if last.Bid == bid && last.Ask == ask {
-		return
-	}
-
-	// если реально нужны
-	bidSize := gjson.GetBytes(msg, "data.bestBidSize").Float()
-	askSize := gjson.GetBytes(msg, "data.bestAskSize").Float()
-
-	ws.last[symbol] = Last{Bid: bid, Ask: ask}
-
-	c.out <- &models.MarketData{
-		Exchange: "KuCoin",
-		Symbol:   symbol,
-		Bid:      bid,
-		Ask:      ask,
-		BidSize:  bidSize,
-		AskSize:  askSize,
-	}
+type kucoinWS struct {
+	id   int
+	conn *websocket.Conn
+	last map[string]Last
 }
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "last.Bid undefined (type [2]float64 has no field or method Bid)",
-	"source": "compiler",
-	"startLineNumber": 182,
-	"startColumn": 10,
-	"endLineNumber": 182,
-	"endColumn": 13,
-	"modelVersionId": 2,
-	"origin": "extHost1"
-}]
+ws := &kucoinWS{
+	id:   i,
+	conn: conn,
+	last: make(map[string]Last),
+}
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "last.Ask undefined (type [2]float64 has no field or method Ask)",
-	"source": "compiler",
-	"startLineNumber": 182,
-	"startColumn": 29,
-	"endLineNumber": 182,
-	"endColumn": 32,
-	"modelVersionId": 2,
-	"origin": "extHost1"
-}]
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/kucoin_collector.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: Last",
-	"source": "compiler",
-	"startLineNumber": 190,
-	"startColumn": 20,
-	"endLineNumber": 190,
-	"endColumn": 24,
-	"modelVersionId": 2,
-	"origin": "extHost1"
-}]
+
+
