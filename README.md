@@ -86,56 +86,38 @@ GOMAXPROCS=8 go run -race main.go
 
 
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	// проверка типа сообщения
+	// быстро проверяем тип сообщения
 	if !bytes.Contains(msg, []byte(`"type":"message"`)) {
 		return
 	}
 
 	// ищем topic
 	const prefix = `/market/ticker:`
-	topicKey := []byte(`"topic":"`)
-	topicIdx := bytes.Index(msg, topicKey)
-	if topicIdx == -1 {
+	topic := parseString(msg, `"topic":"`)
+	if topic == "" || !strings.HasPrefix(topic, prefix) {
 		return
 	}
-	topicStart := topicIdx + len(topicKey)
-	topicEnd := bytes.IndexByte(msg[topicStart:], '"')
-	if topicEnd == -1 {
-		return
-	}
-	topic := msg[topicStart : topicStart+topicEnd]
-	if !bytes.HasPrefix(topic, []byte(prefix)) {
-		return
-	}
-	symbol := string(topic[len(prefix):])
+	symbol := strings.TrimSpace(topic[len(prefix):])
 
-	// ищем поле "data": {...}
-	dataKey := []byte(`"data":`)
-	dataIdx := bytes.Index(msg, dataKey)
-	if dataIdx == -1 {
-		return
-	}
-	dataStart := dataIdx + len(dataKey)
-
-	// парсим числа из блока data
-	bid := parseFloat(msg[dataStart:], []byte(`"bestBid":`))
-	ask := parseFloat(msg[dataStart:], []byte(`"bestAsk":`))
-	bidSize := parseFloat(msg[dataStart:], []byte(`"bestBidSize":`))
-	askSize := parseFloat(msg[dataStart:], []byte(`"bestAskSize":`))
+	// парсим числа
+	bid := parseNumber(msg, `"bestBid":`)
+	ask := parseNumber(msg, `"bestAsk":`)
+	bidSize := parseNumber(msg, `"bestBidSize":`)
+	askSize := parseNumber(msg, `"bestAskSize":`)
 
 	if bid == 0 || ask == 0 {
 		return
 	}
 
-	// проверка на изменения
+	// проверка изменений
 	last := ws.last[symbol]
 	if last[0] == bid && last[1] == ask {
 		return
 	}
 	ws.last[symbol] = [2]float64{bid, ask}
 
-	// отправляем в канал
-	c.out <- &models.MarketData{
+	// формируем структуру
+	md := &models.MarketData{
 		Exchange:  "KuCoin",
 		Symbol:    symbol,
 		Bid:       bid,
@@ -144,18 +126,36 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		AskSize:   askSize,
 		Timestamp: time.Now().UnixMilli(),
 	}
+
+	// отправка в канал без блокировки
+	select {
+	case c.out <- md:
+	default:
+		log.Printf("[KuCoin WS %d] drop MarketData %s\n", ws.id, symbol)
+	}
 }
 
-// parseFloat ищет число после ключа, например `"bestBid":123.45`
-// работает с []byte, без аллокаций кроме strconv.ParseFloat
-func parseFloat(msg []byte, key []byte) float64 {
-	idx := bytes.Index(msg, key)
+// parseString возвращает строку после ключа, до следующей кавычки
+func parseString(msg []byte, key string) string {
+	idx := bytes.Index(msg, []byte(key))
+	if idx == -1 {
+		return ""
+	}
+	start := idx + len(key)
+	end := bytes.IndexByte(msg[start:], '"')
+	if end == -1 {
+		return ""
+	}
+	return string(msg[start : start+end])
+}
+
+// parseNumber возвращает число float64 после ключа
+func parseNumber(msg []byte, key string) float64 {
+	idx := bytes.Index(msg, []byte(key))
 	if idx == -1 {
 		return 0
 	}
 	start := idx + len(key)
-
-	// ищем конец числа — любой символ, который не цифра и не точка
 	end := start
 	for end < len(msg) && ((msg[end] >= '0' && msg[end] <= '9') || msg[end] == '.') {
 		end++
@@ -163,11 +163,7 @@ func parseFloat(msg []byte, key []byte) float64 {
 	if end == start {
 		return 0
 	}
-
-	val, err := strconv.ParseFloat(string(msg[start:end]), 64)
-	if err != nil {
-		return 0
-	}
+	val, _ := strconv.ParseFloat(string(msg[start:end]), 64)
 	return val
 }
 
