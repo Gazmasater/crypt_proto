@@ -1097,4 +1097,54 @@ func main() {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$    go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/profile?seconds=30
+Saved profile in /home/gaz358/pprof/pprof.arb.samples.cpu.287.pb.gz
+File: arb
+Build ID: 260176f53a824722b106ffe0a6c1d3e62bdd66cb
+Type: cpu
+Time: 2026-01-28 03:01:55 MSK
+Duration: 30.01s, Total samples = 890ms ( 2.97%)
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 560ms, 62.92% of 890ms total
+Showing top 10 nodes out of 107
+      flat  flat%   sum%        cum   cum%
+     320ms 35.96% 35.96%      320ms 35.96%  internal/runtime/syscall.Syscall6
+      70ms  7.87% 43.82%       70ms  7.87%  runtime.futex
+      30ms  3.37% 47.19%       30ms  3.37%  crypto/tls.(*halfConn).explicitNonceLen
+      30ms  3.37% 50.56%      120ms 13.48%  runtime.netpoll
+      20ms  2.25% 52.81%       30ms  3.37%  github.com/tidwall/gjson.Get
+      20ms  2.25% 55.06%       20ms  2.25%  memeqbody
+      20ms  2.25% 57.30%       50ms  5.62%  runtime.gcDrain
+      20ms  2.25% 59.55%       20ms  2.25%  runtime.gopark
+      20ms  2.25% 61.80%      210ms 23.60%  runtime.schedule
+      10ms  1.12% 62.92%      450ms 50.56%  bufio.(*Reader).Peek
+(pprof) 
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ go tool pprof http://localhost:6060/debug/pprof/heap
+Fetching profile over HTTP from http://localhost:6060/debug/pprof/heap
+Saved profile in /home/gaz358/pprof/pprof.arb.alloc_objects.alloc_space.inuse_objects.inuse_space.009.pb.gz
+File: arb
+Build ID: 260176f53a824722b106ffe0a6c1d3e62bdd66cb
+Type: inuse_space
+Time: 2026-01-28 03:03:25 MSK
+Entering interactive mode (type "help" for commands, "o" for options)
+(pprof) top
+Showing nodes accounting for 9279.64kB, 100% of 9279.64kB total
+Showing top 10 nodes out of 48
+      flat  flat%   sum%        cum   cum%
+ 4688.85kB 50.53% 50.53%  4688.85kB 50.53%  crypt_proto/internal/queue.NewRingBuffer (inline)
+    2052kB 22.11% 72.64%     2052kB 22.11%  runtime.allocm
+ 1000.34kB 10.78% 83.42%  1514.72kB 16.32%  main.main
+  514.38kB  5.54% 88.96%   514.38kB  5.54%  github.com/gorilla/websocket.newConn
+  512.05kB  5.52% 94.48%   512.05kB  5.52%  runtime.acquireSudog
+  512.02kB  5.52%   100%   512.02kB  5.52%  crypto/internal/fips140/nistec.NewP384Point
+         0     0%   100%   514.38kB  5.54%  crypt_proto/internal/collector.(*KuCoinCollector).Start
+         0     0%   100%   514.38kB  5.54%  crypt_proto/internal/collector.(*kucoinWS).connect
+         0     0%   100%  4688.85kB 50.53%  crypt_proto/internal/queue.(*MemoryStore).Run
+         0     0%   100%  4688.85kB 50.53%  crypt_proto/internal/queue.(*MemoryStore).apply
+(pprof) 
+
 
