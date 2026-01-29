@@ -175,32 +175,51 @@ func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
 }
 
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	root := gjson.ParseBytes(msg)
-
-	topic := root.Get("topic").String()
 	const prefix = "/market/ticker:"
-	if len(topic) <= len(prefix) || topic[:len(prefix)] != prefix {
+	const prefixLen = len(prefix)
+
+	// topic без аллокации строки
+	topicRes := gjson.GetBytes(msg, "topic")
+	if !topicRes.Exists() {
 		return
 	}
-	symbol := topic[len(prefix):]
 
-	data := root.Get("data")
+	raw := topicRes.Raw // строка JSON: "/market/ticker:BTC-USDT"
+	// raw всегда в кавычках
+	if len(raw) <= prefixLen+2 {
+		return
+	}
+
+	// проверяем префикс без создания строки
+	// raw[1:] — пропускаем первую кавычку
+	if raw[1:1+prefixLen] != prefix {
+		return
+	}
+
+	// извлекаем symbol (без кавычек)
+	symbol := raw[1+prefixLen : len(raw)-1]
+
+	// данные
+	data := gjson.GetBytes(msg, "data")
 	bid := data.Get("bestBid").Float()
 	ask := data.Get("bestAsk").Float()
 	if bid == 0 || ask == 0 {
 		return
 	}
 
-	last := ws.last[symbol]
-	if last.Bid == bid && last.Ask == ask {
+	// проверка изменения цен
+	if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask {
 		return
 	}
 
+	// объёмы
 	bidSize := data.Get("bestBidSize").Float()
 	askSize := data.Get("bestAskSize").Float()
 
+	// обновляем last
 	ws.last[symbol] = Last{Bid: bid, Ask: ask}
 
+	// отправка на выход
 	c.out <- &models.MarketData{
 		Exchange: "KuCoin",
 		Symbol:   symbol,

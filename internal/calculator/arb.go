@@ -150,15 +150,15 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
 
-	//	if profitPct > 0.0 && profitUSDT > 0.02 {
-	msg := fmt.Sprintf(
-		"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
-		tri.A, tri.B, tri.C,
-		profitPct*100, maxUSDT, profitUSDT,
-	)
-	log.Println(msg)
-	c.fileLog.Println(msg)
-	// }
+	if profitPct > 0.001 && profitUSDT > 0.02 {
+		msg := fmt.Sprintf(
+			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
+			tri.A, tri.B, tri.C,
+			profitPct*100, maxUSDT, profitUSDT,
+		)
+		log.Println(msg)
+		c.fileLog.Println(msg)
+	}
 }
 
 // CSV без изменений логики, но сразу сохраняем Symbol
