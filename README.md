@@ -86,16 +86,31 @@ GOMAXPROCS=8 go run -race main.go
 
 
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	const prefixLen = len("/market/ticker:")
+	const prefix = "/market/ticker:"
+	const prefixLen = len(prefix)
 
-	// достаём topic сразу
-	topic := gjson.GetBytes(msg, "topic").String()
-	if len(topic) <= prefixLen {
+	// topic без аллокации строки
+	topicRes := gjson.GetBytes(msg, "topic")
+	if !topicRes.Exists() {
 		return
 	}
-	symbol := topic[prefixLen:]
 
-	// достаём данные одного разом
+	raw := topicRes.Raw // строка JSON: "/market/ticker:BTC-USDT"
+	// raw всегда в кавычках
+	if len(raw) <= prefixLen+2 {
+		return
+	}
+
+	// проверяем префикс без создания строки
+	// raw[1:] — пропускаем первую кавычку
+	if raw[1:1+prefixLen] != prefix {
+		return
+	}
+
+	// извлекаем symbol (без кавычек)
+	symbol := raw[1+prefixLen : len(raw)-1]
+
+	// данные
 	data := gjson.GetBytes(msg, "data")
 	bid := data.Get("bestBid").Float()
 	ask := data.Get("bestAsk").Float()
@@ -108,7 +123,7 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	// извлекаем объёмы сразу
+	// объёмы
 	bidSize := data.Get("bestBidSize").Float()
 	askSize := data.Get("bestAskSize").Float()
 
