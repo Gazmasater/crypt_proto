@@ -150,7 +150,7 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
 
-	if profitPct > 0.001 && profitUSDT > 0.02 {
+	if profitPct > 0.001 && profitUSDT > 20 {
 		msg := fmt.Sprintf(
 			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
 			tri.A, tri.B, tri.C,
