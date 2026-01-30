@@ -85,7 +85,7 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-package collector
+package main
 
 import (
 	"context"
@@ -93,6 +93,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"crypt_proto/pkg/models"
@@ -106,7 +107,7 @@ type Last struct {
 	Ask float64
 }
 
-type KuCoinCollector struct {
+type KuCoin_Collector struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	ws     *kucoinWS
@@ -119,20 +120,20 @@ type kucoinWS struct {
 	last    map[string]Last
 }
 
-func NewKuCoinCollector(symbols []string) (*KuCoinCollector, error) {
+func NewKuCoinCollector(symbols []string) (*KuCoin_Collector, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ws := &kucoinWS{
 		symbols: symbols,
 		last:    make(map[string]Last),
 	}
-	return &KuCoinCollector{
+	return &KuCoin_Collector{
 		ctx:    ctx,
 		cancel: cancel,
 		ws:     ws,
 	}, nil
 }
 
-func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
+func (c *KuCoin_Collector) Start(out chan<- *models.MarketData) error {
 	c.out = out
 	if err := c.ws.connect(); err != nil {
 		return err
@@ -144,7 +145,7 @@ func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	return nil
 }
 
-func (c *KuCoinCollector) Stop() error {
+func (c *KuCoin_Collector) Stop() error {
 	c.cancel()
 	if c.ws.conn != nil {
 		return c.ws.conn.Close()
@@ -209,7 +210,7 @@ func (ws *kucoinWS) pingLoop() {
 	}
 }
 
-func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
+func (ws *kucoinWS) readLoop(c *KuCoin_Collector) {
 	for {
 		_, msg, err := ws.conn.ReadMessage()
 		if err != nil {
@@ -220,7 +221,7 @@ func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
 	}
 }
 
-func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+func (ws *kucoinWS) handle(c *KuCoin_Collector, msg []byte) {
 	topic := gjson.GetBytes(msg, "topic").String()
 	if topic == "" {
 		return
@@ -251,19 +252,6 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 }
 
-
-
-package main
-
-import (
-	"log"
-	"os"
-	"time"
-
-	"crypt_proto/pkg/collector"
-	"crypt_proto/pkg/models"
-)
-
 func main() {
 	btcBuf := NewRingBuffer(120)
 	ethBuf := NewRingBuffer(120)
@@ -276,7 +264,7 @@ func main() {
 
 	out := make(chan *models.MarketData, 1000)
 
-	coll, err := collector.NewKuCoinCollector([]string{"BTC-USDT", "ETH-USDT"})
+	coll, err := NewKuCoinCollector([]string{"BTC-USDT", "ETH-USDT"})
 	if err != nil {
 		panic(err)
 	}
@@ -310,3 +298,75 @@ func main() {
 	}
 }
 
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: NewRingBuffer",
+	"source": "compiler",
+	"startLineNumber": 169,
+	"startColumn": 12,
+	"endLineNumber": 169,
+	"endColumn": 25,
+	"modelVersionId": 40,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: CheckSignal",
+	"source": "compiler",
+	"startLineNumber": 204,
+	"startColumn": 5,
+	"endLineNumber": 204,
+	"endColumn": 16,
+	"modelVersionId": 40,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: LogMetrics",
+	"source": "compiler",
+	"startLineNumber": 208,
+	"startColumn": 5,
+	"endLineNumber": 208,
+	"endColumn": 15,
+	"modelVersionId": 40,
+	"origin": "extHost1"
+}]
