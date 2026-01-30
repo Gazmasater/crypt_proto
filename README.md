@@ -397,4 +397,16 @@ func main() {
 
 
 
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ cd cmd/stat_arb
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/stat_arb$ go run .
+02:46:07 loading history...
+panic: runtime error: index out of range [-20]
+
+goroutine 1 [running]:
+main.loadHistory({0x73023f?, 0x0?})
+        /home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go:143 +0x689
+main.main()
+        /home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go:165 +0x125
+exit status 2
+
 
