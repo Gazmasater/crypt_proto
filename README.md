@@ -307,3 +307,11 @@ func main() {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/stat_arb$ go run .
+panic: json: cannot unmarshal object into Go value of type [][]string
+
+goroutine 1 [running]:
+main.main()
+        /home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go:178 +0x60a
+exit status 2
+
