@@ -134,25 +134,32 @@ func getKlines(symbol string, interval string, startAt, endAt int64) ([]Candle, 
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	body, _ := ioutil.ReadAll(resp.Body)
 
-	var data [][]string
-	if err := json.Unmarshal(body, &data); err != nil {
+	// Новая структура KuCoin API
+	var result struct {
+		Code string       `json:"code"`
+		Data [][]string   `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
 
-	candles := make([]Candle, 0, len(data))
-	for _, item := range data {
+	candles := make([]Candle, 0, len(result.Data))
+	for _, item := range result.Data {
 		var ts int64
 		var closePrice float64
 		ts, _ = strconv.ParseInt(item[0], 10, 64)
 		closePrice, _ = strconv.ParseFloat(item[2], 64)
 		candles = append(candles, Candle{Time: ts, Close: closePrice})
 	}
+
 	return candles, nil
 }
 
-// Получаем последнюю цену (level1)
+// Получаем последнюю цену (Level1)
 func getLastPrice(symbol string) (float64, error) {
 	url := fmt.Sprintf("https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=%s", symbol)
 	resp, err := http.Get(url)
@@ -160,6 +167,7 @@ func getLastPrice(symbol string) (float64, error) {
 		return 0, err
 	}
 	defer resp.Body.Close()
+
 	body, _ := ioutil.ReadAll(resp.Body)
 
 	var result struct {
@@ -306,12 +314,4 @@ func main() {
 	}
 }
 
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/stat_arb$ go run .
-panic: json: cannot unmarshal object into Go value of type [][]string
-
-goroutine 1 [running]:
-main.main()
-        /home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go:178 +0x60a
-exit status 2
 
