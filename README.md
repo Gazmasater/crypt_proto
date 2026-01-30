@@ -92,69 +92,167 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"time"
 
-	"crypt_proto/pkg/models"
-
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
 )
+
+/* =======================
+   DATA STRUCTURES
+======================= */
+
+type MarketData struct {
+	Symbol string
+	Bid    float64
+	Ask    float64
+}
 
 type Last struct {
 	Bid float64
 	Ask float64
 }
 
-type KuCoin_Collector struct {
+/* =======================
+   RING BUFFER
+======================= */
+
+type RingBuffer struct {
+	data []float64
+	size int
+}
+
+func NewRingBuffer(size int) *RingBuffer {
+	return &RingBuffer{
+		data: make([]float64, 0, size),
+		size: size,
+	}
+}
+
+func (r *RingBuffer) Add(v float64) {
+	if len(r.data) < r.size {
+		r.data = append(r.data, v)
+		return
+	}
+	copy(r.data, r.data[1:])
+	r.data[len(r.data)-1] = v
+}
+
+func (r *RingBuffer) Values() []float64 { return r.data }
+func (r *RingBuffer) Len() int          { return len(r.data) }
+
+/* =======================
+   MATH
+======================= */
+
+func Correlation(x, y []float64) float64 {
+	if len(x) != len(y) {
+		return 0
+	}
+	n := float64(len(x))
+	var sx, sy, sxy, sx2, sy2 float64
+
+	for i := range x {
+		sx += x[i]
+		sy += y[i]
+		sxy += x[i] * y[i]
+		sx2 += x[i] * x[i]
+		sy2 += y[i] * y[i]
+	}
+
+	num := n*sxy - sx*sy
+	den := math.Sqrt((n*sx2-sx*sx)*(n*sy2-sy*sy))
+	if den == 0 {
+		return 0
+	}
+	return num / den
+}
+
+/* =======================
+   SIGNAL LOGIC
+======================= */
+
+func CheckSignal(btc, eth *RingBuffer, spreadPct, minCorr float64, f *os.File) {
+	b := btc.Values()
+	e := eth.Values()
+
+	corr := Correlation(b, e)
+	if corr < minCorr {
+		return
+	}
+
+	curCoef := b[len(b)-1] / e[len(e)-1]
+
+	minC, maxC := curCoef, curCoef
+	for i := range b {
+		c := b[i] / e[i]
+		if c < minC {
+			minC = c
+		}
+		if c > maxC {
+			maxC = c
+		}
+	}
+
+	mid := (minC + maxC) / 2
+	dev := (curCoef - mid) / mid * 100
+
+	if math.Abs(dev) < spreadPct {
+		return
+	}
+
+	dir := "BUY BTC / SELL ETH"
+	if dev > 0 {
+		dir = "SELL BTC / BUY ETH"
+	}
+
+	fmt.Fprintf(
+		f,
+		"[SIGNAL] %s | coef=%.5f | dev=%.2f%% | corr=%.3f\n",
+		dir, curCoef, dev, corr,
+	)
+}
+
+func LogMetrics(btc, eth *RingBuffer, f *os.File) {
+	b := btc.Values()
+	e := eth.Values()
+
+	corr := Correlation(b, e)
+	coef := b[len(b)-1] / e[len(e)-1]
+
+	fmt.Fprintf(
+		f,
+		"[METRICS] corr=%.3f | coef=%.5f\n",
+		corr, coef,
+	)
+}
+
+/* =======================
+   KUCOIN WS
+======================= */
+
+type KuCoin struct {
 	ctx    context.Context
 	cancel context.CancelFunc
-	ws     *kucoinWS
-	out    chan<- *models.MarketData
+	conn   *websocket.Conn
+	last   map[string]Last
+	out    chan<- MarketData
 }
 
-type kucoinWS struct {
-	conn    *websocket.Conn
-	symbols []string
-	last    map[string]Last
-}
-
-func NewKuCoinCollector(symbols []string) (*KuCoin_Collector, error) {
+func NewKuCoin(out chan<- MarketData) *KuCoin {
 	ctx, cancel := context.WithCancel(context.Background())
-	ws := &kucoinWS{
-		symbols: symbols,
-		last:    make(map[string]Last),
-	}
-	return &KuCoin_Collector{
+	return &KuCoin{
 		ctx:    ctx,
 		cancel: cancel,
-		ws:     ws,
-	}, nil
-}
-
-func (c *KuCoin_Collector) Start(out chan<- *models.MarketData) error {
-	c.out = out
-	if err := c.ws.connect(); err != nil {
-		return err
+		last:   make(map[string]Last),
+		out:    out,
 	}
-	go c.ws.readLoop(c)
-	go c.ws.subscribeLoop()
-	go c.ws.pingLoop()
-	log.Println("[KuCoin] WS started")
-	return nil
 }
 
-func (c *KuCoin_Collector) Stop() error {
-	c.cancel()
-	if c.ws.conn != nil {
-		return c.ws.conn.Close()
-	}
-	return nil
-}
-
-// ======== WS методы ========
-func (ws *kucoinWS) connect() error {
+func (k *KuCoin) Start() error {
 	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -164,209 +262,123 @@ func (ws *kucoinWS) connect() error {
 
 	var r struct {
 		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
+			Token string `json:"token"`
+			IS    []struct {
 				Endpoint string `json:"endpoint"`
 			} `json:"instanceServers"`
 		} `json:"data"`
 	}
+	json.NewDecoder(resp.Body).Decode(&r)
 
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return err
-	}
-
-	url := fmt.Sprintf(
-		"%s?token=%s&connectId=%d",
-		r.Data.InstanceServers[0].Endpoint,
-		r.Data.Token,
-		time.Now().UnixNano(),
-	)
+	url := fmt.Sprintf("%s?token=%s&connectId=%d",
+		r.Data.IS[0].Endpoint, r.Data.Token, time.Now().UnixNano())
 
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		return err
 	}
-	ws.conn = conn
-	log.Println("[KuCoin WS] connected")
-	return nil
-}
+	k.conn = conn
 
-func (ws *kucoinWS) subscribeLoop() {
-	for _, s := range ws.symbols {
-		_ = ws.conn.WriteJSON(map[string]any{
+	sub := func(sym string) {
+		conn.WriteJSON(map[string]any{
 			"id":       time.Now().UnixNano(),
 			"type":     "subscribe",
-			"topic":    "/market/ticker:" + s,
+			"topic":    "/market/ticker:" + sym,
 			"response": true,
 		})
 	}
+
+	sub("BTC-USDT")
+	sub("ETH-USDT")
+
+	go k.read()
+	go k.ping()
+
+	return nil
 }
 
-func (ws *kucoinWS) pingLoop() {
+func (k *KuCoin) ping() {
 	t := time.NewTicker(20 * time.Second)
-	defer t.Stop()
 	for range t.C {
-		_ = ws.conn.WriteJSON(map[string]any{"id": time.Now().UnixNano(), "type": "ping"})
+		k.conn.WriteJSON(map[string]any{"type": "ping"})
 	}
 }
 
-func (ws *kucoinWS) readLoop(c *KuCoin_Collector) {
+func (k *KuCoin) read() {
 	for {
-		_, msg, err := ws.conn.ReadMessage()
+		_, msg, err := k.conn.ReadMessage()
 		if err != nil {
-			log.Println("[KuCoin WS] read error:", err)
+			log.Println("ws error:", err)
 			return
 		}
-		ws.handle(c, msg)
+
+		topic := gjson.GetBytes(msg, "topic").String()
+		if topic == "" {
+			continue
+		}
+
+		sym := topic[len("/market/ticker:"):]
+		d := gjson.GetBytes(msg, "data")
+		bid := d.Get("bestBid").Float()
+		ask := d.Get("bestAsk").Float()
+		if bid == 0 || ask == 0 {
+			continue
+		}
+
+		last := k.last[sym]
+		if last.Bid == bid && last.Ask == ask {
+			continue
+		}
+		k.last[sym] = Last{bid, ask}
+
+		k.out <- MarketData{Symbol: sym, Bid: bid, Ask: ask}
 	}
 }
 
-func (ws *kucoinWS) handle(c *KuCoin_Collector, msg []byte) {
-	topic := gjson.GetBytes(msg, "topic").String()
-	if topic == "" {
-		return
-	}
-
-	symbol := topic[len("/market/ticker:"):]
-	data := gjson.GetBytes(msg, "data")
-	bid := data.Get("bestBid").Float()
-	ask := data.Get("bestAsk").Float()
-	if bid == 0 || ask == 0 {
-		return
-	}
-
-	last, ok := ws.last[symbol]
-	if ok && last.Bid == bid && last.Ask == ask {
-		return
-	}
-
-	ws.last[symbol] = Last{Bid: bid, Ask: ask}
-
-	c.out <- &models.MarketData{
-		Exchange: "KuCoin",
-		Symbol:   symbol,
-		Bid:      bid,
-		Ask:      ask,
-		BidSize:  data.Get("bestBidSize").Float(),
-		AskSize:  data.Get("bestAskSize").Float(),
-	}
-}
+/* =======================
+   MAIN
+======================= */
 
 func main() {
-	btcBuf := NewRingBuffer(120)
-	ethBuf := NewRingBuffer(120)
+	btc := NewRingBuffer(120)
+	eth := NewRingBuffer(120)
 
-	f, err := os.OpenFile("signals.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		panic(err)
-	}
+	f, _ := os.OpenFile("signals.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	defer f.Close()
 
-	out := make(chan *models.MarketData, 1000)
+	out := make(chan MarketData, 1000)
 
-	coll, err := NewKuCoinCollector([]string{"BTC-USDT", "ETH-USDT"})
-	if err != nil {
+	kc := NewKuCoin(out)
+	if err := kc.Start(); err != nil {
 		panic(err)
 	}
 
-	if err := coll.Start(out); err != nil {
-		panic(err)
-	}
-	defer coll.Stop()
-
-	spreadThresholdPct := 0.6
-	minCorr := 0.85
 	logTicker := time.NewTicker(5 * time.Minute)
+
+	const (
+		spreadPct = 0.6
+		minCorr   = 0.85
+	)
 
 	for {
 		select {
 		case md := <-out:
-			switch md.Symbol {
-			case "BTC-USDT":
-				btcBuf.Add(md.Bid)
-			case "ETH-USDT":
-				ethBuf.Add(md.Bid)
+			if md.Symbol == "BTC-USDT" {
+				btc.Add(md.Bid)
 			}
-			if btcBuf.Len() >= 120 && ethBuf.Len() >= 120 {
-				CheckSignal(btcBuf, ethBuf, spreadThresholdPct, minCorr, f)
+			if md.Symbol == "ETH-USDT" {
+				eth.Add(md.Bid)
 			}
+
+			if btc.Len() == 120 && eth.Len() == 120 {
+				CheckSignal(btc, eth, spreadPct, minCorr, f)
+			}
+
 		case <-logTicker.C:
-			if btcBuf.Len() >= 120 && ethBuf.Len() >= 120 {
-				LogMetrics(btcBuf, ethBuf, f)
+			if btc.Len() == 120 && eth.Len() == 120 {
+				LogMetrics(btc, eth, f)
 			}
 		}
 	}
 }
 
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: NewRingBuffer",
-	"source": "compiler",
-	"startLineNumber": 169,
-	"startColumn": 12,
-	"endLineNumber": 169,
-	"endColumn": 25,
-	"modelVersionId": 40,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: CheckSignal",
-	"source": "compiler",
-	"startLineNumber": 204,
-	"startColumn": 5,
-	"endLineNumber": 204,
-	"endColumn": 16,
-	"modelVersionId": 40,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "UndeclaredName",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "UndeclaredName"
-		}
-	},
-	"severity": 8,
-	"message": "undefined: LogMetrics",
-	"source": "compiler",
-	"startLineNumber": 208,
-	"startColumn": 5,
-	"endLineNumber": 208,
-	"endColumn": 15,
-	"modelVersionId": 40,
-	"origin": "extHost1"
-}]
