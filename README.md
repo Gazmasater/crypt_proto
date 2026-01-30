@@ -164,7 +164,7 @@ func Correlation(x, y []float64) float64 {
 	}
 
 	num := n*sxy - sx*sy
-	den := math.Sqrt((n*sx2-sx*sx)*(n*sy2-sy*sy))
+	den := math.Sqrt((n*sx2 - sx*sx) * (n*sy2 - sy*sy))
 	if den == 0 {
 		return 0
 	}
@@ -321,6 +321,7 @@ func (k *KuCoin) read() {
 		d := gjson.GetBytes(msg, "data")
 		bid := d.Get("bestBid").Float()
 		ask := d.Get("bestAsk").Float()
+
 		if bid == 0 || ask == 0 {
 			continue
 		}
@@ -353,7 +354,7 @@ func main() {
 		panic(err)
 	}
 
-	logTicker := time.NewTicker(5 * time.Minute)
+	logTicker := time.NewTicker(1 * time.Minute)
 
 	const (
 		spreadPct = 0.6
@@ -381,4 +382,5 @@ func main() {
 		}
 	}
 }
+
 
