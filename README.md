@@ -342,3 +342,8 @@ func main() {
 	}
 }
 
+
+
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/stat_arb$ go run .
+[22:50] Corr=0.96949 | CurrentCoef=30.72666 | MinCoef=30.54030 | MaxCoef=31.00415 | Spread=0.00000
+[22:50] NO SIGNAL | Coef=30.72666 | Corr=0.96949 | Spread=0.00000
