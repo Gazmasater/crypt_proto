@@ -93,6 +93,7 @@ import (
 	"io/ioutil"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 )
@@ -137,7 +138,6 @@ func getKlines(symbol string, interval string, startAt, endAt int64) ([]Candle, 
 
 	body, _ := ioutil.ReadAll(resp.Body)
 
-	// Новая структура KuCoin API
 	var result struct {
 		Code string       `json:"code"`
 		Data [][]string   `json:"data"`
@@ -149,17 +149,14 @@ func getKlines(symbol string, interval string, startAt, endAt int64) ([]Candle, 
 
 	candles := make([]Candle, 0, len(result.Data))
 	for _, item := range result.Data {
-		var ts int64
-		var closePrice float64
-		ts, _ = strconv.ParseInt(item[0], 10, 64)
-		closePrice, _ = strconv.ParseFloat(item[2], 64)
+		ts, _ := strconv.ParseInt(item[0], 10, 64)
+		closePrice, _ := strconv.ParseFloat(item[2], 64)
 		candles = append(candles, Candle{Time: ts, Close: closePrice})
 	}
 
 	return candles, nil
 }
 
-// Получаем последнюю цену (Level1)
 func getLastPrice(symbol string) (float64, error) {
 	url := fmt.Sprintf("https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=%s", symbol)
 	resp, err := http.Get(url)
@@ -228,7 +225,7 @@ func pearsonCorrelation(btc, eth *RingBuffer) float64 {
 	}
 
 	numerator := sumXY - (sumX*sumY)/n
-	denominator := math.Sqrt((sumX2 - (sumX*sumX)/n) * (sumY2 - (sumY*sumY)/n))
+	denominator := math.Sqrt((sumX2-(sumX*sumX)/n)*(sumY2-(sumY*sumY)/n))
 	if denominator == 0 {
 		return 0
 	}
@@ -236,25 +233,49 @@ func pearsonCorrelation(btc, eth *RingBuffer) float64 {
 }
 
 // ====== Сигнал на вход ======
-func checkSignal(btc, eth *RingBuffer, spread, minCorr float64) {
+func checkSignal(btc, eth *RingBuffer, spreadThreshold, minCorr float64, f *os.File) {
 	lastBTC := btc.GetAll()[len(btc.Data)-1].Close
 	lastETH := eth.GetAll()[len(eth.Data)-1].Close
 
+	currentCoef := getCoef(lastBTC, lastETH)
+	minCoef, maxCoef := getMinMaxCoef(btc, eth)
 	corr := pearsonCorrelation(btc, eth)
+
+	// Расчет спреда
+	var spread float64
+	if currentCoef < minCoef {
+		spread = currentCoef - minCoef
+	} else if currentCoef > maxCoef {
+		spread = currentCoef - maxCoef
+	} else {
+		spread = 0
+	}
+
+	// Вывод корреляции и спреда
+	fmt.Printf("[%s] Corr=%.5f | CurrentCoef=%.5f | MinCoef=%.5f | MaxCoef=%.5f | Spread=%.5f\n",
+		time.Now().Format("15:04"), corr, currentCoef, minCoef, maxCoef, spread)
+
 	if corr < minCorr {
-		fmt.Printf("[%s] Корреляция %.2f ниже порога %.2f, сигнал пропущен\n", time.Now().Format("15:04"), corr, minCorr)
+		fmt.Printf("[%s] Корреляция %.2f ниже порога, сигнал пропущен\n", time.Now().Format("15:04"), minCorr)
 		return
 	}
 
-	currentCoef := getCoef(lastBTC, lastETH)
-	minCoef, maxCoef := getMinMaxCoef(btc, eth)
-
-	if currentCoef > maxCoef+spread {
-		fmt.Printf("[%s] Сигнал: SELL BTC / BUY ETH | Coef=%.5f\n", time.Now().Format("15:04"), currentCoef)
-	} else if currentCoef < minCoef-spread {
-		fmt.Printf("[%s] Сигнал: BUY BTC / SELL ETH | Coef=%.5f\n", time.Now().Format("15:04"), currentCoef)
+	var signal string
+	if currentCoef > maxCoef+spreadThreshold {
+		signal = fmt.Sprintf("[%s] SELL BTC / BUY ETH | Coef=%.5f | Corr=%.5f | Spread=%.5f\n",
+			time.Now().Format("15:04"), currentCoef, corr, spread)
+	} else if currentCoef < minCoef-spreadThreshold {
+		signal = fmt.Sprintf("[%s] BUY BTC / SELL ETH | Coef=%.5f | Corr=%.5f | Spread=%.5f\n",
+			time.Now().Format("15:04"), currentCoef, corr, spread)
 	} else {
-		fmt.Printf("[%s] Сигнал: нет действия | Coef=%.5f\n", time.Now().Format("15:04"), currentCoef)
+		signal = fmt.Sprintf("[%s] NO SIGNAL | Coef=%.5f | Corr=%.5f | Spread=%.5f\n",
+			time.Now().Format("15:04"), currentCoef, corr, spread)
+	}
+
+	// Вывод и запись в файл
+	fmt.Print(signal)
+	if _, err := f.WriteString(signal); err != nil {
+		fmt.Println("Ошибка записи в файл:", err)
 	}
 }
 
@@ -263,6 +284,13 @@ func main() {
 	const windowSize = 120 // 2 часа × 1 мин
 	btcBuffer := RingBuffer{Data: make([]Candle, windowSize), Size: windowSize}
 	ethBuffer := RingBuffer{Data: make([]Candle, windowSize), Size: windowSize}
+
+	// Файл для сигналов
+	f, err := os.OpenFile("signals.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
 
 	// Загружаем историю 2 часа
 	endAt := time.Now().Unix()
@@ -284,8 +312,8 @@ func main() {
 		ethBuffer.Add(c)
 	}
 
-	spread := 0.001   // 0.1%
-	minCorr := 0.85   // порог корреляции
+	spreadThreshold := 0.001 // 0.1%
+	minCorr := 0.85          // порог корреляции
 
 	oneMinuteTicker := time.NewTicker(1 * time.Minute)
 	fiveMinuteTicker := time.NewTicker(5 * time.Minute)
@@ -293,7 +321,7 @@ func main() {
 	for {
 		select {
 		case <-oneMinuteTicker.C:
-			// Обновляем последнюю свечу из Level1
+			// Обновляем последнюю свечу
 			btcPrice, err := getLastPrice("BTC-USDT")
 			if err != nil {
 				fmt.Println("Ошибка BTC:", err)
@@ -309,9 +337,8 @@ func main() {
 			ethBuffer.Add(Candle{Time: now, Close: ethPrice})
 
 		case <-fiveMinuteTicker.C:
-			checkSignal(&btcBuffer, &ethBuffer, spread, minCorr)
+			checkSignal(&btcBuffer, &ethBuffer, spreadThreshold, minCorr, f)
 		}
 	}
 }
-
 
