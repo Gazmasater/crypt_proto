@@ -344,6 +344,45 @@ func main() {
 
 
 
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/stat_arb$ go run .
-[22:50] Corr=0.96949 | CurrentCoef=30.72666 | MinCoef=30.54030 | MaxCoef=31.00415 | Spread=0.00000
-[22:50] NO SIGNAL | Coef=30.72666 | Corr=0.96949 | Spread=0.00000
+
+
+
+func checkSignal(btc, eth *RingBuffer, spreadThreshold, minCorr float64, f *os.File) {
+	lastBTC := btc.GetAll()[len(btc.Data)-1].Close
+	lastETH := eth.GetAll()[len(eth.Data)-1].Close
+
+	currentCoef := getCoef(lastBTC, lastETH)
+	minCoef, maxCoef := getMinMaxCoef(btc, eth)
+	corr := pearsonCorrelation(btc, eth)
+
+	// Новое вычисление спреда относительно середины диапазона
+	midCoef := (minCoef + maxCoef) / 2
+	spread := (currentCoef - midCoef) / midCoef // относительное отклонение
+
+	// Вывод в консоль
+	fmt.Printf("[%s] Corr=%.5f | CurrentCoef=%.5f | MinCoef=%.5f | MaxCoef=%.5f | Spread=%.5f\n",
+		time.Now().Format("15:04"), corr, currentCoef, minCoef, maxCoef, spread)
+
+	if corr < minCorr {
+		fmt.Printf("[%s] Корреляция %.2f ниже порога, сигнал пропущен\n", time.Now().Format("15:04"), minCorr)
+		return
+	}
+
+	var signal string
+	if currentCoef > maxCoef+spreadThreshold {
+		signal = fmt.Sprintf("[%s] SELL BTC / BUY ETH | Coef=%.5f | Corr=%.5f | Spread=%.5f\n",
+			time.Now().Format("15:04"), currentCoef, corr, spread)
+	} else if currentCoef < minCoef-spreadThreshold {
+		signal = fmt.Sprintf("[%s] BUY BTC / SELL ETH | Coef=%.5f | Corr=%.5f | Spread=%.5f\n",
+			time.Now().Format("15:04"), currentCoef, corr, spread)
+	} else {
+		signal = fmt.Sprintf("[%s] NO SIGNAL | Coef=%.5f | Corr=%.5f | Spread=%.5f\n",
+			time.Now().Format("15:04"), currentCoef, corr, spread)
+	}
+
+	// Вывод и запись в файл
+	fmt.Print(signal)
+	if _, err := f.WriteString(signal); err != nil {
+		fmt.Println("Ошибка записи в файл:", err)
+	}
+}
