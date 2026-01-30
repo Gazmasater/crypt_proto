@@ -89,7 +89,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -116,118 +115,71 @@ type Last struct {
 	Ask float64
 }
 
+type MinuteData struct {
+	Min float64
+	Max float64
+	Avg float64
+}
+
 /* =======================
    RING BUFFER
 ======================= */
 
 type RingBuffer struct {
-	data []float64
+	data []MinuteData
 	size int
 }
 
 func NewRingBuffer(size int) *RingBuffer {
 	return &RingBuffer{
-		data: make([]float64, 0, size),
+		data: make([]MinuteData, 0, size),
 		size: size,
 	}
 }
 
-func (r *RingBuffer) Add(v float64) {
+func (r *RingBuffer) Add(minute MinuteData) {
 	if len(r.data) < r.size {
-		r.data = append(r.data, v)
+		r.data = append(r.data, minute)
 		return
 	}
 	copy(r.data, r.data[1:])
-	r.data[len(r.data)-1] = v
+	r.data[len(r.data)-1] = minute
 }
 
-func (r *RingBuffer) Values() []float64 { return r.data }
-func (r *RingBuffer) Len() int          { return len(r.data) }
+func (r *RingBuffer) Values() []MinuteData { return r.data }
+func (r *RingBuffer) Len() int             { return len(r.data) }
 
 /* =======================
-   MATH
+   SIGNAL
 ======================= */
 
-func Correlation(x, y []float64) float64 {
+type Signal struct {
+	Active     bool
+	Direction  string
+	EntryCoef  float64
+	EntryTime  time.Time
+	EntryAvg   float64
+}
+
+func Correlation(x, y []MinuteData) float64 {
 	if len(x) != len(y) {
 		return 0
 	}
 	n := float64(len(x))
 	var sx, sy, sxy, sx2, sy2 float64
-
 	for i := range x {
-		sx += x[i]
-		sy += y[i]
-		sxy += x[i] * y[i]
-		sx2 += x[i] * x[i]
-		sy2 += y[i] * y[i]
+		sx += x[i].Avg
+		sy += y[i].Avg
+		sxy += x[i].Avg * y[i].Avg
+		sx2 += x[i].Avg * x[i].Avg
+		sy2 += y[i].Avg * y[i].Avg
 	}
-
 	num := n*sxy - sx*sy
 	den := math.Sqrt((n*sx2 - sx*sx) * (n*sy2 - sy*sy))
 	if den == 0 {
 		return 0
 	}
 	return num / den
-}
-
-/* =======================
-   SIGNAL LOGIC
-======================= */
-
-func CheckSignal(btc, eth *RingBuffer, spreadPct, minCorr float64, f *os.File) {
-	b := btc.Values()
-	e := eth.Values()
-
-	corr := Correlation(b, e)
-	if corr < minCorr {
-		return
-	}
-
-	curCoef := b[len(b)-1] / e[len(e)-1]
-
-	minC, maxC := curCoef, curCoef
-	for i := range b {
-		c := b[i] / e[i]
-		if c < minC {
-			minC = c
-		}
-		if c > maxC {
-			maxC = c
-		}
-	}
-
-	mid := (minC + maxC) / 2
-	dev := (curCoef - mid) / mid * 100
-
-	if math.Abs(dev) < spreadPct {
-		return
-	}
-
-	dir := "BUY BTC / SELL ETH"
-	if dev > 0 {
-		dir = "SELL BTC / BUY ETH"
-	}
-
-	fmt.Fprintf(
-		f,
-		"[SIGNAL] %s | coef=%.5f | dev=%.2f%% | corr=%.3f\n",
-		dir, curCoef, dev, corr,
-	)
-}
-
-func LogMetrics(btc, eth *RingBuffer, f *os.File) {
-	b := btc.Values()
-	e := eth.Values()
-
-	corr := Correlation(b, e)
-	coef := b[len(b)-1] / e[len(e)-1]
-
-	fmt.Fprintf(
-		f,
-		"[METRICS] corr=%.3f | coef=%.5f\n",
-		corr, coef,
-	)
 }
 
 /* =======================
@@ -293,7 +245,6 @@ func (k *KuCoin) Start() error {
 
 	go k.read()
 	go k.ping()
-
 	return nil
 }
 
@@ -316,22 +267,18 @@ func (k *KuCoin) read() {
 		if topic == "" {
 			continue
 		}
-
 		sym := topic[len("/market/ticker:"):]
 		d := gjson.GetBytes(msg, "data")
 		bid := d.Get("bestBid").Float()
 		ask := d.Get("bestAsk").Float()
-
 		if bid == 0 || ask == 0 {
 			continue
 		}
-
 		last := k.last[sym]
 		if last.Bid == bid && last.Ask == ask {
 			continue
 		}
 		k.last[sym] = Last{bid, ask}
-
 		k.out <- MarketData{Symbol: sym, Bid: bid, Ask: ask}
 	}
 }
@@ -341,11 +288,8 @@ func (k *KuCoin) read() {
 ======================= */
 
 func main() {
-	btc := NewRingBuffer(120)
-	eth := NewRingBuffer(120)
-
-	f, _ := os.OpenFile("signals.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	defer f.Close()
+	btcBuf := NewRingBuffer(120)
+	ethBuf := NewRingBuffer(120)
 
 	out := make(chan MarketData, 1000)
 
@@ -354,30 +298,139 @@ func main() {
 		panic(err)
 	}
 
-	logTicker := time.NewTicker(1 * time.Minute)
+	f, _ := os.OpenFile("signals.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	defer f.Close()
+
+	logTicker := time.NewTicker(5 * time.Minute)
+
+	var btcTicks, ethTicks []float64
+	signal := &Signal{}
 
 	const (
-		spreadPct = 0.6
-		minCorr   = 0.85
+		spreadPct   = 0.6
+		stopLossPct = 0.5
+		minCorr     = 0.85
 	)
 
 	for {
 		select {
 		case md := <-out:
+			// собираем тики для текущей минуты
 			if md.Symbol == "BTC-USDT" {
-				btc.Add(md.Bid)
-			}
-			if md.Symbol == "ETH-USDT" {
-				eth.Add(md.Bid)
+				btcTicks = append(btcTicks, md.Bid)
+			} else if md.Symbol == "ETH-USDT" {
+				ethTicks = append(ethTicks, md.Bid)
 			}
 
-			if btc.Len() == 120 && eth.Len() == 120 {
-				CheckSignal(btc, eth, spreadPct, minCorr, f)
+			// каждая минута формируем MinuteData
+			now := time.Now()
+			if now.Second() == 0 && len(btcTicks) > 0 && len(ethTicks) > 0 {
+				minData := func(ticks []float64) MinuteData {
+					min, max, sum := ticks[0], ticks[0], 0.0
+					for _, v := range ticks {
+						if v < min {
+							min = v
+						}
+						if v > max {
+							max = v
+						}
+						sum += v
+					}
+					return MinuteData{
+						Min: min,
+						Max: max,
+						Avg: sum / float64(len(ticks)),
+					}
+				}
+				btcBuf.Add(minData(btcTicks))
+				ethBuf.Add(minData(ethTicks))
+				btcTicks = nil
+				ethTicks = nil
+			}
+
+			// Проверка сигнала
+			if btcBuf.Len() == 120 && ethBuf.Len() == 120 && !signal.Active {
+				bVals := btcBuf.Values()
+				eVals := ethBuf.Values()
+				curCoef := bVals[len(bVals)-1].Avg / eVals[len(eVals)-1].Avg
+				minC, maxC := curCoef, curCoef
+				for i := range bVals {
+					c := bVals[i].Avg / eVals[i].Avg
+					if c < minC {
+						minC = c
+					}
+					if c > maxC {
+						maxC = c
+					}
+				}
+				mid := (minC + maxC) / 2
+				dev := (curCoef - mid) / mid * 100
+				corr := Correlation(bVals, eVals)
+
+				if corr >= minCorr && math.Abs(dev) >= spreadPct {
+					// вход
+					dir := "BUY BTC / SELL ETH"
+					if dev > 0 {
+						dir = "SELL BTC / BUY ETH"
+					}
+					signal.Active = true
+					signal.Direction = dir
+					signal.EntryCoef = curCoef
+					signal.EntryTime = time.Now()
+					signal.EntryAvg = mid
+					fmt.Fprintf(f, "[SIGNAL] %s | coef=%.5f | dev=%.2f%% | corr=%.3f\n",
+						dir, curCoef, dev, corr)
+				}
+			}
+
+			// после сигнала PnL и стоп-лосс
+			if signal.Active && btcBuf.Len() == 120 && ethBuf.Len() == 120 {
+				bVals := btcBuf.Values()
+				eVals := ethBuf.Values()
+				curCoef := bVals[len(bVals)-1].Avg / eVals[len(eVals)-1].Avg
+				pnl := 0.0
+				if signal.Direction == "BUY BTC / SELL ETH" {
+					pnl = (curCoef - signal.EntryCoef) / signal.EntryCoef * 100
+				} else {
+					pnl = (signal.EntryCoef - curCoef) / signal.EntryCoef * 100
+				}
+
+				// закрытие по возврату к среднему или стоп-лосс
+				mid := signal.EntryAvg
+				dev := (curCoef - mid) / mid * 100
+				if (signal.Direction == "BUY BTC / SELL ETH" && dev <= 0) ||
+					(signal.Direction == "SELL BTC / BUY ETH" && dev >= 0) ||
+					math.Abs(pnl) >= stopLossPct {
+					fmt.Fprintf(f, "[CLOSE] %s | coef=%.5f | PnL=%.3f%% | time=%s\n",
+						signal.Direction, curCoef, pnl, time.Now().Format("15:04"))
+					signal.Active = false
+				}
 			}
 
 		case <-logTicker.C:
-			if btc.Len() == 120 && eth.Len() == 120 {
-				LogMetrics(btc, eth, f)
+			// Логируем PnL в файл
+			if signal.Active && btcBuf.Len() == 120 && ethBuf.Len() == 120 {
+				bVals := btcBuf.Values()
+				eVals := ethBuf.Values()
+				curCoef := bVals[len(bVals)-1].Avg / eVals[len(eVals)-1].Avg
+				pnl := 0.0
+				if signal.Direction == "BUY BTC / SELL ETH" {
+					pnl = (curCoef - signal.EntryCoef) / signal.EntryCoef * 100
+				} else {
+					pnl = (signal.EntryCoef - curCoef) / signal.EntryCoef * 100
+				}
+				fmt.Fprintf(f, "[PnL] %s | coef=%.5f | PnL=%.3f%% | time=%s\n",
+					signal.Direction, curCoef, pnl, time.Now().Format("15:04"))
+			}
+
+			// Выводим в консоль каждую 5 минут живую статистику
+			if btcBuf.Len() == 120 && ethBuf.Len() == 120 {
+				bVals := btcBuf.Values()
+				eVals := ethBuf.Values()
+				curCoef := bVals[len(bVals)-1].Avg / eVals[len(eVals)-1].Avg
+				corr := Correlation(bVals, eVals)
+				fmt.Printf("[LIVE] coef=%.5f | corr=%.3f | time=%s\n",
+					curCoef, corr, time.Now().Format("15:04"))
 			}
 		}
 	}
