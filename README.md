@@ -85,159 +85,169 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-package main
+package collector
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
-	"math"
-	"os"
+	"log"
+	"net/http"
 	"time"
+
+	"crypt_proto/pkg/models"
+
+	"github.com/gorilla/websocket"
+	"github.com/tidwall/gjson"
 )
 
-// ======== RingBuffer для котировок ========
-type RingBuffer struct {
-	data  []float64
-	size  int
-	index int
-	full  bool
+type Last struct {
+	Bid float64
+	Ask float64
 }
 
-func NewRingBuffer(size int) *RingBuffer {
-	return &RingBuffer{
-		data: make([]float64, size),
-		size: size,
+type KuCoinCollector struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	ws     *kucoinWS
+	out    chan<- *models.MarketData
+}
+
+type kucoinWS struct {
+	conn    *websocket.Conn
+	symbols []string
+	last    map[string]Last
+}
+
+func NewKuCoinCollector(symbols []string) (*KuCoinCollector, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ws := &kucoinWS{
+		symbols: symbols,
+		last:    make(map[string]Last),
+	}
+	return &KuCoinCollector{
+		ctx:    ctx,
+		cancel: cancel,
+		ws:     ws,
+	}, nil
+}
+
+func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
+	c.out = out
+	if err := c.ws.connect(); err != nil {
+		return err
+	}
+	go c.ws.readLoop(c)
+	go c.ws.subscribeLoop()
+	go c.ws.pingLoop()
+	log.Println("[KuCoin] WS started")
+	return nil
+}
+
+func (c *KuCoinCollector) Stop() error {
+	c.cancel()
+	if c.ws.conn != nil {
+		return c.ws.conn.Close()
+	}
+	return nil
+}
+
+// ======== WS методы ========
+func (ws *kucoinWS) connect() error {
+	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Data struct {
+			Token           string `json:"token"`
+			InstanceServers []struct {
+				Endpoint string `json:"endpoint"`
+			} `json:"instanceServers"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf(
+		"%s?token=%s&connectId=%d",
+		r.Data.InstanceServers[0].Endpoint,
+		r.Data.Token,
+		time.Now().UnixNano(),
+	)
+
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		return err
+	}
+	ws.conn = conn
+	log.Println("[KuCoin WS] connected")
+	return nil
+}
+
+func (ws *kucoinWS) subscribeLoop() {
+	for _, s := range ws.symbols {
+		_ = ws.conn.WriteJSON(map[string]any{
+			"id":       time.Now().UnixNano(),
+			"type":     "subscribe",
+			"topic":    "/market/ticker:" + s,
+			"response": true,
+		})
 	}
 }
 
-func (r *RingBuffer) Add(value float64) {
-	r.data[r.index] = value
-	r.index = (r.index + 1) % r.size
-	if r.index == 0 {
-		r.full = true
+func (ws *kucoinWS) pingLoop() {
+	t := time.NewTicker(20 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		_ = ws.conn.WriteJSON(map[string]any{"id": time.Now().UnixNano(), "type": "ping"})
 	}
 }
 
-func (r *RingBuffer) Len() int {
-	if r.full {
-		return r.size
-	}
-	return r.index
-}
-
-func (r *RingBuffer) GetAll() []float64 {
-	if !r.full {
-		return r.data[:r.index]
-	}
-	res := make([]float64, r.size)
-	copy(res, r.data[r.index:])
-	copy(res[r.size-r.index:], r.data[:r.index])
-	return res
-}
-
-// ======== Расчёт коэффициента и спреда ========
-func CoefBTCETH(btcBuf, ethBuf *RingBuffer) float64 {
-	btc := btcBuf.GetAll()
-	eth := ethBuf.GetAll()
-	if len(btc) == 0 || len(eth) == 0 {
-		return 0
-	}
-	return btc[len(btc)-1] / eth[len(eth)-1]
-}
-
-func MinMaxCoef(btcBuf, ethBuf *RingBuffer) (float64, float64) {
-	btc := btcBuf.GetAll()
-	eth := ethBuf.GetAll()
-	if len(btc) == 0 || len(eth) == 0 {
-		return 0, 0
-	}
-	min := btc[0] / eth[0]
-	max := min
-	for i := 1; i < len(btc) && i < len(eth); i++ {
-		c := btc[i] / eth[i]
-		if c > max {
-			max = c
+func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
+	for {
+		_, msg, err := ws.conn.ReadMessage()
+		if err != nil {
+			log.Println("[KuCoin WS] read error:", err)
+			return
 		}
-		if c < min {
-			min = c
-		}
+		ws.handle(c, msg)
 	}
-	return min, max
 }
 
-func PearsonCorr(btcBuf, ethBuf *RingBuffer) float64 {
-	btc := btcBuf.GetAll()
-	eth := ethBuf.GetAll()
-	n := float64(len(btc))
-	if n == 0 {
-		return 0
-	}
-
-	var sumX, sumY, sumXY, sumX2, sumY2 float64
-	for i := 0; i < len(btc); i++ {
-		x := btc[i]
-		y := eth[i]
-		sumX += x
-		sumY += y
-		sumXY += x * y
-		sumX2 += x * x
-		sumY2 += y * y
-	}
-
-	numerator := sumXY - (sumX*sumY)/n
-	denominator := math.Sqrt((sumX2-(sumX*sumX)/n)*(sumY2-(sumY*sumY)/n))
-	if denominator == 0 {
-		return 0
-	}
-	return numerator / denominator
-}
-
-// ======== Проверка сигнала с порогом 0.6% ========
-func CheckSignal(btcBuf, ethBuf *RingBuffer, spreadThresholdPct, minCorr float64, f *os.File) {
-	currentCoef := CoefBTCETH(btcBuf, ethBuf)
-	minCoef, maxCoef := MinMaxCoef(btcBuf, ethBuf)
-	corr := PearsonCorr(btcBuf, ethBuf)
-
-	midCoef := (minCoef + maxCoef) / 2
-	spreadPct := (currentCoef - midCoef) / midCoef * 100 // спред в процентах
-
-	fmt.Printf("[%s] Corr=%.5f | CurrentCoef=%.5f | MinCoef=%.5f | MaxCoef=%.5f | Spread=%.2f%%\n",
-		time.Now().Format("15:04"), corr, currentCoef, minCoef, maxCoef, spreadPct)
-
-	if corr < minCorr {
+func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+	topic := gjson.GetBytes(msg, "topic").String()
+	if topic == "" {
 		return
 	}
 
-	var signal string
-	if spreadPct > spreadThresholdPct {
-		signal = fmt.Sprintf("[%s] SELL BTC / BUY ETH | Coef=%.5f | Corr=%.5f | Spread=%.2f%%\n",
-			time.Now().Format("15:04"), currentCoef, corr, spreadPct)
-	} else if spreadPct < -spreadThresholdPct {
-		signal = fmt.Sprintf("[%s] BUY BTC / SELL ETH | Coef=%.5f | Corr=%.5f | Spread=%.2f%%\n",
-			time.Now().Format("15:04"), currentCoef, corr, spreadPct)
-	} else {
-		signal = fmt.Sprintf("[%s] NO SIGNAL | Coef=%.5f | Corr=%.5f | Spread=%.2f%%\n",
-			time.Now().Format("15:04"), currentCoef, corr, spreadPct)
+	symbol := topic[len("/market/ticker:"):]
+	data := gjson.GetBytes(msg, "data")
+	bid := data.Get("bestBid").Float()
+	ask := data.Get("bestAsk").Float()
+	if bid == 0 || ask == 0 {
+		return
 	}
 
-	fmt.Print(signal)
-	if _, err := f.WriteString(signal); err != nil {
-		fmt.Println("Ошибка записи в файл:", err)
+	last, ok := ws.last[symbol]
+	if ok && last.Bid == bid && last.Ask == ask {
+		return
 	}
-}
 
-// ======== Лог метрик каждые 5 минут ========
-func LogMetrics(btcBuf, ethBuf *RingBuffer, f *os.File) {
-	currentCoef := CoefBTCETH(btcBuf, ethBuf)
-	minCoef, maxCoef := MinMaxCoef(btcBuf, ethBuf)
-	corr := PearsonCorr(btcBuf, ethBuf)
-	midCoef := (minCoef + maxCoef) / 2
-	spreadPct := (currentCoef - midCoef) / midCoef * 100
+	ws.last[symbol] = Last{Bid: bid, Ask: ask}
 
-	line := fmt.Sprintf("[%s] COEF=%.5f | Min=%.5f | Max=%.5f | Corr=%.5f | Spread=%.2f%%\n",
-		time.Now().Format("15:04"), currentCoef, minCoef, maxCoef, corr, spreadPct)
-	fmt.Print(line)
-	if _, err := f.WriteString(line); err != nil {
-		fmt.Println("Ошибка записи в файл:", err)
+	c.out <- &models.MarketData{
+		Exchange: "KuCoin",
+		Symbol:   symbol,
+		Bid:      bid,
+		Ask:      ask,
+		BidSize:  data.Get("bestBidSize").Float(),
+		AskSize:  data.Get("bestAskSize").Float(),
 	}
 }
 
@@ -255,9 +265,8 @@ import (
 )
 
 func main() {
-	const windowSize = 120 // 2 часа
-	btcBuf := NewRingBuffer(windowSize)
-	ethBuf := NewRingBuffer(windowSize)
+	btcBuf := NewRingBuffer(120)
+	ethBuf := NewRingBuffer(120)
 
 	f, err := os.OpenFile("signals.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -267,10 +276,11 @@ func main() {
 
 	out := make(chan *models.MarketData, 1000)
 
-	coll, _, err := collector.NewKuCoinCollectorFromCSV("pairs.csv")
+	coll, err := collector.NewKuCoinCollector([]string{"BTC-USDT", "ETH-USDT"})
 	if err != nil {
 		panic(err)
 	}
+
 	if err := coll.Start(out); err != nil {
 		panic(err)
 	}
@@ -278,7 +288,6 @@ func main() {
 
 	spreadThresholdPct := 0.6
 	minCorr := 0.85
-
 	logTicker := time.NewTicker(5 * time.Minute)
 
 	for {
@@ -290,13 +299,11 @@ func main() {
 			case "ETH-USDT":
 				ethBuf.Add(md.Bid)
 			}
-
-			if btcBuf.Len() >= windowSize && ethBuf.Len() >= windowSize {
+			if btcBuf.Len() >= 120 && ethBuf.Len() >= 120 {
 				CheckSignal(btcBuf, ethBuf, spreadThresholdPct, minCorr, f)
 			}
-
 		case <-logTicker.C:
-			if btcBuf.Len() >= windowSize && ethBuf.Len() >= windowSize {
+			if btcBuf.Len() >= 120 && ethBuf.Len() >= 120 {
 				LogMetrics(btcBuf, ethBuf, f)
 			}
 		}
