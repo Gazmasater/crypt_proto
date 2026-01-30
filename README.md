@@ -437,3 +437,50 @@ func main() {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "default",
+		"target": {
+			"$mid": 1,
+			"path": "/docs/checks/",
+			"scheme": "https",
+			"authority": "staticcheck.dev",
+			"fragment": "QF1003"
+		}
+	},
+	"severity": 2,
+	"message": "could use tagged switch on md.Symbol",
+	"source": "QF1003",
+	"startLineNumber": 233,
+	"startColumn": 4,
+	"endLineNumber": 233,
+	"endColumn": 30,
+	"modelVersionId": 5,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "default",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/go/analysis/passes/unusedwrite",
+			"scheme": "https",
+			"authority": "pkg.go.dev"
+		}
+	},
+	"severity": 2,
+	"message": "unused write to field EntryTime",
+	"source": "unusedwrite",
+	"startLineNumber": 293,
+	"startColumn": 13,
+	"endLineNumber": 293,
+	"endColumn": 13,
+	"modelVersionId": 5,
+	"origin": "extHost1"
+}]
+
