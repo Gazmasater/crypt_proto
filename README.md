@@ -370,3 +370,27 @@ func main() {
 }
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "default",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/go/analysis/passes/unusedwrite",
+			"scheme": "https",
+			"authority": "pkg.go.dev"
+		}
+	},
+	"severity": 2,
+	"message": "unused write to field EntryTime",
+	"source": "unusedwrite",
+	"startLineNumber": 240,
+	"startColumn": 15,
+	"endLineNumber": 240,
+	"endColumn": 15,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
+
+
