@@ -89,6 +89,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -116,9 +117,9 @@ type Last struct {
 }
 
 type MinuteData struct {
-	Min float64
-	Max float64
-	Sum float64
+	Min   float64
+	Max   float64
+	Sum   float64
 	Count int
 }
 
@@ -421,8 +422,8 @@ func main() {
 	minTicker := time.NewTicker(1 * time.Minute)
 
 	const (
-		spreadPct = 0.6
-		minCorr   = 0.85
+		spreadPct   = 0.6
+		minCorr     = 0.85
 		stopLossPct = 0.3
 	)
 
