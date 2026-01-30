@@ -474,3 +474,28 @@ func main() {
 	}
 }
 
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "default",
+		"target": {
+			"$mid": 1,
+			"path": "/docs/checks/",
+			"scheme": "https",
+			"authority": "staticcheck.dev",
+			"fragment": "QF1003"
+		}
+	},
+	"severity": 2,
+	"message": "could use tagged switch on md.Symbol",
+	"source": "QF1003",
+	"startLineNumber": 354,
+	"startColumn": 4,
+	"endLineNumber": 354,
+	"endColumn": 30,
+	"modelVersionId": 3,
+	"origin": "extHost1"
+}]
+
