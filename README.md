@@ -88,81 +88,118 @@ GOMAXPROCS=8 go run -race main.go
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/tidwall/gjson"
 )
 
-/* ===================== CONFIG ===================== */
+/* =======================
+   DATA STRUCTURES
+======================= */
 
-const (
-	SymbolBTC = "BTC-USDT"
-	SymbolETH = "ETH-USDT"
+type MarketData struct {
+	Symbol string
+	Bid    float64
+	Ask    float64
+}
 
-	WindowMinutes = 120
+type Last struct {
+	Bid float64
+	Ask float64
+}
 
-	EntryDeviationPct = 0.6
-	StopLossPct       = 1.2
-	MinCorrelation    = 0.85
+/* =======================
+   RING BUFFER (минутные средние)
+======================= */
 
-	MaxHoldTime = 30 * time.Minute
+type MinuteData struct {
+	Min float64
+	Max float64
+	Sum float64
+	N   int
+}
 
-	RestInterval   = 5 * time.Second
-	MinuteInterval = 1 * time.Minute
-	LogInterval    = 5 * time.Minute
-)
+func (m *MinuteData) Add(v float64) {
+	if m.N == 0 {
+		m.Min, m.Max = v, v
+	} else {
+		if v < m.Min {
+			m.Min = v
+		}
+		if v > m.Max {
+			m.Max = v
+		}
+	}
+	m.Sum += v
+	m.N++
+}
 
-/* ===================== DATA ===================== */
-
-type MinuteStat struct {
-	Mean float64
+func (m *MinuteData) Avg() float64 {
+	if m.N == 0 {
+		return 0
+	}
+	return m.Sum / float64(m.N)
 }
 
 type RingBuffer struct {
-	data []MinuteStat
+	data []MinuteData
 	size int
+	pos  int
+	full bool
 }
 
-func NewRing(size int) *RingBuffer {
-	return &RingBuffer{size: size}
-}
-
-func (r *RingBuffer) Push(v MinuteStat) {
-	if len(r.data) < r.size {
-		r.data = append(r.data, v)
-		return
+func NewRingBuffer(size int) *RingBuffer {
+	return &RingBuffer{
+		data: make([]MinuteData, size),
+		size: size,
 	}
-	copy(r.data, r.data[1:])
-	r.data[len(r.data)-1] = v
 }
 
-func (r *RingBuffer) Full() bool {
-	return len(r.data) == r.size
+func (r *RingBuffer) AddMinute(md MinuteData) {
+	r.data[r.pos] = md
+	r.pos++
+	if r.pos >= r.size {
+		r.pos = 0
+		r.full = true
+	}
 }
 
-func (r *RingBuffer) Values() []MinuteStat {
-	return r.data
+func (r *RingBuffer) Values() []float64 {
+	var res []float64
+	count := r.size
+	if !r.full {
+		count = r.pos
+	}
+	for i := 0; i < count; i++ {
+		res = append(res, r.data[i].Avg())
+	}
+	return res
 }
 
-/* ===================== SIGNAL ===================== */
-
-type Signal struct {
-	Active     bool
-	Direction  string
-	EntryCoef  float64
-	EntryTime  time.Time
+func (r *RingBuffer) Len() int {
+	if r.full {
+		return r.size
+	}
+	return r.pos
 }
 
-/* ===================== MATH ===================== */
+/* =======================
+   CORRELATION
+======================= */
 
 func Correlation(x, y []float64) float64 {
+	if len(x) != len(y) || len(x) == 0 {
+		return 0
+	}
 	n := float64(len(x))
 	var sx, sy, sxy, sx2, sy2 float64
-
 	for i := range x {
 		sx += x[i]
 		sy += y[i]
@@ -170,243 +207,278 @@ func Correlation(x, y []float64) float64 {
 		sx2 += x[i] * x[i]
 		sy2 += y[i] * y[i]
 	}
-
 	num := n*sxy - sx*sy
-	den := math.Sqrt((n*sx2-sx*sx)*(n*sy2-sy*sy))
+	den := math.Sqrt((n*sx2 - sx*sx) * (n*sy2 - sy*sy))
 	if den == 0 {
 		return 0
 	}
 	return num / den
 }
 
-/* ===================== KUCOIN REST ===================== */
+/* =======================
+   POSITION
+======================= */
 
-func fetchLastPrice(symbol string) float64 {
-	url := fmt.Sprintf(
-		"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=%s",
-		symbol,
-	)
+type Position struct {
+	Open       bool
+	Direction  string
+	OpenCoef   float64
+	StopLoss   float64
+	TakeProfit float64
+	OpenTime   time.Time
+}
 
-	resp, err := http.Get(url)
+/* =======================
+   SIGNAL CHECK
+======================= */
+
+func CheckSignal(btc, eth *RingBuffer, spreadPct, minCorr float64, f *os.File, pos *Position) {
+	b := btc.Values()
+	e := eth.Values()
+
+	if len(b) < btc.Len() || len(e) < eth.Len() {
+		return
+	}
+
+	corr := Correlation(b, e)
+	if corr < minCorr || pos.Open {
+		return
+	}
+
+	curCoef := b[len(b)-1] / e[len(e)-1]
+	minC, maxC := curCoef, curCoef
+	for i := range b {
+		c := b[i] / e[i]
+		if c < minC {
+			minC = c
+		}
+		if c > maxC {
+			maxC = c
+		}
+	}
+	mid := (minC + maxC) / 2
+	dev := (curCoef - mid) / mid * 100
+
+	if math.Abs(dev) < spreadPct {
+		return
+	}
+
+	dir := "BUY BTC / SELL ETH"
+	if dev > 0 {
+		dir = "SELL BTC / BUY ETH"
+	}
+
+	fmt.Fprintf(f, "[SIGNAL] %s | coef=%.5f | dev=%.2f%% | corr=%.3f\n", dir, curCoef, dev, corr)
+	fmt.Printf("[SIGNAL] %s | coef=%.5f | dev=%.2f%% | corr=%.3f\n", dir, curCoef, dev, corr)
+
+	// открываем позицию
+	pos.Open = true
+	pos.Direction = dir
+	pos.OpenCoef = curCoef
+	pos.OpenTime = time.Now()
+
+	// StopLoss и TakeProfit
+	slPct := 0.3 / 100
+	tpPct := 0.5 / 100
+	if dir == "BUY BTC / SELL ETH" {
+		pos.StopLoss = curCoef * (1 - slPct)
+		pos.TakeProfit = curCoef * (1 + tpPct)
+	} else {
+		pos.StopLoss = curCoef * (1 + slPct)
+		pos.TakeProfit = curCoef * (1 - tpPct)
+	}
+}
+
+/* =======================
+   UPDATE POSITION
+======================= */
+
+func UpdatePosition(pos *Position, curCoef float64, f *os.File) {
+	if !pos.Open {
+		return
+	}
+
+	closePos := false
+	if pos.Direction == "BUY BTC / SELL ETH" {
+		if curCoef <= pos.StopLoss {
+			fmt.Fprintf(f, "[STOPLOSS] Close BUY BTC / SELL ETH | coef=%.5f\n", curCoef)
+			closePos = true
+		} else if curCoef >= pos.TakeProfit {
+			fmt.Fprintf(f, "[TAKEPROFIT] Close BUY BTC / SELL ETH | coef=%.5f\n", curCoef)
+			closePos = true
+		}
+	} else {
+		if curCoef >= pos.StopLoss {
+			fmt.Fprintf(f, "[STOPLOSS] Close SELL BTC / BUY ETH | coef=%.5f\n", curCoef)
+			closePos = true
+		} else if curCoef <= pos.TakeProfit {
+			fmt.Fprintf(f, "[TAKEPROFIT] Close SELL BTC / BUY ETH | coef=%.5f\n", curCoef)
+			closePos = true
+		}
+	}
+
+	if closePos {
+		fmt.Printf("[POSITION CLOSED] %s | coef=%.5f\n", pos.Direction, curCoef)
+		pos.Open = false
+	}
+}
+
+/* =======================
+   KUCOIN WS
+======================= */
+
+type KuCoin struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	conn   *websocket.Conn
+	last   map[string]Last
+	out    chan<- MarketData
+}
+
+func NewKuCoin(out chan<- MarketData) *KuCoin {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &KuCoin{
+		ctx:    ctx,
+		cancel: cancel,
+		last:   make(map[string]Last),
+		out:    out,
+	}
+}
+
+func (k *KuCoin) Start() error {
+	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0
+		return err
 	}
 	defer resp.Body.Close()
 
 	var r struct {
 		Data struct {
-			Price string `json:"price"`
+			Token string `json:"token"`
+			IS    []struct {
+				Endpoint string `json:"endpoint"`
+			} `json:"instanceServers"`
 		} `json:"data"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&r)
+	json.NewDecoder(resp.Body).Decode(&r)
 
-	var price float64
-	fmt.Sscanf(r.Data.Price, "%f", &price)
-	return price
-}
-
-func loadHistory(symbol string) []MinuteStat {
-	url := fmt.Sprintf(
-		"https://api.kucoin.com/api/v1/market/candles?symbol=%s&type=1min",
-		symbol,
-	)
-
-	resp, err := http.Get(url)
+	url := fmt.Sprintf("%s?token=%s&connectId=%d", r.Data.IS[0].Endpoint, r.Data.Token, time.Now().UnixNano())
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
-		panic(err)
+		return err
 	}
-	defer resp.Body.Close()
+	k.conn = conn
 
-	var raw struct {
-		Data [][]string `json:"data"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&raw)
-
-	start := len(raw.Data) - WindowMinutes
-	out := make([]MinuteStat, 0, WindowMinutes)
-
-	for i := start; i < len(raw.Data); i++ {
-		var o, h, l, c float64
-		fmt.Sscanf(raw.Data[i][1], "%f", &o)
-		fmt.Sscanf(raw.Data[i][2], "%f", &h)
-		fmt.Sscanf(raw.Data[i][3], "%f", &l)
-		fmt.Sscanf(raw.Data[i][4], "%f", &c)
-
-		out = append(out, MinuteStat{
-			Mean: (o + h + l + c) / 4,
+	sub := func(sym string) {
+		conn.WriteJSON(map[string]any{
+			"id":       time.Now().UnixNano(),
+			"type":     "subscribe",
+			"topic":    "/market/ticker:" + sym,
+			"response": true,
 		})
 	}
-	return out
+	sub("BTC-USDT")
+	sub("ETH-USDT")
+
+	go k.read()
+	go k.ping()
+	return nil
 }
 
-/* ===================== MAIN ===================== */
+func (k *KuCoin) ping() {
+	t := time.NewTicker(20 * time.Second)
+	for range t.C {
+		k.conn.WriteJSON(map[string]any{"type": "ping"})
+	}
+}
+
+func (k *KuCoin) read() {
+	for {
+		_, msg, err := k.conn.ReadMessage()
+		if err != nil {
+			log.Println("ws error:", err)
+			return
+		}
+		topic := gjson.GetBytes(msg, "topic").String()
+		if topic == "" {
+			continue
+		}
+		sym := topic[len("/market/ticker:"):]
+		d := gjson.GetBytes(msg, "data")
+		bid := d.Get("bestBid").Float()
+		ask := d.Get("bestAsk").Float()
+		if bid == 0 || ask == 0 {
+			continue
+		}
+		last := k.last[sym]
+		if last.Bid == bid && last.Ask == ask {
+			continue
+		}
+		k.last[sym] = Last{bid, ask}
+		k.out <- MarketData{Symbol: sym, Bid: bid, Ask: ask}
+	}
+}
+
+/* =======================
+   MAIN
+======================= */
 
 func main() {
-	log.SetFlags(log.Ltime)
+	btcBuf := NewRingBuffer(120)
+	ethBuf := NewRingBuffer(120)
 
-	log.Println("loading history...")
+	out := make(chan MarketData, 1000)
 
-	btcRing := NewRing(WindowMinutes)
-	ethRing := NewRing(WindowMinutes)
+	f, _ := os.OpenFile("signals.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	defer f.Close()
 
-	for _, v := range loadHistory(SymbolBTC) {
-		btcRing.Push(v)
+	kc := NewKuCoin(out)
+	if err := kc.Start(); err != nil {
+		panic(err)
 	}
-	for _, v := range loadHistory(SymbolETH) {
-		ethRing.Push(v)
-	}
 
-	log.Println("history loaded")
+	logTicker := time.NewTicker(5 * time.Minute)
+	minTicker := time.NewTicker(5 * time.Second)
 
-	file, _ := os.OpenFile("signals.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	defer file.Close()
+	pos := &Position{}
 
-	var (
-		curSumBTC float64
-		curSumETH float64
-		curCount  int
-
-		signal Signal
-	)
-
-	restTicker := time.NewTicker(RestInterval)
-	minTicker := time.NewTicker(MinuteInterval)
-	logTicker := time.NewTicker(LogInterval)
+	curMinute := MinuteData{}
+	lastMin := time.Now().Minute()
 
 	for {
 		select {
+		case md := <-out:
+			now := time.Now()
+			if now.Minute() != lastMin {
+				// сохраняем минуту в буфер
+				btcBuf.AddMinute(curMinute)
+				ethBuf.AddMinute(curMinute)
+				curMinute = MinuteData{}
+				lastMin = now.Minute()
+			}
+			// добавляем тик в текущую минуту
+			curMinute.Add(md.Bid)
 
-		/* ===== REST polling ===== */
-		case <-restTicker.C:
-			curSumBTC += fetchLastPrice(SymbolBTC)
-			curSumETH += fetchLastPrice(SymbolETH)
-			curCount++
-
-		/* ===== minute close ===== */
-		case <-minTicker.C:
-			if curCount == 0 {
-				continue
+			if btcBuf.Len() >= 120 && ethBuf.Len() >= 120 {
+				CheckSignal(btcBuf, ethBuf, 0.6, 0.85, f, pos)
+				curCoef := btcBuf.Values()[len(btcBuf.Values())-1] / ethBuf.Values()[len(ethBuf.Values())-1]
+				UpdatePosition(pos, curCoef, f)
 			}
 
-			btcRing.Push(MinuteStat{Mean: curSumBTC / float64(curCount)})
-			ethRing.Push(MinuteStat{Mean: curSumETH / float64(curCount)})
-			curSumBTC, curSumETH, curCount = 0, 0, 0
-
-			if !btcRing.Full() {
-				continue
-			}
-
-			btcVals := btcRing.Values()
-			ethVals := ethRing.Values()
-
-			btcArr := make([]float64, WindowMinutes)
-			ethArr := make([]float64, WindowMinutes)
-			coefArr := make([]float64, WindowMinutes)
-
-			for i := 0; i < WindowMinutes; i++ {
-				btcArr[i] = btcVals[i].Mean
-				ethArr[i] = ethVals[i].Mean
-				coefArr[i] = btcArr[i] / ethArr[i]
-			}
-
-			corr := Correlation(btcArr, ethArr)
-			if corr < MinCorrelation {
-				continue
-			}
-
-			curCoef := coefArr[len(coefArr)-1]
-			minC, maxC := coefArr[0], coefArr[0]
-			for _, c := range coefArr {
-				if c < minC {
-					minC = c
-				}
-				if c > maxC {
-					maxC = c
-				}
-			}
-
-			mid := (minC + maxC) / 2
-			dev := (curCoef - mid) / mid * 100
-
-			/* ===== ENTRY ===== */
-			if !signal.Active && math.Abs(dev) >= EntryDeviationPct {
-				signal = Signal{
-					Active:    true,
-					EntryCoef: curCoef,
-					EntryTime: time.Now(),
-					Direction: map[bool]string{
-						true:  "SELL BTC / BUY ETH",
-						false: "BUY BTC / SELL ETH",
-					}[dev > 0],
-				}
-
-				fmt.Fprintf(
-					file,
-					"[OPEN] %s coef=%.5f dev=%.2f%% corr=%.2f\n",
-					signal.Direction, curCoef, dev, corr,
-				)
-			}
-
-			/* ===== POSITION MANAGEMENT ===== */
-			if signal.Active {
-				pnl := (signal.EntryCoef - curCoef) / signal.EntryCoef * 100
-				held := time.Since(signal.EntryTime)
-
-				fmt.Fprintf(file,
-					"[PNL] %.3f%% | held=%v\n",
-					pnl,
-					held.Truncate(time.Second),
-				)
-
-				if math.Abs(dev) <= 0.1 {
-					fmt.Fprintf(file,
-						"[CLOSE] TAKE PROFIT | pnl=%.3f%% | time=%v\n",
-						pnl, held.Truncate(time.Second),
-					)
-					signal.Active = false
-				}
-
-				if math.Abs(dev) >= StopLossPct {
-					fmt.Fprintf(file,
-						"[CLOSE] STOP LOSS | pnl=%.3f%% | time=%v\n",
-						pnl, held.Truncate(time.Second),
-					)
-					signal.Active = false
-				}
-
-				if held >= MaxHoldTime {
-					fmt.Fprintf(file,
-						"[CLOSE] TIME EXIT | pnl=%.3f%% | time=%v\n",
-						pnl, held.Truncate(time.Second),
-					)
-					signal.Active = false
-				}
-			}
-
-		/* ===== console log ===== */
 		case <-logTicker.C:
-			if btcRing.Full() {
-				coef := btcRing.data[len(btcRing.data)-1].Mean /
-					ethRing.data[len(ethRing.data)-1].Mean
-
-				log.Printf("coef=%.5f signal=%v", coef, signal.Active)
+			if btcBuf.Len() >= 120 && ethBuf.Len() >= 120 {
+				b := btcBuf.Values()
+				e := ethBuf.Values()
+				corr := Correlation(b, e)
+				fmt.Printf("[METRICS] corr=%.3f | coef=%.5f\n", corr, b[len(b)-1]/e[len(e)-1])
 			}
+
+		case <-minTicker.C:
+			// можно использовать для частых обновлений
 		}
 	}
 }
 
-
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ cd cmd/stat_arb
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/stat_arb$ go run .
-02:46:07 loading history...
-panic: runtime error: index out of range [-20]
-
-goroutine 1 [running]:
-main.loadHistory({0x73023f?, 0x0?})
-        /home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go:143 +0x689
-main.main()
-        /home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go:165 +0x125
-exit status 2
 
 
