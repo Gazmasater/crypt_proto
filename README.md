@@ -97,7 +97,7 @@ import (
 	"time"
 )
 
-/* ================= CONFIG ================= */
+/* ===================== CONFIG ===================== */
 
 const (
 	SymbolBTC = "BTC-USDT"
@@ -109,18 +109,14 @@ const (
 	StopLossPct       = 1.2
 	MinCorrelation    = 0.85
 
-	RestInterval = 5 * time.Second
-	LogInterval  = 5 * time.Minute
+	MaxHoldTime = 30 * time.Minute
+
+	RestInterval   = 5 * time.Second
+	MinuteInterval = 1 * time.Minute
+	LogInterval    = 5 * time.Minute
 )
 
-/* ================= DATA ================= */
-
-type Candle struct {
-	Open  float64
-	High  float64
-	Low   float64
-	Close float64
-}
+/* ===================== DATA ===================== */
 
 type MinuteStat struct {
 	Mean float64
@@ -144,10 +140,15 @@ func (r *RingBuffer) Push(v MinuteStat) {
 	r.data[len(r.data)-1] = v
 }
 
-func (r *RingBuffer) Values() []MinuteStat { return r.data }
-func (r *RingBuffer) Full() bool           { return len(r.data) == r.size }
+func (r *RingBuffer) Full() bool {
+	return len(r.data) == r.size
+}
 
-/* ================= SIGNAL ================= */
+func (r *RingBuffer) Values() []MinuteStat {
+	return r.data
+}
+
+/* ===================== SIGNAL ===================== */
 
 type Signal struct {
 	Active     bool
@@ -156,32 +157,36 @@ type Signal struct {
 	EntryTime  time.Time
 }
 
-/* ================= MATH ================= */
+/* ===================== MATH ===================== */
 
-func Correlation(a, b []float64) float64 {
-	n := float64(len(a))
-	var sa, sb, sab, sa2, sb2 float64
+func Correlation(x, y []float64) float64 {
+	n := float64(len(x))
+	var sx, sy, sxy, sx2, sy2 float64
 
-	for i := range a {
-		sa += a[i]
-		sb += b[i]
-		sab += a[i] * b[i]
-		sa2 += a[i] * a[i]
-		sb2 += b[i] * b[i]
+	for i := range x {
+		sx += x[i]
+		sy += y[i]
+		sxy += x[i] * y[i]
+		sx2 += x[i] * x[i]
+		sy2 += y[i] * y[i]
 	}
 
-	num := n*sab - sa*sb
-	den := math.Sqrt((n*sa2-sa*sa)*(n*sb2-sb*sb))
+	num := n*sxy - sx*sy
+	den := math.Sqrt((n*sx2-sx*sx)*(n*sy2-sy*sy))
 	if den == 0 {
 		return 0
 	}
 	return num / den
 }
 
-/* ================= KUCOIN REST ================= */
+/* ===================== KUCOIN REST ===================== */
 
 func fetchLastPrice(symbol string) float64 {
-	url := fmt.Sprintf("https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=%s", symbol)
+	url := fmt.Sprintf(
+		"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=%s",
+		symbol,
+	)
+
 	resp, err := http.Get(url)
 	if err != nil {
 		return 0
@@ -193,14 +198,14 @@ func fetchLastPrice(symbol string) float64 {
 			Price string `json:"price"`
 		} `json:"data"`
 	}
-	json.NewDecoder(resp.Body).Decode(&r)
+	_ = json.NewDecoder(resp.Body).Decode(&r)
 
-	var p float64
-	fmt.Sscanf(r.Data.Price, "%f", &p)
-	return p
+	var price float64
+	fmt.Sscanf(r.Data.Price, "%f", &price)
+	return price
 }
 
-func fetchHistory(symbol string) []MinuteStat {
+func loadHistory(symbol string) []MinuteStat {
 	url := fmt.Sprintf(
 		"https://api.kucoin.com/api/v1/market/candles?symbol=%s&type=1min",
 		symbol,
@@ -215,24 +220,26 @@ func fetchHistory(symbol string) []MinuteStat {
 	var raw struct {
 		Data [][]string `json:"data"`
 	}
-	json.NewDecoder(resp.Body).Decode(&raw)
+	_ = json.NewDecoder(resp.Body).Decode(&raw)
 
+	start := len(raw.Data) - WindowMinutes
 	out := make([]MinuteStat, 0, WindowMinutes)
-	for i := len(raw.Data) - WindowMinutes; i < len(raw.Data); i++ {
-		c := raw.Data[i]
-		var o, h, l, cl float64
-		fmt.Sscanf(c[1], "%f", &o)
-		fmt.Sscanf(c[2], "%f", &h)
-		fmt.Sscanf(c[3], "%f", &l)
-		fmt.Sscanf(c[4], "%f", &cl)
 
-		mean := (o + h + l + cl) / 4
-		out = append(out, MinuteStat{Mean: mean})
+	for i := start; i < len(raw.Data); i++ {
+		var o, h, l, c float64
+		fmt.Sscanf(raw.Data[i][1], "%f", &o)
+		fmt.Sscanf(raw.Data[i][2], "%f", &h)
+		fmt.Sscanf(raw.Data[i][3], "%f", &l)
+		fmt.Sscanf(raw.Data[i][4], "%f", &c)
+
+		out = append(out, MinuteStat{
+			Mean: (o + h + l + c) / 4,
+		})
 	}
 	return out
 }
 
-/* ================= MAIN ================= */
+/* ===================== MAIN ===================== */
 
 func main() {
 	log.SetFlags(log.Ltime)
@@ -242,10 +249,10 @@ func main() {
 	btcRing := NewRing(WindowMinutes)
 	ethRing := NewRing(WindowMinutes)
 
-	for _, v := range fetchHistory(SymbolBTC) {
+	for _, v := range loadHistory(SymbolBTC) {
 		btcRing.Push(v)
 	}
-	for _, v := range fetchHistory(SymbolETH) {
+	for _, v := range loadHistory(SymbolETH) {
 		ethRing.Push(v)
 	}
 
@@ -259,29 +266,30 @@ func main() {
 		curSumETH float64
 		curCount  int
 
-		activeSignal Signal
+		signal Signal
 	)
 
 	restTicker := time.NewTicker(RestInterval)
+	minTicker := time.NewTicker(MinuteInterval)
 	logTicker := time.NewTicker(LogInterval)
-	minuteTicker := time.NewTicker(time.Minute)
 
 	for {
 		select {
 
+		/* ===== REST polling ===== */
 		case <-restTicker.C:
 			curSumBTC += fetchLastPrice(SymbolBTC)
 			curSumETH += fetchLastPrice(SymbolETH)
 			curCount++
 
-		case <-minuteTicker.C:
+		/* ===== minute close ===== */
+		case <-minTicker.C:
 			if curCount == 0 {
 				continue
 			}
 
 			btcRing.Push(MinuteStat{Mean: curSumBTC / float64(curCount)})
 			ethRing.Push(MinuteStat{Mean: curSumETH / float64(curCount)})
-
 			curSumBTC, curSumETH, curCount = 0, 0, 0
 
 			if !btcRing.Full() {
@@ -320,8 +328,9 @@ func main() {
 			mid := (minC + maxC) / 2
 			dev := (curCoef - mid) / mid * 100
 
-			if !activeSignal.Active && math.Abs(dev) >= EntryDeviationPct {
-				activeSignal = Signal{
+			/* ===== ENTRY ===== */
+			if !signal.Active && math.Abs(dev) >= EntryDeviationPct {
+				signal = Signal{
 					Active:    true,
 					EntryCoef: curCoef,
 					EntryTime: time.Now(),
@@ -331,66 +340,61 @@ func main() {
 					}[dev > 0],
 				}
 
-				fmt.Fprintf(file,
+				fmt.Fprintf(
+					file,
 					"[OPEN] %s coef=%.5f dev=%.2f%% corr=%.2f\n",
-					activeSignal.Direction, curCoef, dev, corr,
+					signal.Direction, curCoef, dev, corr,
 				)
 			}
 
-			if activeSignal.Active {
-				pnl := (activeSignal.EntryCoef - curCoef) / activeSignal.EntryCoef * 100
-				fmt.Fprintf(file, "[PNL] %.3f%%\n", pnl)
+			/* ===== POSITION MANAGEMENT ===== */
+			if signal.Active {
+				pnl := (signal.EntryCoef - curCoef) / signal.EntryCoef * 100
+				held := time.Since(signal.EntryTime)
+
+				fmt.Fprintf(file,
+					"[PNL] %.3f%% | held=%v\n",
+					pnl,
+					held.Truncate(time.Second),
+				)
 
 				if math.Abs(dev) <= 0.1 {
-					fmt.Fprintln(file, "[CLOSE] TAKE PROFIT")
-					activeSignal.Active = false
+					fmt.Fprintf(file,
+						"[CLOSE] TAKE PROFIT | pnl=%.3f%% | time=%v\n",
+						pnl, held.Truncate(time.Second),
+					)
+					signal.Active = false
 				}
 
 				if math.Abs(dev) >= StopLossPct {
-					fmt.Fprintln(file, "[CLOSE] STOP LOSS")
-					activeSignal.Active = false
+					fmt.Fprintf(file,
+						"[CLOSE] STOP LOSS | pnl=%.3f%% | time=%v\n",
+						pnl, held.Truncate(time.Second),
+					)
+					signal.Active = false
+				}
+
+				if held >= MaxHoldTime {
+					fmt.Fprintf(file,
+						"[CLOSE] TIME EXIT | pnl=%.3f%% | time=%v\n",
+						pnl, held.Truncate(time.Second),
+					)
+					signal.Active = false
 				}
 			}
 
+		/* ===== console log ===== */
 		case <-logTicker.C:
-			if !btcRing.Full() {
-				continue
+			if btcRing.Full() {
+				coef := btcRing.data[len(btcRing.data)-1].Mean /
+					ethRing.data[len(ethRing.data)-1].Mean
+
+				log.Printf("coef=%.5f signal=%v", coef, signal.Active)
 			}
-			log.Printf("corr=%.2f coef=%.4f dev=%.2f%%",
-				Correlation(
-					[]float64{btcRing.data[len(btcRing.data)-1].Mean},
-					[]float64{ethRing.data[len(ethRing.data)-1].Mean},
-				),
-				btcRing.data[len(btcRing.data)-1].Mean/
-					ethRing.data[len(ethRing.data)-1].Mean,
-				0.0,
-			)
 		}
 	}
 }
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "default",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/go/analysis/passes/unusedwrite",
-			"scheme": "https",
-			"authority": "pkg.go.dev"
-		}
-	},
-	"severity": 2,
-	"message": "unused write to field EntryTime",
-	"source": "unusedwrite",
-	"startLineNumber": 240,
-	"startColumn": 15,
-	"endLineNumber": 240,
-	"endColumn": 15,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
 
 
