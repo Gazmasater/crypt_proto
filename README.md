@@ -85,206 +85,147 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-package main
+package collector
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"math"
 	"net/http"
 	"os"
+	"strings"
 	"time"
+
+	"crypt_proto/pkg/models"
 
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
 )
 
-/* =======================
-   DATA STRUCTURES
-======================= */
+const (
+	maxSubsPerWS = 126
+	subRate      = 120 * time.Millisecond
+	pingInterval = 20 * time.Second
+	reconnectDelay = 3 * time.Second
+)
 
-type MinuteData struct {
-	Min, Max, Sum float64
-	Count         int
-}
-
-type RingBuffer struct {
-	data []MinuteData
-	size int
-}
-
-func NewRingBuffer(size int) *RingBuffer {
-	return &RingBuffer{
-		data: make([]MinuteData, 0, size),
-		size: size,
-	}
-}
-
-// Добавляем новую минуту
-func (r *RingBuffer) AddMinute(m MinuteData) {
-	if len(r.data) < r.size {
-		r.data = append(r.data, m)
-		return
-	}
-	copy(r.data, r.data[1:])
-	r.data[len(r.data)-1] = m
-}
-
-// Последние N минут, усреднённые
-func (r *RingBuffer) AvgValues() []float64 {
-	res := make([]float64, len(r.data))
-	for i, m := range r.data {
-		if m.Count > 0 {
-			res[i] = m.Sum / float64(m.Count)
-		}
-	}
-	return res
-}
-
-func (r *RingBuffer) Len() int { return len(r.data) }
-
-/* =======================
-   MATH
-======================= */
-
-func Correlation(x, y []float64) float64 {
-	if len(x) != len(y) {
-		return 0
-	}
-	n := float64(len(x))
-	var sx, sy, sxy, sx2, sy2 float64
-
-	for i := range x {
-		sx += x[i]
-		sy += y[i]
-		sxy += x[i] * y[i]
-		sx2 += x[i] * x[i]
-		sy2 += y[i] * y[i]
-	}
-
-	num := n*sxy - sx*sy
-	den := math.Sqrt((n*sx2 - sx*sx) * (n*sy2 - sy*sy))
-	if den == 0 {
-		return 0
-	}
-	return num / den
-}
-
-/* =======================
-   SIGNAL LOGIC
-======================= */
-
-type Signal struct {
-	Direction   string
-	EntryCoef   float64
-	EntryTime   time.Time
-	StopLossPct float64
-	TakeProfit  float64
-	Active      bool
-}
-
-func CheckSignal(btc, eth *RingBuffer, spreadPct, minCorr float64, f *os.File, sig *Signal) {
-	b := btc.AvgValues()
-	e := eth.AvgValues()
-	if len(b) == 0 || len(e) == 0 {
-		return
-	}
-
-	corr := Correlation(b, e)
-	if corr < minCorr || sig.Active {
-		return
-	}
-
-	curCoef := b[len(b)-1] / e[len(e)-1]
-
-	minC, maxC := curCoef, curCoef
-	for i := range b {
-		c := b[i] / e[i]
-		if c < minC {
-			minC = c
-		}
-		if c > maxC {
-			maxC = c
-		}
-	}
-
-	mid := (minC + maxC) / 2
-	dev := (curCoef - mid) / mid * 100
-
-	if math.Abs(dev) < spreadPct {
-		return
-	}
-
-	dir := "BUY BTC / SELL ETH"
-	if dev > 0 {
-		dir = "SELL BTC / BUY ETH"
-	}
-
-	sig.Direction = dir
-	sig.EntryCoef = curCoef
-	sig.EntryTime = time.Now()
-	sig.StopLossPct = spreadPct // фиксируем stop-loss = spread
-	sig.TakeProfit = 0
-	sig.Active = true
-
-	fmt.Fprintf(f, "[SIGNAL] %s | coef=%.5f | dev=%.2f%% | corr=%.3f\n",
-		dir, curCoef, dev, corr)
-	f.Sync()
-}
-
-/* =======================
-   PAPER PnL
-======================= */
-
-func UpdatePnL(btc, eth *RingBuffer, sig *Signal, f *os.File) {
-	if !sig.Active || sig.EntryCoef == 0 {
-		return
-	}
-
-	curCoef := btc.AvgValues()[len(btc.data)-1] / eth.AvgValues()[len(eth.data)-1]
-	var pnl float64
-	if sig.Direction == "BUY BTC / SELL ETH" {
-		pnl = (curCoef - sig.EntryCoef) / sig.EntryCoef * 100
-	} else {
-		pnl = (sig.EntryCoef - curCoef) / sig.EntryCoef * 100
-	}
-
-	fmt.Fprintf(f, "[PnL] %.3f%% | curCoef=%.5f | entry=%.5f\n", pnl, curCoef, sig.EntryCoef)
-	f.Sync()
-
-	// Stop-loss или take-profit
-	if math.Abs(pnl) >= sig.StopLossPct {
-		fmt.Fprintf(f, "[CLOSE] Signal closed due to stop-loss | pnl=%.3f%%\n", pnl)
-		sig.Active = false
-	}
-}
-
-/* =======================
-   KUCOIN WS
-======================= */
-
-type KuCoin struct {
+type KuCoinCollector struct {
 	ctx    context.Context
 	cancel context.CancelFunc
-	conn   *websocket.Conn
-	last   map[string]float64
-	out    chan<- MinuteData
+	wsList []*kucoinWS
+	out    chan<- *models.MarketData
 }
 
-func NewKuCoin(out chan<- MinuteData) *KuCoin {
+type Last struct {
+	Bid float64
+	Ask float64
+}
+
+type kucoinWS struct {
+	id      int
+	conn    *websocket.Conn
+	symbols []string
+
+	last map[string]Last
+}
+
+func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) {
+	symbols, err := readPairsFromCSV(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(symbols) == 0 {
+		return nil, nil, fmt.Errorf("no symbols")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
-	return &KuCoin{
+
+	var wsList []*kucoinWS
+	for i := 0; i < len(symbols); i += maxSubsPerWS {
+		end := i + maxSubsPerWS
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+
+		wsList = append(wsList, &kucoinWS{
+			id:      len(wsList),
+			symbols: symbols[i:end],
+			last:    make(map[string]Last),
+		})
+	}
+
+	c := &KuCoinCollector{
 		ctx:    ctx,
 		cancel: cancel,
-		last:   make(map[string]float64),
-		out:    out,
+		wsList: wsList,
+	}
+
+	return c, symbols, nil
+}
+
+func (c *KuCoinCollector) Name() string { return "KuCoin" }
+
+func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
+	c.out = out
+	for _, ws := range c.wsList {
+		go ws.run(c) // запускаем WS с авто-перезапуском
+	}
+	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
+	return nil
+}
+
+func (c *KuCoinCollector) Stop() error {
+	c.cancel()
+	for _, ws := range c.wsList {
+		if ws.conn != nil {
+			_ = ws.conn.Close()
+		}
+	}
+	return nil
+}
+
+func (ws *kucoinWS) run(c *KuCoinCollector) {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+
+		// подключаемся
+		if err := ws.connect(); err != nil {
+			log.Printf("[KuCoin WS %d] connect error: %v, retry in %v\n", ws.id, err, reconnectDelay)
+			time.Sleep(reconnectDelay)
+			continue
+		}
+
+		// запускаем подписки и пинг
+		done := make(chan struct{})
+		go func() {
+			ws.subscribeLoop()
+			close(done)
+		}()
+		go ws.pingLoop()
+
+		// читаем данные
+		if err := ws.readLoop(c); err != nil {
+			log.Printf("[KuCoin WS %d] readLoop ended: %v\n", ws.id, err)
+		}
+
+		// закрываем соединение и перезапускаем
+		if ws.conn != nil {
+			_ = ws.conn.Close()
+			ws.conn = nil
+		}
+
+		log.Printf("[KuCoin WS %d] reconnecting in %v...\n", ws.id, reconnectDelay)
+		time.Sleep(reconnectDelay)
 	}
 }
 
-func (k *KuCoin) Start(symbols []string) error {
+func (ws *kucoinWS) connect() error {
 	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -295,141 +236,148 @@ func (k *KuCoin) Start(symbols []string) error {
 	var r struct {
 		Data struct {
 			Token           string `json:"token"`
-			InstanceServers []struct{ Endpoint string } `json:"instanceServers"`
+			InstanceServers []struct {
+				Endpoint string `json:"endpoint"`
+			} `json:"instanceServers"`
 		} `json:"data"`
 	}
-	json.NewDecoder(resp.Body).Decode(&r)
 
-	url := fmt.Sprintf("%s?token=%s&connectId=%d", r.Data.InstanceServers[0].Endpoint, r.Data.Token, time.Now().UnixNano())
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf(
+		"%s?token=%s&connectId=%d",
+		r.Data.InstanceServers[0].Endpoint,
+		r.Data.Token,
+		time.Now().UnixNano(),
+	)
+
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		return err
 	}
-	k.conn = conn
 
-	for _, s := range symbols {
-		conn.WriteJSON(map[string]any{
+	ws.conn = conn
+	log.Printf("[KuCoin WS %d] connected\n", ws.id)
+	return nil
+}
+
+func (ws *kucoinWS) subscribeLoop() {
+	t := time.NewTicker(subRate)
+	defer t.Stop()
+	for _, s := range ws.symbols {
+		<-t.C
+		_ = ws.conn.WriteJSON(map[string]any{
 			"id":       time.Now().UnixNano(),
 			"type":     "subscribe",
-			"topic":    "/market/candles:1min:" + s,
+			"topic":    "/market/ticker:" + s,
 			"response": true,
 		})
 	}
-
-	go k.read(symbols)
-	go k.ping()
-	return nil
 }
 
-func (k *KuCoin) ping() {
-	t := time.NewTicker(20 * time.Second)
+func (ws *kucoinWS) pingLoop() {
+	t := time.NewTicker(pingInterval)
+	defer t.Stop()
 	for range t.C {
-		k.conn.WriteJSON(map[string]any{"type": "ping"})
+		if ws.conn != nil {
+			_ = ws.conn.WriteJSON(map[string]any{"id": time.Now().UnixNano(), "type": "ping"})
+		}
 	}
 }
 
-func (k *KuCoin) read(symbols []string) {
+func (ws *kucoinWS) readLoop(c *KuCoinCollector) error {
 	for {
-		_, msg, err := k.conn.ReadMessage()
+		if ws.conn == nil {
+			return fmt.Errorf("connection closed")
+		}
+		_, msg, err := ws.conn.ReadMessage()
 		if err != nil {
-			log.Println("ws error:", err)
-			return
+			return err
 		}
-
-		for _, sym := range symbols {
-			data := gjson.GetBytes(msg, "data")
-			if !data.Exists() {
-				continue
-			}
-
-			// Берём close каждой свечи
-			closePrice := data.Get("close").Float()
-			if closePrice == 0 {
-				continue
-			}
-			k.out <- MinuteData{Sum: closePrice, Count: 1}
-		}
+		ws.handle(c, msg)
 	}
 }
 
-/* =======================
-   LOAD HISTORY
-======================= */
+func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
+	const prefix = "/market/ticker:"
+	const prefixLen = len(prefix)
 
-func loadHistory(symbol string, buf *RingBuffer) error {
-	end := time.Now()
-	start := end.Add(-120 * time.Minute)
+	topicRes := gjson.GetBytes(msg, "topic")
+	if !topicRes.Exists() {
+		return
+	}
 
-	url := fmt.Sprintf("https://api.kucoin.com/api/v1/market/candles?type=1min&symbol=%s&startAt=%d&endAt=%d",
-		symbol, start.Unix(), end.Unix())
+	raw := topicRes.Raw // строка JSON: "/market/ticker:BTC-USDT"
+	if len(raw) <= prefixLen+2 {
+		return
+	}
 
-	resp, err := http.Get(url)
+	if raw[1:1+prefixLen] != prefix { // пропускаем первую кавычку
+		return
+	}
+
+	symbol := raw[1+prefixLen : len(raw)-1]
+
+	data := gjson.GetBytes(msg, "data")
+	bid := data.Get("bestBid").Float()
+	ask := data.Get("bestAsk").Float()
+	if bid == 0 || ask == 0 {
+		return
+	}
+
+	if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask {
+		return
+	}
+
+	ws.last[symbol] = Last{Bid: bid, Ask: ask}
+
+	c.out <- &models.MarketData{
+		Exchange: "KuCoin",
+		Symbol:   symbol,
+		Bid:      bid,
+		Ask:      ask,
+		BidSize:  data.Get("bestBidSize").Float(),
+		AskSize:  data.Get("bestAskSize").Float(),
+	}
+}
+
+func readPairsFromCSV(path string) ([]string, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	arr := gjson.ParseBytes(body).Array()
-	for i := len(arr) - 1; i >= 0; i-- {
-		c := arr[i].Array()
-		closePrice := c[2].Float()
-		high := c[3].Float()
-		low := c[4].Float()
-		buf.AddMinute(MinuteData{Min: low, Max: high, Sum: closePrice, Count: 1})
-	}
-	return nil
-}
-
-/* =======================
-   MAIN
-======================= */
-
-func main() {
-	btcBuf := NewRingBuffer(120)
-	ethBuf := NewRingBuffer(120)
-
-	fmt.Println("loading history...")
-	if err := loadHistory("BTC-USDT", btcBuf); err != nil {
-		log.Println("BTC history error:", err)
-	}
-	if err := loadHistory("ETH-USDT", ethBuf); err != nil {
-		log.Println("ETH history error:", err)
-	}
-	fmt.Println("history loaded")
-
-	f, _ := os.OpenFile("signals.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	defer f.Close()
-
-	out := make(chan MinuteData, 1000)
-	sig := &Signal{}
-
-	kc := NewKuCoin(out)
-	if err := kc.Start([]string{"BTC-USDT", "ETH-USDT"}); err != nil {
-		panic(err)
+	rows, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		return nil, err
 	}
-
-	logTicker := time.NewTicker(5 * time.Minute)
-	spreadPct := 0.6
-	minCorr := 0.85
-
-	for {
-		select {
-		case md := <-out:
-			btcBuf.AddMinute(md)
-			ethBuf.AddMinute(md)
-
-			if btcBuf.Len() == 120 && ethBuf.Len() == 120 {
-				CheckSignal(btcBuf, ethBuf, spreadPct, minCorr, f, sig)
+	set := make(map[string]struct{})
+	for _, row := range rows[1:] {
+		for i := 3; i <= 5 && i < len(row); i++ {
+			if p := parseLeg(row[i]); p != "" {
+				set[p] = struct{}{}
 			}
-			UpdatePnL(btcBuf, ethBuf, sig, f)
-
-		case <-logTicker.C:
-			fmt.Printf("[METRICS] BTC avg=%.5f ETH avg=%.5f\n",
-				btcBuf.AvgValues()[len(btcBuf.data)-1],
-				ethBuf.AvgValues()[len(ethBuf.data)-1])
 		}
 	}
+	res := make([]string, 0, len(set))
+	for k := range set {
+		res = append(res, k)
+	}
+	return res, nil
+}
+
+func parseLeg(s string) string {
+	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
+	if len(parts) < 2 {
+		return ""
+	}
+	p := strings.Split(parts[1], "/")
+	if len(p) != 2 {
+		return ""
+	}
+	return p[0] + "-" + p[1]
 }
 
 
