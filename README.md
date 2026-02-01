@@ -106,20 +106,22 @@ import (
 )
 
 /*
-Isolated stat-arb scaffold for KuCoin:
-- window: 120 x 1-min bars (2 hours) stored in ring buffer
-- warmup history via REST candles (1min)
-- live updates via WS ticker events -> mid-price -> minute bars (high/low/mean)
-- every 5 minutes log beta(OLS), spread, z-score into JSONL
+Isolated KuCoin stat-arb scaffold:
+- Window: 120 x 1-min bars (2 hours) in ring buffer
+- Warmup: REST candles (1min)
+- Live: WS ticker -> mid price -> minute bars (high/low/mean)
+- ENTRY/EXIT signals printed immediately when they appear (based on z-score from 119 closed + partial)
+- Every 5 minutes: log beta/spread/z + position + action into JSONL
+- Also log on every ENTER/EXIT (so you get exact entry/exit moments in the log)
 
-REST:
-GET /api/v1/market/candles?symbol=BTC-USDT&type=1min&startAt=...&endAt=...
+Signals:
+- ENTER SHORT_SPREAD  if z >= entryZ  (sell BTC, buy ETH)
+- ENTER LONG_SPREAD   if z <= -entryZ (buy BTC, sell ETH)
+- EXIT                if abs(z) <= exitZ
 
-WS:
-POST /api/v1/bullet-public -> endpoint/token/pingInterval
-subscribe topics:
-  /market/ticker:BTC-USDT
-  /market/ticker:ETH-USDT
+Anti-noise:
+- freshness check: only compute if last BTC tick and ETH tick timestamps differ <= freshMs
+- hold-time: condition must hold for holdMs before entering (set to 0 to disable)
 */
 
 const (
@@ -128,13 +130,13 @@ const (
 	logPath    = "statarb_5m.jsonl"
 )
 
-// ====================== Types ======================
+// ====================== Bars / Ring ======================
 
 type Bar struct {
 	MinuteMs int64
 	High     float64
 	Low      float64
-	Mean     float64 // avg of mid in this minute
+	Mean     float64
 	Count    int
 }
 
@@ -146,9 +148,8 @@ type Ring struct {
 	mutex sync.Mutex
 }
 
-func NewRing(capacity int) *Ring {
-	return &Ring{buf: make([]Bar, capacity), cap: capacity}
-}
+func NewRing(capacity int) *Ring { return &Ring{buf: make([]Bar, capacity), cap: capacity} }
+
 func (r *Ring) Push(b Bar) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -158,11 +159,7 @@ func (r *Ring) Push(b Bar) {
 		r.size++
 	}
 }
-func (r *Ring) Len() int {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	return r.size
-}
+
 func (r *Ring) Snapshot() []Bar {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -173,6 +170,14 @@ func (r *Ring) Snapshot() []Bar {
 	}
 	return out
 }
+
+func (r *Ring) Len() int {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	return r.size
+}
+
+// ====================== Ticks / Minute Aggregation ======================
 
 type Tick struct {
 	Symbol string
@@ -201,7 +206,6 @@ func NewMinuteAgg(symbol string) *MinuteAgg { return &MinuteAgg{symbol: symbol} 
 
 func minuteStartMs(tsMs int64) int64 { return (tsMs / 60000) * 60000 }
 
-// Update returns (closedBar, ok) when minute switches.
 func (a *MinuteAgg) Update(t Tick) (Bar, bool) {
 	mid := t.Mid()
 	if mid <= 0 {
@@ -243,7 +247,6 @@ func (a *MinuteAgg) Update(t Tick) (Bar, bool) {
 	return closed, true
 }
 
-// Partial bar for the current (not yet closed) minute.
 func (a *MinuteAgg) Partial() (Bar, bool) {
 	if a.curMin == 0 || a.cnt == 0 {
 		return Bar{}, false
@@ -257,7 +260,7 @@ func (a *MinuteAgg) Partial() (Bar, bool) {
 	}, true
 }
 
-// ====================== REST warmup ======================
+// ====================== REST Warmup ======================
 
 type restKlinesResp struct {
 	Code string     `json:"code"`
@@ -302,7 +305,6 @@ func fetchKlines(ctx context.Context, symbol string, startAtSec, endAtSec int64)
 
 	out := make([]Kline, 0, len(r.Data))
 	for _, row := range r.Data {
-		// [time, open, close, high, low, volume, turnover]
 		if len(row) < 5 {
 			continue
 		}
@@ -370,8 +372,8 @@ type wsEnvelope struct {
 type wsTickerData struct {
 	BestAsk string `json:"bestAsk"`
 	BestBid string `json:"bestBid"`
-	Time    int64  `json:"time"` // ms (some payloads use "time")
-	Time2   int64  `json:"Time"` // ms (some payloads use "Time")
+	Time    int64  `json:"time"` // ms
+	Time2   int64  `json:"Time"` // ms (fallback)
 }
 
 func parseTopicSymbol(topic string) string {
@@ -481,7 +483,7 @@ func runWS(ctx context.Context, tickOut chan<- Tick) error {
 	}
 }
 
-// ====================== Stats + 5m logging ======================
+// ====================== Stats (beta/spread/z) ======================
 
 type Stats struct {
 	Beta   float64
@@ -490,41 +492,7 @@ type Stats struct {
 	Sigma  float64
 	Z      float64
 	Mode   string // "119+partial" or "120closed"
-}
-
-type LogRow struct {
-	AtUTC string `json:"at_utc"`
-
-	Beta   float64 `json:"beta"`
-	Spread float64 `json:"spread"`
-	Mu     float64 `json:"mu"`
-	Sigma  float64 `json:"sigma"`
-	Z      float64 `json:"z"`
-	Mode   string  `json:"mode"`
-}
-
-type JSONLLogger struct {
-	mu  sync.Mutex
-	f   *os.File
-	enc *json.Encoder
-}
-
-func NewJSONLLogger(path string) (*JSONLLogger, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return nil, err
-	}
-	return &JSONLLogger{f: f, enc: json.NewEncoder(f)}, nil
-}
-func (l *JSONLLogger) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.f.Close()
-}
-func (l *JSONLLogger) Write(row LogRow) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	_ = l.enc.Encode(row)
+	MinMs  int64
 }
 
 func meanStd(a []float64) (mu, sd float64) {
@@ -574,11 +542,10 @@ func olsBeta(x, y []float64) float64 {
 	return cov / vx
 }
 
-func buildSeries120(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg) (btc120, eth120 []float64, mode string, ok bool) {
+func buildSeries120(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg) (btc120, eth120 []float64, mode string, minMs int64, ok bool) {
 	sBTC := rBTC.Snapshot()
 	sETH := rETH.Snapshot()
 
-	// try 119 closed + partial
 	pbBTC, okB := aggBTC.Partial()
 	pbETH, okE := aggETH.Partial()
 	if okB && okE && pbBTC.MinuteMs == pbETH.MinuteMs && len(sBTC) >= 119 && len(sETH) >= 119 {
@@ -592,10 +559,9 @@ func buildSeries120(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg) (btc120, eth120
 		}
 		btc120 = append(btc120, pbBTC.Mean)
 		eth120 = append(eth120, pbETH.Mean)
-		return btc120, eth120, "119+partial", true
+		return btc120, eth120, "119+partial", pbBTC.MinuteMs, true
 	}
 
-	// fallback: 120 closed
 	if len(sBTC) >= 120 && len(sETH) >= 120 {
 		baseBTC := sBTC[len(sBTC)-120:]
 		baseETH := sETH[len(sETH)-120:]
@@ -605,66 +571,147 @@ func buildSeries120(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg) (btc120, eth120
 			btc120 = append(btc120, baseBTC[i].Mean)
 			eth120 = append(eth120, baseETH[i].Mean)
 		}
-		return btc120, eth120, "120closed", true
+		return btc120, eth120, "120closed", baseBTC[119].MinuteMs, true
 	}
-
-	return nil, nil, "", false
+	return nil, nil, "", 0, false
 }
 
-func calcStats(btc120, eth120 []float64) (Stats, bool) {
+func calcStats(btc120, eth120 []float64) (beta, spread, mu, sigma, z float64, ok bool) {
 	if len(btc120) != 120 || len(eth120) != 120 {
-		return Stats{}, false
+		return 0, 0, 0, 0, 0, false
 	}
 	lbtc := make([]float64, 120)
 	leth := make([]float64, 120)
 	for i := 0; i < 120; i++ {
 		if btc120[i] <= 0 || eth120[i] <= 0 {
-			return Stats{}, false
+			return 0, 0, 0, 0, 0, false
 		}
 		lbtc[i] = math.Log(btc120[i])
 		leth[i] = math.Log(eth120[i])
 	}
 
-	beta := olsBeta(leth, lbtc)
+	beta = olsBeta(leth, lbtc)
 
 	spreads := make([]float64, 120)
 	for i := 0; i < 120; i++ {
 		spreads[i] = lbtc[i] - beta*leth[i]
 	}
-	mu, sigma := meanStd(spreads)
+	mu, sigma = meanStd(spreads)
 
-	cur := spreads[119]
-	z := 0.0
+	spread = spreads[119]
+	z = 0.0
 	if sigma > 0 {
-		z = (cur - mu) / sigma
+		z = (spread - mu) / sigma
 	}
+	return beta, spread, mu, sigma, z, true
+}
 
-	return Stats{Beta: beta, Spread: cur, Mu: mu, Sigma: sigma, Z: z}, true
+// ====================== JSONL logger ======================
+
+type LogRow struct {
+	AtUTC string `json:"at_utc"`
+
+	Beta   float64 `json:"beta"`
+	Spread float64 `json:"spread"`
+	Mu     float64 `json:"mu"`
+	Sigma  float64 `json:"sigma"`
+	Z      float64 `json:"z"`
+	Mode   string  `json:"mode"`
+
+	Pos    string `json:"pos"`
+	Action string `json:"action"` // "TICK", "LOG_5M", "ENTER_LONG", "ENTER_SHORT", "EXIT"
+}
+
+type JSONLLogger struct {
+	mu  sync.Mutex
+	f   *os.File
+	enc *json.Encoder
+}
+
+func NewJSONLLogger(path string) (*JSONLLogger, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, err
+	}
+	return &JSONLLogger{f: f, enc: json.NewEncoder(f)}, nil
+}
+func (l *JSONLLogger) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.f.Close()
+}
+func (l *JSONLLogger) Write(row LogRow) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_ = l.enc.Encode(row)
 }
 
 func nextLogTimeUTC(now time.Time) time.Time {
 	return now.Truncate(5 * time.Minute).Add(5 * time.Minute)
 }
 
+func writeLog(logg *JSONLLogger, action string, pos string, st Stats) {
+	logg.Write(LogRow{
+		AtUTC:  time.Now().UTC().Format(time.RFC3339),
+		Beta:   st.Beta,
+		Spread: st.Spread,
+		Mu:     st.Mu,
+		Sigma:  st.Sigma,
+		Z:      st.Z,
+		Mode:   st.Mode,
+		Pos:    pos,
+		Action: action,
+	})
+}
+
+// ====================== Trading signal state ======================
+
+type Position int
+
+const (
+	Flat Position = iota
+	LongSpread
+	ShortSpread
+)
+
+func (p Position) String() string {
+	switch p {
+	case LongSpread:
+		return "LONG_SPREAD"
+	case ShortSpread:
+		return "SHORT_SPREAD"
+	default:
+		return "FLAT"
+	}
+}
+
+type HoldState struct {
+	longSince  int64
+	shortSince int64
+}
+
 // ====================== Main ======================
 
 func main() {
+	// ---- params ----
+	entryZ := 2.2
+	exitZ := 0.8
+	freshMs := int64(300)     // require BTC/ETH tick timestamps within 300ms
+	holdMs := int64(1000)     // require z condition hold for 1000ms before entering (0 disables)
+	calcThrottleMs := int64(150) // don’t calc faster than every 150ms
+	// --------------
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// graceful stop
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sig
-		cancel()
-	}()
+	go func() { <-sig; cancel() }()
 
-	// rings
 	rBTC := NewRing(windowBars)
 	rETH := NewRing(windowBars)
 
-	// warmup history (take a bit more than 120 minutes)
+	// warmup history
 	nowSec := time.Now().Unix()
 	startSec := nowSec - int64((windowBars+30)*60)
 
@@ -698,15 +745,14 @@ func main() {
 	if len(secs) > windowBars {
 		secs = secs[len(secs)-windowBars:]
 	}
-
 	for _, s := range secs {
 		kb := mBTC[s]
 		ke := mETH[s]
-		// history minute mean proxy: (high+low)/2
 		rBTC.Push(Bar{MinuteMs: s * 1000, High: kb.High, Low: kb.Low, Mean: 0.5 * (kb.High + kb.Low), Count: 1})
 		rETH.Push(Bar{MinuteMs: s * 1000, High: ke.High, Low: ke.Low, Mean: 0.5 * (ke.High + ke.Low), Count: 1})
 	}
-	fmt.Printf("Warmup done: BTC=%d bars, ETH=%d bars\n", rBTC.Len(), rETH.Len())
+	fmt.Printf("Warmup done: BTC=%d bars, ETH=%d bars | entryZ=%.2f exitZ=%.2f holdMs=%d freshMs=%d\n",
+		rBTC.Len(), rETH.Len(), entryZ, exitZ, holdMs, freshMs)
 
 	// logger
 	logg, err := NewJSONLLogger(logPath)
@@ -715,13 +761,11 @@ func main() {
 		return
 	}
 	defer logg.Close()
-	fmt.Println("Logging every 5 minutes to:", logPath)
+	fmt.Println("Logging every 5 minutes + on ENTER/EXIT to:", logPath)
 
-	// 5-minute aligned timer
 	logTimer := time.NewTimer(time.Until(nextLogTimeUTC(time.Now().UTC())))
 	defer logTimer.Stop()
 
-	// WS ticks
 	ticks := make(chan Tick, 20000)
 	go func() {
 		for {
@@ -738,9 +782,47 @@ func main() {
 	aggBTC := NewMinuteAgg("BTC-USDT")
 	aggETH := NewMinuteAgg("ETH-USDT")
 
-	// pending to align closed minutes
-	pendingBTC := make(map[int64]Bar)
-	pendingETH := make(map[int64]Bar)
+	var lastBTCms int64
+	var lastETHms int64
+
+	pos := Flat
+	hold := HoldState{}
+	var lastCalcAtMs int64
+
+	compute := func(nowMs int64) (Stats, bool) {
+		if nowMs-lastCalcAtMs < calcThrottleMs {
+			return Stats{}, false
+		}
+		lastCalcAtMs = nowMs
+
+		if lastBTCms == 0 || lastETHms == 0 {
+			return Stats{}, false
+		}
+		d := lastBTCms - lastETHms
+		if d < 0 {
+			d = -d
+		}
+		if d > freshMs {
+			return Stats{}, false
+		}
+
+		btc120, eth120, mode, minMs, ok := buildSeries120(rBTC, rETH, aggBTC, aggETH)
+		if !ok {
+			return Stats{}, false
+		}
+		beta, spread, mu, sigma, z, ok := calcStats(btc120, eth120)
+		if !ok {
+			return Stats{}, false
+		}
+		return Stats{Beta: beta, Spread: spread, Mu: mu, Sigma: sigma, Z: z, Mode: mode, MinMs: minMs}, true
+	}
+
+	printSignal := func(tag string, st Stats) {
+		t := time.Now().UTC().Format("2006-01-02 15:04:05")
+		min := time.UnixMilli(st.MinMs).UTC().Format("2006-01-02 15:04")
+		fmt.Printf("[%s] %s | minute=%s | z=%+.3f beta=%.4f spread=%.6f mode=%s pos=%s\n",
+			t, tag, min, st.Z, st.Beta, st.Spread, st.Mode, pos.String())
+	}
 
 	for {
 		select {
@@ -748,61 +830,85 @@ func main() {
 			return
 
 		case <-logTimer.C:
-			// reset timer first (no drift)
 			logTimer.Reset(time.Until(nextLogTimeUTC(time.Now().UTC())))
-
-			btc120, eth120, mode, ok := buildSeries120(rBTC, rETH, aggBTC, aggETH)
+			nowMs := time.Now().UnixMilli()
+			st, ok := compute(nowMs)
 			if !ok {
-				fmt.Println("[5m log] not enough data yet")
 				continue
 			}
-			st, ok := calcStats(btc120, eth120)
-			if !ok {
-				fmt.Println("[5m log] calc failed")
-				continue
-			}
-			st.Mode = mode
-
-			row := LogRow{
-				AtUTC:  time.Now().UTC().Format(time.RFC3339),
-				Beta:   st.Beta,
-				Spread: st.Spread,
-				Mu:     st.Mu,
-				Sigma:  st.Sigma,
-				Z:      st.Z,
-				Mode:   st.Mode,
-			}
-			logg.Write(row)
-			fmt.Printf("[5m log] beta=%.4f spread=%.6f z=%+.3f mode=%s\n", st.Beta, st.Spread, st.Z, st.Mode)
+			writeLog(logg, "LOG_5M", pos.String(), st)
+			fmt.Printf("[5m log] beta=%.4f spread=%.6f z=%+.3f mode=%s pos=%s\n",
+				st.Beta, st.Spread, st.Z, st.Mode, pos.String())
 
 		case t := <-ticks:
-			switch t.Symbol {
-			case "BTC-USDT":
+			// timestamps for freshness
+			if t.Symbol == "BTC-USDT" {
+				lastBTCms = t.TimeMs
+			} else if t.Symbol == "ETH-USDT" {
+				lastETHms = t.TimeMs
+			}
+
+			// update aggregators and push closed bars
+			if t.Symbol == "BTC-USDT" {
 				if bar, ok := aggBTC.Update(t); ok {
 					rBTC.Push(bar)
-					pendingBTC[bar.MinuteMs] = bar
-					if e, ok2 := pendingETH[bar.MinuteMs]; ok2 {
-						// minute closed for both -> cleanup
-						delete(pendingBTC, bar.MinuteMs)
-						delete(pendingETH, bar.MinuteMs)
-						_ = e // (hook for future: onPairBar)
-					}
 				}
-			case "ETH-USDT":
+			} else if t.Symbol == "ETH-USDT" {
 				if bar, ok := aggETH.Update(t); ok {
 					rETH.Push(bar)
-					pendingETH[bar.MinuteMs] = bar
-					if b, ok2 := pendingBTC[bar.MinuteMs]; ok2 {
-						// minute closed for both -> cleanup
-						delete(pendingBTC, bar.MinuteMs)
-						delete(pendingETH, bar.MinuteMs)
-						_ = b // (hook for future: onPairBar)
+				}
+			}
+
+			// compute stats and fire signals ASAP
+			nowMs := time.Now().UnixMilli()
+			st, ok := compute(nowMs)
+			if !ok {
+				continue
+			}
+
+			absZ := st.Z
+			if absZ < 0 {
+				absZ = -absZ
+			}
+
+			switch pos {
+			case Flat:
+				if st.Z >= entryZ {
+					if hold.shortSince == 0 {
+						hold.shortSince = nowMs
 					}
+					hold.longSince = 0
+					if holdMs == 0 || nowMs-hold.shortSince >= holdMs {
+						pos = ShortSpread
+						hold.shortSince, hold.longSince = 0, 0
+						printSignal("ENTER SHORT_SPREAD (sell BTC, buy ETH)", st)
+						writeLog(logg, "ENTER_SHORT", pos.String(), st)
+					}
+				} else if st.Z <= -entryZ {
+					if hold.longSince == 0 {
+						hold.longSince = nowMs
+					}
+					hold.shortSince = 0
+					if holdMs == 0 || nowMs-hold.longSince >= holdMs {
+						pos = LongSpread
+						hold.shortSince, hold.longSince = 0, 0
+						printSignal("ENTER LONG_SPREAD (buy BTC, sell ETH)", st)
+						writeLog(logg, "ENTER_LONG", pos.String(), st)
+					}
+				} else {
+					hold.shortSince, hold.longSince = 0, 0
+				}
+
+			case LongSpread, ShortSpread:
+				if absZ <= exitZ {
+					printSignal("EXIT (back to FLAT)", st)
+					pos = Flat
+					hold.shortSince, hold.longSince = 0, 0
+					writeLog(logg, "EXIT", pos.String(), st)
 				}
 			}
 		}
 	}
 }
-
 
 
