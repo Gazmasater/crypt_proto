@@ -912,3 +912,8 @@ func main() {
 }
 
 
+Warmup done: BTC=120 bars, ETH=120 bars | entryZ=2.20 exitZ=0.80 holdMs=1000 freshMs=300
+Logging every 5 minutes + on ENTER/EXIT to: statarb_5m.jsonl
+[2026-02-01 19:36:24] ENTER LONG_SPREAD (buy BTC, sell ETH) | minute=2026-02-01 19:36 | z=-2.238 beta=0.3431 spread=8.597395 mode=119+partial pos=LONG_SPREAD
+
+
