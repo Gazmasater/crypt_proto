@@ -106,22 +106,25 @@ import (
 )
 
 /*
-Isolated KuCoin stat-arb scaffold:
-- Window: 120 x 1-min bars (2 hours) in ring buffer
-- Warmup: REST candles (1min)
-- Live: WS ticker -> mid price -> minute bars (high/low/mean)
-- ENTRY/EXIT signals printed immediately when they appear (based on z-score from 119 closed + partial)
-- Every 5 minutes: log beta/spread/z + position + action into JSONL
-- Also log on every ENTER/EXIT (so you get exact entry/exit moments in the log)
+KuCoin stat-arb (isolated, one file):
+- Window: 120 x 1-min bars (2 hours) in ring buffers
+- Warmup: REST candles (1min) for BTC-USDT and ETH-USDT
+- Live: WS ticker -> mid -> minute bars (high/low/mean)
+- Signals ASAP (intra-minute): based on z-score computed on aligned window (119 common closed minutes + partial)
+- Exit ASAP: abs(z) <= exitZ
+- Every 5 minutes: log beta/spread/z + pos/action to JSONL
+- On ENTER/EXIT: log immediately to JSONL
+- Every minute (STRICTLY on CLOSED minute for both): print PROFIT/LOSS (unrealized) if in position
+  and log PNL_1M row with pnl_pct based on CLOSED-only stats ("120closed_aligned").
 
-Signals:
-- ENTER SHORT_SPREAD  if z >= entryZ  (sell BTC, buy ETH)
-- ENTER LONG_SPREAD   if z <= -entryZ (buy BTC, sell ETH)
-- EXIT                if abs(z) <= exitZ
+PnL model (paper PnL, no execution):
+- spread_t = ln(BTC_t) - beta * ln(ETH_t)
+- LONG_SPREAD  (buy BTC, sell ETH)  => pnl_log = +(spread_now - spread_entry)
+- SHORT_SPREAD (sell BTC, buy ETH)  => pnl_log = -(spread_now - spread_entry)
+- pnl_pct ≈ exp(pnl_log) - 1
 
-Anti-noise:
-- freshness check: only compute if last BTC tick and ETH tick timestamps differ <= freshMs
-- hold-time: condition must hold for holdMs before entering (set to 0 to disable)
+IMPORTANT: alignment fix:
+All stats are computed using common minutes (intersection by MinuteMs) to avoid BTC/ETH time drift.
 */
 
 const (
@@ -491,8 +494,8 @@ type Stats struct {
 	Mu     float64
 	Sigma  float64
 	Z      float64
-	Mode   string // "119+partial" or "120closed"
-	MinMs  int64
+	Mode   string
+	MinMs  int64 // minute start of last point
 }
 
 func meanStd(a []float64) (mu, sd float64) {
@@ -542,41 +545,7 @@ func olsBeta(x, y []float64) float64 {
 	return cov / vx
 }
 
-func buildSeries120(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg) (btc120, eth120 []float64, mode string, minMs int64, ok bool) {
-	sBTC := rBTC.Snapshot()
-	sETH := rETH.Snapshot()
-
-	pbBTC, okB := aggBTC.Partial()
-	pbETH, okE := aggETH.Partial()
-	if okB && okE && pbBTC.MinuteMs == pbETH.MinuteMs && len(sBTC) >= 119 && len(sETH) >= 119 {
-		baseBTC := sBTC[len(sBTC)-119:]
-		baseETH := sETH[len(sETH)-119:]
-		btc120 = make([]float64, 0, 120)
-		eth120 = make([]float64, 0, 120)
-		for i := 0; i < 119; i++ {
-			btc120 = append(btc120, baseBTC[i].Mean)
-			eth120 = append(eth120, baseETH[i].Mean)
-		}
-		btc120 = append(btc120, pbBTC.Mean)
-		eth120 = append(eth120, pbETH.Mean)
-		return btc120, eth120, "119+partial", pbBTC.MinuteMs, true
-	}
-
-	if len(sBTC) >= 120 && len(sETH) >= 120 {
-		baseBTC := sBTC[len(sBTC)-120:]
-		baseETH := sETH[len(sETH)-120:]
-		btc120 = make([]float64, 0, 120)
-		eth120 = make([]float64, 0, 120)
-		for i := 0; i < 120; i++ {
-			btc120 = append(btc120, baseBTC[i].Mean)
-			eth120 = append(eth120, baseETH[i].Mean)
-		}
-		return btc120, eth120, "120closed", baseBTC[119].MinuteMs, true
-	}
-	return nil, nil, "", 0, false
-}
-
-func calcStats(btc120, eth120 []float64) (beta, spread, mu, sigma, z float64, ok bool) {
+func calcStatsFromPrices120(btc120, eth120 []float64) (beta, spread, mu, sigma, z float64, ok bool) {
 	if len(btc120) != 120 || len(eth120) != 120 {
 		return 0, 0, 0, 0, 0, false
 	}
@@ -606,6 +575,99 @@ func calcStats(btc120, eth120 []float64) (beta, spread, mu, sigma, z float64, ok
 	return beta, spread, mu, sigma, z, true
 }
 
+// Build aligned 120 series:
+// - prefer 119 common closed minutes + partial minute (if partial exists for same minute for both)
+// - else fallback to 120 common closed minutes
+func buildAligned120(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg) (btc120, eth120 []float64, mode string, minMs int64, ok bool) {
+	sBTC := rBTC.Snapshot()
+	sETH := rETH.Snapshot()
+
+	mB := make(map[int64]float64, len(sBTC))
+	for _, b := range sBTC {
+		mB[b.MinuteMs] = b.Mean
+	}
+	mE := make(map[int64]float64, len(sETH))
+	for _, b := range sETH {
+		mE[b.MinuteMs] = b.Mean
+	}
+
+	common := make([]int64, 0, 256)
+	for ms := range mB {
+		if _, ok := mE[ms]; ok {
+			common = append(common, ms)
+		}
+	}
+	sort.Slice(common, func(i, j int) bool { return common[i] < common[j] })
+
+	pbB, okB := aggBTC.Partial()
+	pbE, okE := aggETH.Partial()
+	usePartial := okB && okE && pbB.MinuteMs == pbE.MinuteMs && pbB.Mean > 0 && pbE.Mean > 0
+
+	if usePartial {
+		if len(common) < 119 {
+			return nil, nil, "", 0, false
+		}
+		common = common[len(common)-119:]
+		btc120 = make([]float64, 0, 120)
+		eth120 = make([]float64, 0, 120)
+		for _, ms := range common {
+			btc120 = append(btc120, mB[ms])
+			eth120 = append(eth120, mE[ms])
+		}
+		btc120 = append(btc120, pbB.Mean)
+		eth120 = append(eth120, pbE.Mean)
+		return btc120, eth120, "119+partial_aligned", pbB.MinuteMs, true
+	}
+
+	if len(common) < 120 {
+		return nil, nil, "", 0, false
+	}
+	common = common[len(common)-120:]
+	btc120 = make([]float64, 0, 120)
+	eth120 = make([]float64, 0, 120)
+	for _, ms := range common {
+		btc120 = append(btc120, mB[ms])
+		eth120 = append(eth120, mE[ms])
+	}
+	return btc120, eth120, "120closed_aligned", common[len(common)-1], true
+}
+
+// Build aligned 120 CLOSED-only series (strict minute-close PnL):
+func buildAligned120Closed(rBTC, rETH *Ring) (btc120, eth120 []float64, minMs int64, ok bool) {
+	sBTC := rBTC.Snapshot()
+	sETH := rETH.Snapshot()
+
+	mB := make(map[int64]float64, len(sBTC))
+	for _, b := range sBTC {
+		mB[b.MinuteMs] = b.Mean
+	}
+	mE := make(map[int64]float64, len(sETH))
+	for _, b := range sETH {
+		mE[b.MinuteMs] = b.Mean
+	}
+
+	common := make([]int64, 0, 256)
+	for ms := range mB {
+		if _, ok := mE[ms]; ok {
+			common = append(common, ms)
+		}
+	}
+	sort.Slice(common, func(i, j int) bool { return common[i] < common[j] })
+
+	if len(common) < 120 {
+		return nil, nil, 0, false
+	}
+	common = common[len(common)-120:]
+
+	btc120 = make([]float64, 0, 120)
+	eth120 = make([]float64, 0, 120)
+	for _, ms := range common {
+		btc120 = append(btc120, mB[ms])
+		eth120 = append(eth120, mE[ms])
+	}
+	return btc120, eth120, common[len(common)-1], true
+}
+
 // ====================== JSONL logger ======================
 
 type LogRow struct {
@@ -618,8 +680,9 @@ type LogRow struct {
 	Z      float64 `json:"z"`
 	Mode   string  `json:"mode"`
 
-	Pos    string `json:"pos"`
-	Action string `json:"action"` // "TICK", "LOG_5M", "ENTER_LONG", "ENTER_SHORT", "EXIT"
+	Pos    string  `json:"pos"`
+	Action string  `json:"action"` // "LOG_5M", "ENTER_LONG", "ENTER_SHORT", "EXIT", "PNL_1M"
+	PnLPct float64 `json:"pnl_pct,omitempty"`
 }
 
 type JSONLLogger struct {
@@ -650,8 +713,8 @@ func nextLogTimeUTC(now time.Time) time.Time {
 	return now.Truncate(5 * time.Minute).Add(5 * time.Minute)
 }
 
-func writeLog(logg *JSONLLogger, action string, pos string, st Stats) {
-	logg.Write(LogRow{
+func writeLog(logg *JSONLLogger, action string, pos string, st Stats, pnlPct *float64) {
+	row := LogRow{
 		AtUTC:  time.Now().UTC().Format(time.RFC3339),
 		Beta:   st.Beta,
 		Spread: st.Spread,
@@ -661,10 +724,14 @@ func writeLog(logg *JSONLLogger, action string, pos string, st Stats) {
 		Mode:   st.Mode,
 		Pos:    pos,
 		Action: action,
-	})
+	}
+	if pnlPct != nil {
+		row.PnLPct = *pnlPct
+	}
+	logg.Write(row)
 }
 
-// ====================== Trading signal state ======================
+// ====================== Trading state + PnL ======================
 
 type Position int
 
@@ -690,28 +757,44 @@ type HoldState struct {
 	shortSince int64
 }
 
+type TradeState struct {
+	Pos         Position
+	EntrySpread float64
+	EntryAtMs   int64
+}
+
+func pnlPctFromSpreads(pos Position, entrySpread, curSpread float64) float64 {
+	d := curSpread - entrySpread
+	if pos == ShortSpread {
+		d = -d
+	}
+	return math.Exp(d) - 1.0
+}
+
 // ====================== Main ======================
 
 func main() {
 	// ---- params ----
 	entryZ := 2.2
 	exitZ := 0.8
-	freshMs := int64(300)     // require BTC/ETH tick timestamps within 300ms
-	holdMs := int64(1000)     // require z condition hold for 1000ms before entering (0 disables)
-	calcThrottleMs := int64(150) // don’t calc faster than every 150ms
+	freshMs := int64(300)        // require BTC/ETH tick timestamps within 300ms
+	holdMs := int64(1000)        // condition must hold for 1000ms before entering (0 disables)
+	calcThrottleMs := int64(150) // don’t calc faster than every 150ms on ticks
 	// --------------
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// graceful stop
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() { <-sig; cancel() }()
 
+	// rings
 	rBTC := NewRing(windowBars)
 	rETH := NewRing(windowBars)
 
-	// warmup history
+	// warmup history (a bit more than 120 mins)
 	nowSec := time.Now().Unix()
 	startSec := nowSec - int64((windowBars+30)*60)
 
@@ -726,6 +809,7 @@ func main() {
 		return
 	}
 
+	// align warmup by startSec
 	mBTC := make(map[int64]Kline, len(btcK))
 	for _, k := range btcK {
 		mBTC[k.StartSec] = k
@@ -735,7 +819,7 @@ func main() {
 		mETH[k.StartSec] = k
 	}
 
-	secs := make([]int64, 0, len(mBTC))
+	secs := make([]int64, 0, 256)
 	for s := range mBTC {
 		if _, ok := mETH[s]; ok {
 			secs = append(secs, s)
@@ -761,11 +845,13 @@ func main() {
 		return
 	}
 	defer logg.Close()
-	fmt.Println("Logging every 5 minutes + on ENTER/EXIT to:", logPath)
+	fmt.Println("Logging every 5 minutes + on ENTER/EXIT + PNL_1M(CLOSED) to:", logPath)
 
-	logTimer := time.NewTimer(time.Until(nextLogTimeUTC(time.Now().UTC())))
-	defer logTimer.Stop()
+	// 5m snapshot timer aligned
+	log5mTimer := time.NewTimer(time.Until(nextLogTimeUTC(time.Now().UTC())))
+	defer log5mTimer.Stop()
 
+	// WS ticks
 	ticks := make(chan Tick, 20000)
 	go func() {
 		for {
@@ -782,14 +868,21 @@ func main() {
 	aggBTC := NewMinuteAgg("BTC-USDT")
 	aggETH := NewMinuteAgg("ETH-USDT")
 
+	// last tick times for freshness
 	var lastBTCms int64
 	var lastETHms int64
 
-	pos := Flat
+	// state
 	hold := HoldState{}
+	trade := TradeState{Pos: Flat}
 	var lastCalcAtMs int64
 
-	compute := func(nowMs int64) (Stats, bool) {
+	// pending closed bars (to detect same-minute close)
+	pendingBTC := make(map[int64]Bar)
+	pendingETH := make(map[int64]Bar)
+
+	// compute stats (intra-minute) with throttle + freshness
+	computeIntra := func(nowMs int64) (Stats, bool) {
 		if nowMs-lastCalcAtMs < calcThrottleMs {
 			return Stats{}, false
 		}
@@ -806,22 +899,56 @@ func main() {
 			return Stats{}, false
 		}
 
-		btc120, eth120, mode, minMs, ok := buildSeries120(rBTC, rETH, aggBTC, aggETH)
+		btc120, eth120, mode, minMs, ok := buildAligned120(rBTC, rETH, aggBTC, aggETH)
 		if !ok {
 			return Stats{}, false
 		}
-		beta, spread, mu, sigma, z, ok := calcStats(btc120, eth120)
+		beta, spread, mu, sigma, z, ok := calcStatsFromPrices120(btc120, eth120)
 		if !ok {
 			return Stats{}, false
 		}
 		return Stats{Beta: beta, Spread: spread, Mu: mu, Sigma: sigma, Z: z, Mode: mode, MinMs: minMs}, true
 	}
 
+	// compute stats strictly on closed minutes (for 1m PnL printing)
+	computeClosed := func() (Stats, bool) {
+		btc120, eth120, minMs, ok := buildAligned120Closed(rBTC, rETH)
+		if !ok {
+			return Stats{}, false
+		}
+		beta, spread, mu, sigma, z, ok := calcStatsFromPrices120(btc120, eth120)
+		if !ok {
+			return Stats{}, false
+		}
+		return Stats{Beta: beta, Spread: spread, Mu: mu, Sigma: sigma, Z: z, Mode: "120closed_aligned", MinMs: minMs}, true
+	}
+
 	printSignal := func(tag string, st Stats) {
 		t := time.Now().UTC().Format("2006-01-02 15:04:05")
 		min := time.UnixMilli(st.MinMs).UTC().Format("2006-01-02 15:04")
 		fmt.Printf("[%s] %s | minute=%s | z=%+.3f beta=%.4f spread=%.6f mode=%s pos=%s\n",
-			t, tag, min, st.Z, st.Beta, st.Spread, st.Mode, pos.String())
+			t, tag, min, st.Z, st.Beta, st.Spread, st.Mode, trade.Pos.String())
+	}
+
+	printPnLClosed := func(closedMinuteMs int64) {
+		if trade.Pos == Flat {
+			return
+		}
+		st, ok := computeClosed()
+		if !ok {
+			return
+		}
+		p := pnlPctFromSpreads(trade.Pos, trade.EntrySpread, st.Spread)
+
+		min := time.UnixMilli(closedMinuteMs).UTC().Format("2006-01-02 15:04")
+		sign := "PROFIT"
+		if p < 0 {
+			sign = "LOSS"
+		}
+		fmt.Printf("[1m %s] %s %.4f%% | minute=%s | pos=%s | z=%+.3f mode=%s\n",
+			sign, sign, p*100.0, min, trade.Pos.String(), st.Z, st.Mode)
+
+		writeLog(logg, "PNL_1M", trade.Pos.String(), st, &p)
 	}
 
 	for {
@@ -829,39 +956,54 @@ func main() {
 		case <-ctx.Done():
 			return
 
-		case <-logTimer.C:
-			logTimer.Reset(time.Until(nextLogTimeUTC(time.Now().UTC())))
+		// 5m snapshot log
+		case <-log5mTimer.C:
+			log5mTimer.Reset(time.Until(nextLogTimeUTC(time.Now().UTC())))
 			nowMs := time.Now().UnixMilli()
-			st, ok := compute(nowMs)
+			st, ok := computeIntra(nowMs)
 			if !ok {
 				continue
 			}
-			writeLog(logg, "LOG_5M", pos.String(), st)
+			writeLog(logg, "LOG_5M", trade.Pos.String(), st, nil)
 			fmt.Printf("[5m log] beta=%.4f spread=%.6f z=%+.3f mode=%s pos=%s\n",
-				st.Beta, st.Spread, st.Z, st.Mode, pos.String())
+				st.Beta, st.Spread, st.Z, st.Mode, trade.Pos.String())
 
 		case t := <-ticks:
-			// timestamps for freshness
+			// update freshness timestamps
 			if t.Symbol == "BTC-USDT" {
 				lastBTCms = t.TimeMs
 			} else if t.Symbol == "ETH-USDT" {
 				lastETHms = t.TimeMs
 			}
 
-			// update aggregators and push closed bars
+			// update aggregators and push closed bars, detect same-minute close
 			if t.Symbol == "BTC-USDT" {
 				if bar, ok := aggBTC.Update(t); ok {
 					rBTC.Push(bar)
+					pendingBTC[bar.MinuteMs] = bar
+					if _, ok2 := pendingETH[bar.MinuteMs]; ok2 {
+						delete(pendingBTC, bar.MinuteMs)
+						delete(pendingETH, bar.MinuteMs)
+						// strict closed-minute PnL print
+						printPnLClosed(bar.MinuteMs)
+					}
 				}
 			} else if t.Symbol == "ETH-USDT" {
 				if bar, ok := aggETH.Update(t); ok {
 					rETH.Push(bar)
+					pendingETH[bar.MinuteMs] = bar
+					if _, ok2 := pendingBTC[bar.MinuteMs]; ok2 {
+						delete(pendingBTC, bar.MinuteMs)
+						delete(pendingETH, bar.MinuteMs)
+						// strict closed-minute PnL print
+						printPnLClosed(bar.MinuteMs)
+					}
 				}
 			}
 
-			// compute stats and fire signals ASAP
+			// compute stats and fire signals ASAP (intra-minute)
 			nowMs := time.Now().UnixMilli()
-			st, ok := compute(nowMs)
+			st, ok := computeIntra(nowMs)
 			if !ok {
 				continue
 			}
@@ -871,18 +1013,22 @@ func main() {
 				absZ = -absZ
 			}
 
-			switch pos {
+			switch trade.Pos {
 			case Flat:
+				// ENTRY with hold-time
 				if st.Z >= entryZ {
 					if hold.shortSince == 0 {
 						hold.shortSince = nowMs
 					}
 					hold.longSince = 0
 					if holdMs == 0 || nowMs-hold.shortSince >= holdMs {
-						pos = ShortSpread
+						trade.Pos = ShortSpread
+						trade.EntrySpread = st.Spread
+						trade.EntryAtMs = nowMs
 						hold.shortSince, hold.longSince = 0, 0
+
 						printSignal("ENTER SHORT_SPREAD (sell BTC, buy ETH)", st)
-						writeLog(logg, "ENTER_SHORT", pos.String(), st)
+						writeLog(logg, "ENTER_SHORT", trade.Pos.String(), st, nil)
 					}
 				} else if st.Z <= -entryZ {
 					if hold.longSince == 0 {
@@ -890,30 +1036,35 @@ func main() {
 					}
 					hold.shortSince = 0
 					if holdMs == 0 || nowMs-hold.longSince >= holdMs {
-						pos = LongSpread
+						trade.Pos = LongSpread
+						trade.EntrySpread = st.Spread
+						trade.EntryAtMs = nowMs
 						hold.shortSince, hold.longSince = 0, 0
+
 						printSignal("ENTER LONG_SPREAD (buy BTC, sell ETH)", st)
-						writeLog(logg, "ENTER_LONG", pos.String(), st)
+						writeLog(logg, "ENTER_LONG", trade.Pos.String(), st, nil)
 					}
 				} else {
 					hold.shortSince, hold.longSince = 0, 0
 				}
 
 			case LongSpread, ShortSpread:
+				// EXIT ASAP when mean reversion happens
 				if absZ <= exitZ {
-					printSignal("EXIT (back to FLAT)", st)
-					pos = Flat
+					p := pnlPctFromSpreads(trade.Pos, trade.EntrySpread, st.Spread)
+					printSignal(fmt.Sprintf("EXIT (back to FLAT) | pnl=%.4f%%", p*100.0), st)
+
+					writeLog(logg, "EXIT", trade.Pos.String(), st, &p)
+
+					// reset
+					trade.Pos = Flat
+					trade.EntrySpread = 0
+					trade.EntryAtMs = 0
 					hold.shortSince, hold.longSince = 0, 0
-					writeLog(logg, "EXIT", pos.String(), st)
 				}
 			}
 		}
 	}
 }
-
-
-Warmup done: BTC=120 bars, ETH=120 bars | entryZ=2.20 exitZ=0.80 holdMs=1000 freshMs=300
-Logging every 5 minutes + on ENTER/EXIT to: statarb_5m.jsonl
-[2026-02-01 19:36:24] ENTER LONG_SPREAD (buy BTC, sell ETH) | minute=2026-02-01 19:36 | z=-2.238 beta=0.3431 spread=8.597395 mode=119+partial pos=LONG_SPREAD
 
 
