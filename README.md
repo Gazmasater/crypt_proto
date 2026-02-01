@@ -102,3 +102,11 @@ case <-log5mTimer.C:
         st.Beta, st.Spread, st.Z, st.Mode, trade.Pos.String())
 
 
+
+		armup done: BTC=120 bars, ETH=120 bars | entryZ=2.20 exitZ=0.80 holdMs=1000 freshMs=300
+Logging every 5 minutes + on ENTER/EXIT + PNL_1M(CLOSED) to: statarb_5m.jsonl
+[5m log] skip: not enough closed aligned bars yet
+[5m log] skip: not enough closed aligned bars yet
+
+
+
