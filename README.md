@@ -108,7 +108,7 @@ import (
 )
 
 /*
-KuCoin stat-arb (isolated, one file) — FIXED MODEL + REALISTIC PnL
+KuCoin stat-arb (isolated, one file) — FIXED MODEL + REALISTIC PnL (NET of fees)
 
 ✅ OLS with intercept: ln(BTC) = alpha + beta*ln(ETH) + e
 ✅ Spread = residual e
@@ -116,11 +116,14 @@ KuCoin stat-arb (isolated, one file) — FIXED MODEL + REALISTIC PnL
 ✅ Entry alpha/beta FIXED at entry (no repainting)
 ✅ PnL = portfolio returns (not exp(delta_spread))
 ✅ PnL printed strictly on CLOSED minute (both markets closed same minute)
-✅ 5m logging aligned (UTC) and closed-only
+✅ Logging aligned (UTC): 5m CLOSED-only + ENTER/EXIT + PNL_1M(CLOSED)
 
-PnL notionals:
-SHORT_SPREAD: short $1 BTC, long $beta ETH
-LONG_SPREAD : long  $1 BTC, short $beta ETH
+Fees:
+✅ feeRate is PER LEG per trade (e.g. 0.1% per order per instrument)
+✅ Roundtrip fee = entry+exit across both legs, weighted by notionals:
+   BTC notional = 1.0, ETH notional = |beta|
+   feePctRoundtrip = 2 * feeRate * (1 + |beta|)
+   (2 = entry+exit)
 */
 
 const (
@@ -128,6 +131,8 @@ const (
 	ringExtra  = 30
 	tf         = "1min"
 	logPath    = "statarb_5m.jsonl"
+
+	feeRate = 0.001 // 0.1% per leg per trade (PER ORDER, PER INSTRUMENT)
 )
 
 // ====================== Bars / Ring ======================
@@ -791,13 +796,19 @@ type LogRow struct {
 	Mode   string  `json:"mode"`
 	Common int     `json:"common"`
 
-	Pos         string  `json:"pos"`
-	Action      string  `json:"action"`
-	PnLPct      float64 `json:"pnl_pct,omitempty"`
-	EntryBeta   float64 `json:"entry_beta,omitempty"`
-	EntryAlpha  float64 `json:"entry_alpha,omitempty"`
-	EntryBTC    float64 `json:"entry_btc,omitempty"`
-	EntryETH    float64 `json:"entry_eth,omitempty"`
+	Pos    string `json:"pos"`
+	Action string `json:"action"`
+
+	// NET PnL fields (percent as fraction; UI prints *100)
+	PnLGrossPct float64 `json:"pnl_gross_pct,omitempty"`
+	FeePct      float64 `json:"fee_pct,omitempty"`
+	PnLNetPct   float64 `json:"pnl_net_pct,omitempty"`
+
+	EntryBeta  float64 `json:"entry_beta,omitempty"`
+	EntryAlpha float64 `json:"entry_alpha,omitempty"`
+	EntryBTC   float64 `json:"entry_btc,omitempty"`
+	EntryETH   float64 `json:"entry_eth,omitempty"`
+
 	NowBTC      float64 `json:"now_btc,omitempty"`
 	NowETH      float64 `json:"now_eth,omitempty"`
 	ClosedMinMs int64   `json:"closed_min_ms,omitempty"`
@@ -827,7 +838,9 @@ func (l *JSONLLogger) Write(row LogRow) {
 	_ = l.enc.Encode(row)
 }
 
-func writeLog(logg *JSONLLogger, action string, pos string, st Stats, trade *TradeState, pnlPct *float64, nowBTC, nowETH float64, closedMinMs int64) {
+func writeLog(logg *JSONLLogger, action string, pos string, st Stats, trade *TradeState,
+	gross, fee, net *float64, nowBTC, nowETH float64, closedMinMs int64) {
+
 	row := LogRow{
 		AtUTC:       time.Now().UTC().Format(time.RFC3339),
 		Alpha:       st.Alpha,
@@ -852,13 +865,19 @@ func writeLog(logg *JSONLLogger, action string, pos string, st Stats, trade *Tra
 		row.EntryBTC = trade.EntryBTC
 		row.EntryETH = trade.EntryETH
 	}
-	if pnlPct != nil {
-		row.PnLPct = *pnlPct
+	if gross != nil {
+		row.PnLGrossPct = *gross
+	}
+	if fee != nil {
+		row.FeePct = *fee
+	}
+	if net != nil {
+		row.PnLNetPct = *net
 	}
 	logg.Write(row)
 }
 
-// ====================== Trading state + PnL ======================
+// ====================== Trading state + PnL (NET) ======================
 
 type Position int
 
@@ -903,6 +922,7 @@ func pnlPctPortfolio(pos Position, entryBTC, entryETH, nowBTC, nowETH, beta floa
 	rBTC := nowBTC/entryBTC - 1.0
 	rETH := nowETH/entryETH - 1.0
 
+	// notionals: BTC = 1.0, ETH = beta
 	switch pos {
 	case ShortSpread:
 		return (-rBTC) + beta*(rETH)
@@ -913,15 +933,33 @@ func pnlPctPortfolio(pos Position, entryBTC, entryETH, nowBTC, nowETH, beta floa
 	}
 }
 
+// feePctRoundtrip returns total fee as a fraction of "BTC $1 notional" base.
+// feeRate is PER LEG per trade.
+// We apply it to both legs and both sides (entry+exit):
+// fee = 2 * feeRate * (1 + |beta|)
+func feePctRoundtrip(beta float64) float64 {
+	return 2.0 * feeRate * (1.0 + math.Abs(beta))
+}
+
+func pnlPctNet(pos Position, entryBTC, entryETH, nowBTC, nowETH, beta float64) (gross, fee, net float64) {
+	gross = pnlPctPortfolio(pos, entryBTC, entryETH, nowBTC, nowETH, beta)
+	fee = feePctRoundtrip(beta)
+	net = gross - fee
+	return
+}
+
 // ====================== Main ======================
 
 func main() {
 	// ---- params ----
 	entryZ := 4.0
 	exitZ := 0.8
+
 	freshMs := int64(300)
 	holdMs := int64(1000)
 	calcThrottleMs := int64(150)
+
+	logPeriod := 5 * time.Minute // REAL 5m aligned logs
 	// --------------
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -978,8 +1016,8 @@ func main() {
 		rETH.Push(Bar{MinuteMs: s * 1000, High: ke.High, Low: ke.Low, Mean: ke.Close, Count: 1})
 	}
 
-	fmt.Printf("Warmup done: BTC=%d bars, ETH=%d bars | entryZ=%.2f exitZ=%.2f holdMs=%d freshMs=%d | ringCap=%d\n",
-		rBTC.Len(), rETH.Len(), entryZ, exitZ, holdMs, freshMs, windowBars+ringExtra)
+	fmt.Printf("Warmup done: BTC=%d bars, ETH=%d bars | entryZ=%.2f exitZ=%.2f holdMs=%d freshMs=%d | ringCap=%d | feeRate=%.4f (per leg)\n",
+		rBTC.Len(), rETH.Len(), entryZ, exitZ, holdMs, freshMs, windowBars+ringExtra, feeRate)
 
 	// logger
 	logg, err := NewJSONLLogger(logPath)
@@ -991,7 +1029,7 @@ func main() {
 	fmt.Println("Logging: 5m(aligned, CLOSED) + ENTER/EXIT + PNL_1M(CLOSED) to:", logPath)
 
 	// aligned 5m ticker
-	log5mCh := startAlignedTicker(ctx, 1*time.Minute)
+	log5mCh := startAlignedTicker(ctx, logPeriod)
 
 	// WS ticks
 	ticks := make(chan Tick, 20000)
@@ -1075,17 +1113,17 @@ func main() {
 			return
 		}
 
-		p := pnlPctPortfolio(trade.Pos, trade.EntryBTC, trade.EntryETH, nowBTC, nowETH, trade.EntryBeta)
+		gross, fee, net := pnlPctNet(trade.Pos, trade.EntryBTC, trade.EntryETH, nowBTC, nowETH, trade.EntryBeta)
 
 		min := time.UnixMilli(closedMinuteMs).UTC().Format("2006-01-02 15:04")
 		sign := "PROFIT"
-		if p < 0 {
+		if net < 0 {
 			sign = "LOSS"
 		}
-		fmt.Printf("[1m %s] %.4f%% | minute=%s | pos=%s | z=%+.3f entryBeta=%.4f liveBeta=%.4f\n",
-			sign, p*100.0, min, trade.Pos.String(), st.Z, trade.EntryBeta, st.Beta)
+		fmt.Printf("[1m %s] net=%.4f%% gross=%.4f%% fee=%.4f%% | minute=%s | pos=%s | z=%+.3f entryBeta=%.4f liveBeta=%.4f\n",
+			sign, net*100.0, gross*100.0, fee*100.0, min, trade.Pos.String(), st.Z, trade.EntryBeta, st.Beta)
 
-		writeLog(logg, "PNL_1M", trade.Pos.String(), st, &trade, &p, nowBTC, nowETH, closedMinuteMs)
+		writeLog(logg, "PNL_1M", trade.Pos.String(), st, &trade, &gross, &fee, &net, nowBTC, nowETH, closedMinuteMs)
 	}
 
 	for {
@@ -1111,7 +1149,7 @@ func main() {
 			if trade.Pos != Flat {
 				tradePtr = &trade
 			}
-			writeLog(logg, "LOG_5M", trade.Pos.String(), st, tradePtr, nil, nowBTC, nowETH, minMs)
+			writeLog(logg, "LOG_5M", trade.Pos.String(), st, tradePtr, nil, nil, nil, nowBTC, nowETH, minMs)
 
 			fmt.Printf("[5m log] z=%+.3f alpha=%.4f beta=%.4f corr=%.3f r2=%.3f res=%.6f common=%d pos=%s\n",
 				st.Z, st.Alpha, st.Beta, st.Corr, st.R2, st.Res, st.Common, trade.Pos.String())
@@ -1177,7 +1215,7 @@ func main() {
 						hold.shortSince, hold.longSince = 0, 0
 
 						printSignal("ENTER SHORT_SPREAD (short BTC, long beta*ETH)", st)
-						writeLog(logg, "ENTER_SHORT", trade.Pos.String(), st, &trade, nil, nowBTC, nowETH, st.MinMs)
+						writeLog(logg, "ENTER_SHORT", trade.Pos.String(), st, &trade, nil, nil, nil, nowBTC, nowETH, st.MinMs)
 					}
 				} else if st.Z <= -entryZ {
 					if hold.longSince == 0 {
@@ -1195,7 +1233,7 @@ func main() {
 						hold.shortSince, hold.longSince = 0, 0
 
 						printSignal("ENTER LONG_SPREAD (long BTC, short beta*ETH)", st)
-						writeLog(logg, "ENTER_LONG", trade.Pos.String(), st, &trade, nil, nowBTC, nowETH, st.MinMs)
+						writeLog(logg, "ENTER_LONG", trade.Pos.String(), st, &trade, nil, nil, nil, nowBTC, nowETH, st.MinMs)
 					}
 				} else {
 					hold.shortSince, hold.longSince = 0, 0
@@ -1203,9 +1241,12 @@ func main() {
 
 			case LongSpread, ShortSpread:
 				if absZ <= exitZ {
-					p := pnlPctPortfolio(trade.Pos, trade.EntryBTC, trade.EntryETH, nowBTC, nowETH, trade.EntryBeta)
-					printSignal(fmt.Sprintf("EXIT (back to FLAT) | pnl=%.4f%%", p*100.0), st)
-					writeLog(logg, "EXIT", trade.Pos.String(), st, &trade, &p, nowBTC, nowETH, st.MinMs)
+					gross, fee, net := pnlPctNet(trade.Pos, trade.EntryBTC, trade.EntryETH, nowBTC, nowETH, trade.EntryBeta)
+
+					printSignal(fmt.Sprintf("EXIT (back to FLAT) | net=%.4f%% gross=%.4f%% fee=%.4f%%",
+						net*100.0, gross*100.0, fee*100.0), st)
+
+					writeLog(logg, "EXIT", trade.Pos.String(), st, &trade, &gross, &fee, &net, nowBTC, nowETH, st.MinMs)
 
 					trade = TradeState{Pos: Flat}
 					hold.shortSince, hold.longSince = 0, 0
