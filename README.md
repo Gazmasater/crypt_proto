@@ -106,29 +106,26 @@ import (
 )
 
 /*
-KuCoin stat-arb (isolated, one file):
+KuCoin stat-arb (isolated, one file) — FIXED STACK:
 
-- Window: 120 x 1-min bars (2 hours) in ring buffers
-- Warmup: REST candles (1min) for BTC-USDT and ETH-USDT
-- Live: WS ticker -> mid -> minute bars (high/low/mean)
+✅ Time alignment BTC/ETH:
+- all stats computed on intersection of minute timestamps (MinuteMs)
+- ring capacity has EXTRA (windowBars+ringExtra) so common minutes don't drop to 119 during a boundary minute
 
-Signals (ASAP intra-minute):
-- ENTER SHORT_SPREAD if z >= entryZ (sell BTC, buy ETH)
-- ENTER LONG_SPREAD  if z <= -entryZ (buy BTC, sell ETH)
-- EXIT when abs(z) <= exitZ
+✅ Warmup correctness:
+- warmup Mean uses CLOSE from REST candles (not (H+L)/2)
 
-Time alignment fix:
-- Stats computed using intersection of minute timestamps (MinuteMs) for BTC/ETH
+✅ Logging:
+- every 5 minutes (UTC-aligned) ALWAYS prints LOG_5M or LOG_5M_SKIP
+- 5m logging uses CLOSED-only window (stable)
+- every minute PnL uses CLOSED-only window (stable)
+- ENTER/EXIT logs immediately (intra-minute)
 
-Logging:
-- Every 5 minutes (aligned to UTC boundary): ALWAYS prints either LOG_5M or LOG_5M_SKIP.
-  Uses CLOSED-only window (120closed_aligned) to be stable.
-- On ENTER/EXIT: logs immediately (uses intra-minute stats at that moment).
-- Every minute (STRICT close for BOTH): prints PROFIT/LOSS (unrealized) and logs PNL_1M
-  using CLOSED-only stats ("120closed_aligned").
+✅ Diagnostics:
+- logs include corr and r2 (quality of linear fit)
 
-PnL model (paper, log-space spread):
-spread_t = ln(BTC_t) - beta * ln(ETH_t)
+Paper PnL (log-spread):
+spread = ln(BTC) - beta*ln(ETH)
 LONG_SPREAD  => pnl_log = +(spread_now - spread_entry)
 SHORT_SPREAD => pnl_log = -(spread_now - spread_entry)
 pnl_pct ≈ exp(pnl_log) - 1
@@ -136,6 +133,7 @@ pnl_pct ≈ exp(pnl_log) - 1
 
 const (
 	windowBars = 120
+	ringExtra  = 30 // IMPORTANT: prevents "common minutes" dropping below windowBars on boundary minutes
 	tf         = "1min"
 	logPath    = "statarb_5m.jsonl"
 )
@@ -341,12 +339,11 @@ type bulletResp struct {
 		InstanceServers []struct {
 			Endpoint     string `json:"endpoint"`
 			PingInterval int    `json:"pingInterval"`
-			PingTimeout  int    `json:"pingTimeout"`
 		} `json:"instanceServers"`
 	} `json:"data"`
 }
 
-func getWSEndpoint(ctx context.Context) (endpoint string, token string, pingInterval time.Duration, err error) {
+func getWSEndpoint(ctx context.Context) (endpoint, token string, pingInterval time.Duration, err error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.kucoin.com/api/v1/bullet-public", nil)
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
@@ -368,8 +365,7 @@ func getWSEndpoint(ctx context.Context) (endpoint string, token string, pingInte
 	if pi <= 0 {
 		pi = 18000
 	}
-	pingInterval = time.Duration(pi) * time.Millisecond
-	return endpoint, token, pingInterval, nil
+	return endpoint, token, time.Duration(pi) * time.Millisecond, nil
 }
 
 type wsEnvelope struct {
@@ -436,10 +432,7 @@ func runWS(ctx context.Context, tickOut chan<- Tick) error {
 		for {
 			select {
 			case <-t.C:
-				_ = c.WriteJSON(map[string]any{
-					"id":   fmt.Sprintf("%d", time.Now().UnixNano()),
-					"type": "ping",
-				})
+				_ = c.WriteJSON(map[string]any{"id": fmt.Sprintf("%d", time.Now().UnixNano()), "type": "ping"})
 			case <-done:
 				return
 			case <-ctx.Done():
@@ -477,7 +470,6 @@ func runWS(ctx context.Context, tickOut chan<- Tick) error {
 		if ts <= 0 {
 			ts = d.Time2
 		}
-
 		bid, _ := strconv.ParseFloat(d.BestBid, 64)
 		ask, _ := strconv.ParseFloat(d.BestAsk, 64)
 		if ts <= 0 || bid <= 0 || ask <= 0 {
@@ -493,7 +485,7 @@ func runWS(ctx context.Context, tickOut chan<- Tick) error {
 	}
 }
 
-// ====================== Stats helpers ======================
+// ====================== Stats ======================
 
 type Stats struct {
 	Beta   float64
@@ -501,8 +493,11 @@ type Stats struct {
 	Mu     float64
 	Sigma  float64
 	Z      float64
+	Corr   float64
+	R2     float64
 	Mode   string
 	MinMs  int64
+	Common int // diagnostics: how many common minutes used
 }
 
 func meanStd(a []float64) (mu, sd float64) {
@@ -526,10 +521,38 @@ func meanStd(a []float64) (mu, sd float64) {
 	return mu, sd
 }
 
-func olsBeta(x, y []float64) float64 {
+func corr(x, y []float64) float64 {
 	n := len(x)
 	if n == 0 || n != len(y) {
-		return 1.0
+		return 0
+	}
+	var sx, sy float64
+	for i := 0; i < n; i++ {
+		sx += x[i]
+		sy += y[i]
+	}
+	mx := sx / float64(n)
+	my := sy / float64(n)
+
+	var sxx, syy, sxy float64
+	for i := 0; i < n; i++ {
+		dx := x[i] - mx
+		dy := y[i] - my
+		sxx += dx * dx
+		syy += dy * dy
+		sxy += dx * dy
+	}
+	if sxx == 0 || syy == 0 {
+		return 0
+	}
+	return sxy / math.Sqrt(sxx*syy)
+}
+
+// OLS beta of y ~ a + beta*x
+func olsBeta(x, y []float64) (beta float64, r2 float64) {
+	n := len(x)
+	if n == 0 || n != len(y) {
+		return 1.0, 0.0
 	}
 	var sx, sy float64
 	for i := 0; i < n; i++ {
@@ -547,42 +570,79 @@ func olsBeta(x, y []float64) float64 {
 		vx += dx * dx
 	}
 	if vx == 0 {
-		return 1.0
+		return 1.0, 0.0
 	}
-	return cov / vx
+	beta = cov / vx
+
+	// R^2
+	var sse, sst float64
+	for i := 0; i < n; i++ {
+		yhat := my + beta*(x[i]-mx)
+		err := y[i] - yhat
+		sse += err * err
+		dy := y[i] - my
+		sst += dy * dy
+	}
+	if sst <= 0 {
+		return beta, 0
+	}
+	r2 = 1.0 - sse/sst
+	if r2 < 0 {
+		r2 = 0
+	}
+	if r2 > 1 {
+		r2 = 1
+	}
+	return beta, r2
 }
 
-func calcStatsFromPrices120(btc120, eth120 []float64) (beta, spread, mu, sigma, z float64, ok bool) {
-	if len(btc120) != 120 || len(eth120) != 120 {
-		return 0, 0, 0, 0, 0, false
+func calcStatsFromPrices(btc, eth []float64, mode string, minMs int64, common int) (Stats, bool) {
+	n := len(btc)
+	if n == 0 || n != len(eth) {
+		return Stats{}, false
 	}
-	lbtc := make([]float64, 120)
-	leth := make([]float64, 120)
-	for i := 0; i < 120; i++ {
-		if btc120[i] <= 0 || eth120[i] <= 0 {
-			return 0, 0, 0, 0, 0, false
+
+	lbtc := make([]float64, n)
+	leth := make([]float64, n)
+	for i := 0; i < n; i++ {
+		if btc[i] <= 0 || eth[i] <= 0 {
+			return Stats{}, false
 		}
-		lbtc[i] = math.Log(btc120[i])
-		leth[i] = math.Log(eth120[i])
+		lbtc[i] = math.Log(btc[i])
+		leth[i] = math.Log(eth[i])
 	}
 
-	beta = olsBeta(leth, lbtc)
+	c := corr(leth, lbtc)
+	b, r2 := olsBeta(leth, lbtc)
 
-	spreads := make([]float64, 120)
-	for i := 0; i < 120; i++ {
-		spreads[i] = lbtc[i] - beta*leth[i]
+	spreads := make([]float64, n)
+	for i := 0; i < n; i++ {
+		spreads[i] = lbtc[i] - b*leth[i]
 	}
-	mu, sigma = meanStd(spreads)
+	mu, sigma := meanStd(spreads)
 
-	spread = spreads[119]
-	z = 0.0
+	z := 0.0
+	last := spreads[n-1]
 	if sigma > 0 {
-		z = (spread - mu) / sigma
+		z = (last - mu) / sigma
 	}
-	return beta, spread, mu, sigma, z, true
+
+	return Stats{
+		Beta:   b,
+		Spread: last,
+		Mu:     mu,
+		Sigma:  sigma,
+		Z:      z,
+		Corr:   c,
+		R2:     r2,
+		Mode:   mode,
+		MinMs:  minMs,
+		Common: common,
+	}, true
 }
 
-func buildAligned120(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg) (btc120, eth120 []float64, mode string, minMs int64, ok bool) {
+// CLOSED-only window (strict, stable): last windowBars from common minutes
+func buildAlignedClosed(rBTC, rETH *Ring, window int) (btc, eth []float64, minMs int64, common int, ok bool) {
 	sBTC := rBTC.Snapshot()
 	sETH := rETH.Snapshot()
 
@@ -595,80 +655,83 @@ func buildAligned120(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg) (btc120, eth12
 		mE[b.MinuteMs] = b.Mean
 	}
 
-	common := make([]int64, 0, 256)
+	commonMs := make([]int64, 0, len(mB))
 	for ms := range mB {
 		if _, ok := mE[ms]; ok {
-			common = append(common, ms)
+			commonMs = append(commonMs, ms)
 		}
 	}
-	sort.Slice(common, func(i, j int) bool { return common[i] < common[j] })
+	sort.Slice(commonMs, func(i, j int) bool { return commonMs[i] < commonMs[j] })
+	common = len(commonMs)
+	if common < window {
+		return nil, nil, 0, common, false
+	}
+	commonMs = commonMs[common-window:]
+
+	btc = make([]float64, 0, window)
+	eth = make([]float64, 0, window)
+	for _, ms := range commonMs {
+		btc = append(btc, mB[ms])
+		eth = append(eth, mE[ms])
+	}
+	return btc, eth, commonMs[len(commonMs)-1], common, true
+}
+
+// INTRA window: prefer (window-1) closed common + same-minute partial
+func buildAlignedIntra(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg, window int) (btc, eth []float64, mode string, minMs int64, common int, ok bool) {
+	sBTC := rBTC.Snapshot()
+	sETH := rETH.Snapshot()
+
+	mB := make(map[int64]float64, len(sBTC))
+	for _, b := range sBTC {
+		mB[b.MinuteMs] = b.Mean
+	}
+	mE := make(map[int64]float64, len(sETH))
+	for _, b := range sETH {
+		mE[b.MinuteMs] = b.Mean
+	}
+
+	commonMs := make([]int64, 0, len(mB))
+	for ms := range mB {
+		if _, ok := mE[ms]; ok {
+			commonMs = append(commonMs, ms)
+		}
+	}
+	sort.Slice(commonMs, func(i, j int) bool { return commonMs[i] < commonMs[j] })
+	common = len(commonMs)
 
 	pbB, okB := aggBTC.Partial()
 	pbE, okE := aggETH.Partial()
 	usePartial := okB && okE && pbB.MinuteMs == pbE.MinuteMs && pbB.Mean > 0 && pbE.Mean > 0
 
 	if usePartial {
-		if len(common) < 119 {
-			return nil, nil, "", 0, false
+		if common < window-1 {
+			return nil, nil, "", 0, common, false
 		}
-		common = common[len(common)-119:]
-		btc120 = make([]float64, 0, 120)
-		eth120 = make([]float64, 0, 120)
-		for _, ms := range common {
-			btc120 = append(btc120, mB[ms])
-			eth120 = append(eth120, mE[ms])
+		commonMs = commonMs[common-(window-1):]
+		btc = make([]float64, 0, window)
+		eth = make([]float64, 0, window)
+		for _, ms := range commonMs {
+			btc = append(btc, mB[ms])
+			eth = append(eth, mE[ms])
 		}
-		btc120 = append(btc120, pbB.Mean)
-		eth120 = append(eth120, pbE.Mean)
-		return btc120, eth120, "119+partial_aligned", pbB.MinuteMs, true
+		btc = append(btc, pbB.Mean)
+		eth = append(eth, pbE.Mean)
+		return btc, eth, fmt.Sprintf("%d+partial_aligned", window-1), pbB.MinuteMs, common, true
 	}
 
-	if len(common) < 120 {
-		return nil, nil, "", 0, false
+	// fallback to closed-only window
+	if common < window {
+		return nil, nil, "", 0, common, false
 	}
-	common = common[len(common)-120:]
-	btc120 = make([]float64, 0, 120)
-	eth120 = make([]float64, 0, 120)
-	for _, ms := range common {
-		btc120 = append(btc120, mB[ms])
-		eth120 = append(eth120, mE[ms])
+	commonMs = commonMs[common-window:]
+	btc = make([]float64, 0, window)
+	eth = make([]float64, 0, window)
+	for _, ms := range commonMs {
+		btc = append(btc, mB[ms])
+		eth = append(eth, mE[ms])
 	}
-	return btc120, eth120, "120closed_aligned", common[len(common)-1], true
-}
-
-func buildAligned120Closed(rBTC, rETH *Ring) (btc120, eth120 []float64, minMs int64, ok bool) {
-	sBTC := rBTC.Snapshot()
-	sETH := rETH.Snapshot()
-
-	mB := make(map[int64]float64, len(sBTC))
-	for _, b := range sBTC {
-		mB[b.MinuteMs] = b.Mean
-	}
-	mE := make(map[int64]float64, len(sETH))
-	for _, b := range sETH {
-		mE[b.MinuteMs] = b.Mean
-	}
-
-	common := make([]int64, 0, 256)
-	for ms := range mB {
-		if _, ok := mE[ms]; ok {
-			common = append(common, ms)
-		}
-	}
-	sort.Slice(common, func(i, j int) bool { return common[i] < common[j] })
-
-	if len(common) < 120 {
-		return nil, nil, 0, false
-	}
-	common = common[len(common)-120:]
-
-	btc120 = make([]float64, 0, 120)
-	eth120 = make([]float64, 0, 120)
-	for _, ms := range common {
-		btc120 = append(btc120, mB[ms])
-		eth120 = append(eth120, mE[ms])
-	}
-	return btc120, eth120, common[len(common)-1], true
+	return btc, eth, fmt.Sprintf("%dclosed_aligned", window), commonMs[len(commonMs)-1], common, true
 }
 
 // ====================== Aligned ticker ======================
@@ -724,10 +787,13 @@ type LogRow struct {
 	Mu     float64 `json:"mu"`
 	Sigma  float64 `json:"sigma"`
 	Z      float64 `json:"z"`
+	Corr   float64 `json:"corr"`
+	R2     float64 `json:"r2"`
 	Mode   string  `json:"mode"`
+	Common int     `json:"common"`
 
 	Pos    string  `json:"pos"`
-	Action string  `json:"action"` // "LOG_5M", "LOG_5M_SKIP", "ENTER_LONG", "ENTER_SHORT", "EXIT", "PNL_1M"
+	Action string  `json:"action"` // LOG_5M, LOG_5M_SKIP, ENTER_LONG, ENTER_SHORT, EXIT, PNL_1M
 	PnLPct float64 `json:"pnl_pct,omitempty"`
 }
 
@@ -763,7 +829,10 @@ func writeLog(logg *JSONLLogger, action string, pos string, st Stats, pnlPct *fl
 		Mu:     st.Mu,
 		Sigma:  st.Sigma,
 		Z:      st.Z,
+		Corr:   st.Corr,
+		R2:     st.R2,
 		Mode:   st.Mode,
+		Common: st.Common,
 		Pos:    pos,
 		Action: action,
 	}
@@ -832,13 +901,13 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() { <-sig; cancel() }()
 
-	// rings
-	rBTC := NewRing(windowBars)
-	rETH := NewRing(windowBars)
+	// rings with EXTRA capacity
+	rBTC := NewRing(windowBars + ringExtra)
+	rETH := NewRing(windowBars + ringExtra)
 
-	// warmup history (a bit more than 120 mins)
+	// warmup history (take a bit more than needed)
 	nowSec := time.Now().Unix()
-	startSec := nowSec - int64((windowBars+30)*60)
+	startSec := nowSec - int64((windowBars+ringExtra+30)*60)
 
 	btcK, err := fetchKlines(ctx, "BTC-USDT", startSec, nowSec)
 	if err != nil {
@@ -851,7 +920,7 @@ func main() {
 		return
 	}
 
-	// align warmup by startSec
+	// align warmup by startSec and push CLOSE into Mean
 	mBTC := make(map[int64]Kline, len(btcK))
 	for _, k := range btcK {
 		mBTC[k.StartSec] = k
@@ -861,7 +930,7 @@ func main() {
 		mETH[k.StartSec] = k
 	}
 
-	secs := make([]int64, 0, 256)
+	secs := make([]int64, 0, len(mBTC))
 	for s := range mBTC {
 		if _, ok := mETH[s]; ok {
 			secs = append(secs, s)
@@ -874,11 +943,12 @@ func main() {
 	for _, s := range secs {
 		kb := mBTC[s]
 		ke := mETH[s]
-		rBTC.Push(Bar{MinuteMs: s * 1000, High: kb.High, Low: kb.Low, Mean: 0.5 * (kb.High + kb.Low), Count: 1})
-		rETH.Push(Bar{MinuteMs: s * 1000, High: ke.High, Low: ke.Low, Mean: 0.5 * (ke.High + ke.Low), Count: 1})
+		rBTC.Push(Bar{MinuteMs: s * 1000, High: kb.High, Low: kb.Low, Mean: kb.Close, Count: 1})
+		rETH.Push(Bar{MinuteMs: s * 1000, High: ke.High, Low: ke.Low, Mean: ke.Close, Count: 1})
 	}
-	fmt.Printf("Warmup done: BTC=%d bars, ETH=%d bars | entryZ=%.2f exitZ=%.2f holdMs=%d freshMs=%d\n",
-		rBTC.Len(), rETH.Len(), entryZ, exitZ, holdMs, freshMs)
+
+	fmt.Printf("Warmup done: BTC=%d bars, ETH=%d bars | entryZ=%.2f exitZ=%.2f holdMs=%d freshMs=%d | ringCap=%d\n",
+		rBTC.Len(), rETH.Len(), entryZ, exitZ, holdMs, freshMs, windowBars+ringExtra)
 
 	// logger
 	logg, err := NewJSONLLogger(logPath)
@@ -887,7 +957,7 @@ func main() {
 		return
 	}
 	defer logg.Close()
-	fmt.Println("Logging: 5m(aligned, closed-only) + ENTER/EXIT + PNL_1M(closed-only) to:", logPath)
+	fmt.Println("Logging: 5m(aligned, CLOSED) + ENTER/EXIT + PNL_1M(CLOSED) to:", logPath)
 
 	// aligned 5m ticker
 	log5mCh := startAlignedTicker(ctx, 5*time.Minute)
@@ -940,35 +1010,27 @@ func main() {
 			return Stats{}, false
 		}
 
-		btc120, eth120, mode, minMs, ok := buildAligned120(rBTC, rETH, aggBTC, aggETH)
+		btc, eth, mode, minMs, common, ok := buildAlignedIntra(rBTC, rETH, aggBTC, aggETH, windowBars)
 		if !ok {
 			return Stats{}, false
 		}
-		beta, spread, mu, sigma, z, ok := calcStatsFromPrices120(btc120, eth120)
-		if !ok {
-			return Stats{}, false
-		}
-		return Stats{Beta: beta, Spread: spread, Mu: mu, Sigma: sigma, Z: z, Mode: mode, MinMs: minMs}, true
+		return calcStatsFromPrices(btc, eth, mode, minMs, common)
 	}
 
 	// compute stats strictly on closed minutes (for 1m PnL + 5m logs)
 	computeClosed := func() (Stats, bool) {
-		btc120, eth120, minMs, ok := buildAligned120Closed(rBTC, rETH)
+		btc, eth, minMs, common, ok := buildAlignedClosed(rBTC, rETH, windowBars)
 		if !ok {
 			return Stats{}, false
 		}
-		beta, spread, mu, sigma, z, ok := calcStatsFromPrices120(btc120, eth120)
-		if !ok {
-			return Stats{}, false
-		}
-		return Stats{Beta: beta, Spread: spread, Mu: mu, Sigma: sigma, Z: z, Mode: "120closed_aligned", MinMs: minMs}, true
+		return calcStatsFromPrices(btc, eth, "closed_aligned", minMs, common)
 	}
 
 	printSignal := func(tag string, st Stats) {
 		t := time.Now().UTC().Format("2006-01-02 15:04:05")
 		min := time.UnixMilli(st.MinMs).UTC().Format("2006-01-02 15:04")
-		fmt.Printf("[%s] %s | minute=%s | z=%+.3f beta=%.4f spread=%.6f mode=%s pos=%s\n",
-			t, tag, min, st.Z, st.Beta, st.Spread, st.Mode, trade.Pos.String())
+		fmt.Printf("[%s] %s | minute=%s | z=%+.3f beta=%.4f corr=%.3f r2=%.3f spread=%.6f mode=%s pos=%s\n",
+			t, tag, min, st.Z, st.Beta, st.Corr, st.R2, st.Spread, st.Mode, trade.Pos.String())
 	}
 
 	printPnLClosed := func(closedMinuteMs int64) {
@@ -985,8 +1047,8 @@ func main() {
 		if p < 0 {
 			sign = "LOSS"
 		}
-		fmt.Printf("[1m %s] %.4f%% | minute=%s | pos=%s | z=%+.3f mode=%s\n",
-			sign, p*100.0, min, trade.Pos.String(), st.Z, st.Mode)
+		fmt.Printf("[1m %s] %.4f%% | minute=%s | pos=%s | z=%+.3f beta=%.4f corr=%.3f r2=%.3f\n",
+			sign, p*100.0, min, trade.Pos.String(), st.Z, st.Beta, st.Corr, st.R2)
 		writeLog(logg, "PNL_1M", trade.Pos.String(), st, &p)
 	}
 
@@ -995,29 +1057,31 @@ func main() {
 		case <-ctx.Done():
 			return
 
-		// 5m log: ALWAYS print something
+		// 5m log: ALWAYS print something, CLOSED-only
 		case <-log5mCh:
 			st, ok := computeClosed()
 			if !ok {
-				fmt.Println("[5m log] SKIP: not enough closed aligned bars yet")
-				// optional: also write skip into file (minimal info)
+				fmt.Printf("[5m log] SKIP: not enough closed common minutes (need=%d)\n", windowBars)
 				logg.Write(LogRow{
 					AtUTC:   time.Now().UTC().Format(time.RFC3339),
 					Mode:    "skip",
 					Pos:     trade.Pos.String(),
 					Action:  "LOG_5M_SKIP",
+					Common:  0,
 					Beta:    0,
 					Spread:  0,
 					Mu:      0,
 					Sigma:   0,
 					Z:       0,
+					Corr:    0,
+					R2:      0,
 					PnLPct:  0,
 				})
 				continue
 			}
 			writeLog(logg, "LOG_5M", trade.Pos.String(), st, nil)
-			fmt.Printf("[5m log] beta=%.4f spread=%.6f z=%+.3f mode=%s pos=%s\n",
-				st.Beta, st.Spread, st.Z, st.Mode, trade.Pos.String())
+			fmt.Printf("[5m log] beta=%.4f corr=%.3f r2=%.3f spread=%.6f z=%+.3f mode=%s common=%d pos=%s\n",
+				st.Beta, st.Corr, st.R2, st.Spread, st.Z, st.Mode, st.Common, trade.Pos.String())
 
 		case t := <-ticks:
 			// update freshness timestamps
@@ -1112,12 +1176,6 @@ func main() {
 	}
 }
 
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/stat_arb$ go run .
-Warmup done: BTC=120 bars, ETH=120 bars | entryZ=2.20 exitZ=0.80 holdMs=1000 freshMs=300
-Logging: 5m(aligned, closed-only) + ENTER/EXIT + PNL_1M(closed-only) to: statarb_5m.jsonl
-[5m log] beta=0.3506 spread=8.542199 z=+1.085 mode=120closed_aligned pos=FLAT
-[5m log] SKIP: not enough closed aligned bars yet
 
 
 
