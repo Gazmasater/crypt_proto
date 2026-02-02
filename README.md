@@ -1238,7 +1238,79 @@ func main() {
 
 
 
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "too many arguments in call to writeLog\n\thave (*JSONLLogger, string, string, Stats, *TradeState, nil, nil, float64, float64, int64)\n\twant (*JSONLLogger, string, string, Stats, *TradeState, *float64, float64, float64, int64)",
+	"source": "compiler",
+	"startLineNumber": 1049,
+	"startColumn": 35,
+	"endLineNumber": 1049,
+	"endColumn": 40,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
 
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "too many arguments in call to writeLog\n\thave (*JSONLLogger, string, string, Stats, *TradeState, nil, nil, float64, float64, int64)\n\twant (*JSONLLogger, string, string, Stats, *TradeState, *float64, float64, float64, int64)",
+	"source": "compiler",
+	"startLineNumber": 1114,
+	"startColumn": 95,
+	"endLineNumber": 1114,
+	"endColumn": 103,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "WrongArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "too many arguments in call to writeLog\n\thave (*JSONLLogger, string, string, Stats, *TradeState, nil, nil, float64, float64, int64)\n\twant (*JSONLLogger, string, string, Stats, *TradeState, *float64, float64, float64, int64)",
+	"source": "compiler",
+	"startLineNumber": 1131,
+	"startColumn": 94,
+	"endLineNumber": 1131,
+	"endColumn": 102,
+	"modelVersionId": 4,
+	"origin": "extHost1"
+}]
 
 
 
