@@ -917,7 +917,7 @@ func pnlPctPortfolio(pos Position, entryBTC, entryETH, nowBTC, nowETH, beta floa
 
 func main() {
 	// ---- params ----
-	entryZ := 2.2
+	entryZ := 4.0
 	exitZ := 0.8
 	freshMs := int64(300)
 	holdMs := int64(1000)
@@ -991,7 +991,7 @@ func main() {
 	fmt.Println("Logging: 5m(aligned, CLOSED) + ENTER/EXIT + PNL_1M(CLOSED) to:", logPath)
 
 	// aligned 5m ticker
-	log5mCh := startAlignedTicker(ctx, 5*time.Minute)
+	log5mCh := startAlignedTicker(ctx, 1*time.Minute)
 
 	// WS ticks
 	ticks := make(chan Tick, 20000)
@@ -1214,10 +1214,6 @@ func main() {
 		}
 	}
 }
-
-
-{"at_utc":"2026-02-02T12:20:00Z","alpha":6.686637878578044,"beta":0.5914375720004044,"res":-0.002133403208263829,"mu":4.440892098500626e-16,"sigma":0.0009331784052492246,"z":-2.2861686428486347,"corr":0.8730349710121704,"r2":0.7621900606102586,"mode":"closed_aligned","common":149,"pos":"FLAT","action":"LOG_5M","now_btc":77950.08526315802,"now_eth":2304.6702941176436,"closed_min_ms":1770034680000}
-{"at_utc":"2026-02-02T12:25:00Z","alpha":7.100836718860836,"beta":0.5378850043876591,"res":-0.0004917272872440037,"mu":-1.0066022089934752e-15,"sigma":0.0009246529690989936,"z":-0.5317965806373274,"corr":0.8882061362270695,"r2":0.7889101404314576,"mode":"closed_aligned","common":149,"pos":"FLAT","action":"LOG_5M","now_btc":78123.09788359737,"now_eth":2309.034695009243,"closed_min_ms":1770034980000}
 
 
 
