@@ -1113,5 +1113,13 @@ func main() {
 }
 
 
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/stat_arb$ go run .
+Warmup done: BTC=120 bars, ETH=120 bars | entryZ=2.20 exitZ=0.80 holdMs=1000 freshMs=300
+Logging: 5m(aligned, closed-only) + ENTER/EXIT + PNL_1M(closed-only) to: statarb_5m.jsonl
+[5m log] beta=0.3506 spread=8.542199 z=+1.085 mode=120closed_aligned pos=FLAT
+[5m log] SKIP: not enough closed aligned bars yet
+
+
+
 
 
