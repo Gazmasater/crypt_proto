@@ -1178,6 +1178,16 @@ func main() {
 
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/stat_arb$ go run .
+Warmup done: BTC=120 bars, ETH=120 bars | entryZ=2.20 exitZ=0.80 holdMs=1000 freshMs=300 | ringCap=150
+Logging: 5m(aligned, CLOSED) + ENTER/EXIT + PNL_1M(CLOSED) to: statarb_5m.jsonl
+[2026-02-02 00:16:01] ENTER SHORT_SPREAD (sell BTC, buy ETH) | minute=2026-02-02 00:16 | z=+2.252 beta=0.3487 corr=0.814 r2=0.663 spread=8.562039 mode=119+partial_aligned pos=SHORT_SPREAD
+[1m PROFIT] 1.1748% | minute=2026-02-02 00:16 | pos=SHORT_SPREAD | z=+2.403 beta=0.3502 corr=0.815 r2=0.664
+[1m PROFIT] 5.7051% | minute=2026-02-02 00:17 | pos=SHORT_SPREAD | z=+2.267 beta=0.3559 corr=0.813 r2=0.661
+[1m PROFIT] 9.0364% | minute=2026-02-02 00:18 | pos=SHORT_SPREAD | z=+2.009 beta=0.3598 corr=0.810 r2=0.657
+
+
+
 
 
 
