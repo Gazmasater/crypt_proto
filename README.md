@@ -84,6 +84,8 @@ go run -race main.go
 GOMAXPROCS=8 go run -race main.go
 
 
+
+
 package main
 
 import (
@@ -108,32 +110,17 @@ import (
 /*
 KuCoin stat-arb (isolated, one file) — FIXED MODEL + REALISTIC PnL
 
-Core fixes vs previous version:
 ✅ OLS with intercept: ln(BTC) = alpha + beta*ln(ETH) + e
-✅ Spread = residual e (not lnBTC - beta*lnETH)
+✅ Spread = residual e
 ✅ z-score computed on residuals
-✅ Entry alpha/beta are FIXED at entry (no "repainting" PnL)
-✅ PnL is PORTFOLIO-based (returns), not exp(delta_spread)
+✅ Entry alpha/beta FIXED at entry (no repainting)
+✅ PnL = portfolio returns (not exp(delta_spread))
+✅ PnL printed strictly on CLOSED minute (both markets closed same minute)
+✅ 5m logging aligned (UTC) and closed-only
 
-Signals (ASAP intra-minute):
-- ENTER SHORT_SPREAD if z >= entryZ  (short BTC, long beta*ETH)
-- ENTER LONG_SPREAD  if z <= -entryZ (long BTC, short beta*ETH)
-- EXIT when abs(z) <= exitZ
-
-Logging:
-- Every 5 minutes (UTC-aligned): CLOSED-only log (stable) always prints LOG_5M or LOG_5M_SKIP
-- ENTER/EXIT logs immediately (intra-minute stats)
-- Every minute, strictly when BOTH closed the same minute: print PROFIT/LOSS (unrealized)
-  and log PNL_1M using CLOSED-only stats + portfolio pnl
-
-Time alignment:
-- all windows are built on intersection of MinuteMs (BTC/ETH)
-- ring capacity has extra (windowBars + ringExtra) to avoid "common drops to 119" on boundary minutes
-
-Notes:
-- PnL is "paper" portfolio return with notionals:
-  SHORT_SPREAD: short $1 BTC, long $beta ETH
-  LONG_SPREAD:  long  $1 BTC, short $beta ETH
+PnL notionals:
+SHORT_SPREAD: short $1 BTC, long $beta ETH
+LONG_SPREAD : long  $1 BTC, short $beta ETH
 */
 
 const (
@@ -149,7 +136,7 @@ type Bar struct {
 	MinuteMs int64
 	High     float64
 	Low      float64
-	Mean     float64 // for us: minute price (warmup close, live mean mid)
+	Mean     float64 // warmup: close; live: mean(mid)
 	Count    int
 }
 
@@ -176,6 +163,7 @@ func (r *Ring) Push(b Bar) {
 func (r *Ring) Snapshot() []Bar {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
+
 	out := make([]Bar, 0, r.size)
 	start := (r.head - r.size + r.cap) % r.cap
 	for i := 0; i < r.size; i++ {
@@ -207,7 +195,6 @@ func (t Tick) Mid() float64 {
 }
 
 type MinuteAgg struct {
-	symbol string
 	curMin int64
 	high   float64
 	low    float64
@@ -215,7 +202,7 @@ type MinuteAgg struct {
 	cnt    int
 }
 
-func NewMinuteAgg(symbol string) *MinuteAgg { return &MinuteAgg{symbol: symbol} }
+func NewMinuteAgg() *MinuteAgg { return &MinuteAgg{} }
 
 func minuteStartMs(tsMs int64) int64 { return (tsMs / 60000) * 60000 }
 
@@ -257,6 +244,7 @@ func (a *MinuteAgg) Update(t Tick) (Bar, bool) {
 	a.curMin = m
 	a.high, a.low = mid, mid
 	a.sum, a.cnt = mid, 1
+
 	return closed, true
 }
 
@@ -303,6 +291,7 @@ func fetchKlines(ctx context.Context, symbol string, startAtSec, endAtSec int64)
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return nil, fmt.Errorf("rest http %d: %s", resp.StatusCode, string(b))
@@ -326,6 +315,7 @@ func fetchKlines(ctx context.Context, symbol string, startAtSec, endAtSec int64)
 		cl, _ := strconv.ParseFloat(row[2], 64)
 		hi, _ := strconv.ParseFloat(row[3], 64)
 		lo, _ := strconv.ParseFloat(row[4], 64)
+
 		if ts == 0 || op <= 0 || cl <= 0 || hi <= 0 || lo <= 0 {
 			continue
 		}
@@ -383,8 +373,8 @@ type wsEnvelope struct {
 type wsTickerData struct {
 	BestAsk string `json:"bestAsk"`
 	BestBid string `json:"bestBid"`
-	Time    int64  `json:"time"` // ms
-	Time2   int64  `json:"Time"` // ms (fallback)
+	Time    int64  `json:"time"`
+	Time2   int64  `json:"Time"`
 }
 
 func parseTopicSymbol(topic string) string {
@@ -554,7 +544,6 @@ func corr(x, y []float64) float64 {
 	return sxy / math.Sqrt(sxx*syy)
 }
 
-// OLS: y = alpha + beta*x
 func olsAlphaBeta(x, y []float64) (alpha, beta, r2 float64) {
 	n := len(x)
 	if n == 0 || n != len(y) {
@@ -581,7 +570,6 @@ func olsAlphaBeta(x, y []float64) (alpha, beta, r2 float64) {
 	beta = cov / vx
 	alpha = my - beta*mx
 
-	// R^2
 	var sse, sst float64
 	for i := 0; i < n; i++ {
 		yhat := alpha + beta*x[i]
@@ -602,7 +590,6 @@ func olsAlphaBeta(x, y []float64) (alpha, beta, r2 float64) {
 	return
 }
 
-// Compute stats on a window of prices (BTC, ETH)
 func calcStatsFromPrices(btc, eth []float64, mode string, minMs int64, common int) (Stats, bool) {
 	n := len(btc)
 	if n == 0 || n != len(eth) {
@@ -649,9 +636,8 @@ func calcStatsFromPrices(btc, eth []float64, mode string, minMs int64, common in
 	}, true
 }
 
-// ====================== Alignment helpers (also return last close prices) ======================
+// ====================== Alignment helpers ======================
 
-// CLOSED-only window: last window from common minutes
 func buildAlignedClosed(rBTC, rETH *Ring, window int) (btc, eth []float64, lastBTC, lastETH float64, minMs int64, common int, ok bool) {
 	sBTC := rBTC.Snapshot()
 	sETH := rETH.Snapshot()
@@ -689,7 +675,6 @@ func buildAlignedClosed(rBTC, rETH *Ring, window int) (btc, eth []float64, lastB
 	return btc, eth, lastBTC, lastETH, commonMs[len(commonMs)-1], common, true
 }
 
-// INTRA window: prefer (window-1) closed + same-minute partial
 func buildAlignedIntra(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg, window int) (btc, eth []float64, lastBTC, lastETH float64, mode string, minMs int64, common int, ok bool) {
 	sBTC := rBTC.Snapshot()
 	sETH := rETH.Snapshot()
@@ -729,12 +714,10 @@ func buildAlignedIntra(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg, window int) 
 		}
 		btc = append(btc, pbB.Mean)
 		eth = append(eth, pbE.Mean)
-		lastBTC = pbB.Mean
-		lastETH = pbE.Mean
+		lastBTC, lastETH = pbB.Mean, pbE.Mean
 		return btc, eth, lastBTC, lastETH, fmt.Sprintf("%d+partial_aligned", window-1), pbB.MinuteMs, common, true
 	}
 
-	// fallback to closed-only
 	if common < window {
 		return nil, nil, 0, 0, "", 0, common, false
 	}
@@ -769,7 +752,6 @@ func startAlignedTicker(ctx context.Context, period time.Duration) <-chan time.T
 			return
 		}
 
-		// first aligned tick
 		select {
 		case ch <- time.Now().UTC():
 		default:
@@ -810,7 +792,7 @@ type LogRow struct {
 	Common int     `json:"common"`
 
 	Pos         string  `json:"pos"`
-	Action      string  `json:"action"` // LOG_5M, LOG_5M_SKIP, ENTER_LONG, ENTER_SHORT, EXIT, PNL_1M
+	Action      string  `json:"action"`
 	PnLPct      float64 `json:"pnl_pct,omitempty"`
 	EntryBeta   float64 `json:"entry_beta,omitempty"`
 	EntryAlpha  float64 `json:"entry_alpha,omitempty"`
@@ -847,21 +829,21 @@ func (l *JSONLLogger) Write(row LogRow) {
 
 func writeLog(logg *JSONLLogger, action string, pos string, st Stats, trade *TradeState, pnlPct *float64, nowBTC, nowETH float64, closedMinMs int64) {
 	row := LogRow{
-		AtUTC:   time.Now().UTC().Format(time.RFC3339),
-		Alpha:   st.Alpha,
-		Beta:    st.Beta,
-		Res:     st.Res,
-		Mu:      st.Mu,
-		Sigma:   st.Sigma,
-		Z:       st.Z,
-		Corr:    st.Corr,
-		R2:      st.R2,
-		Mode:    st.Mode,
-		Common:  st.Common,
-		Pos:     pos,
-		Action:  action,
-		NowBTC:  nowBTC,
-		NowETH:  nowETH,
+		AtUTC:       time.Now().UTC().Format(time.RFC3339),
+		Alpha:       st.Alpha,
+		Beta:        st.Beta,
+		Res:         st.Res,
+		Mu:          st.Mu,
+		Sigma:       st.Sigma,
+		Z:           st.Z,
+		Corr:        st.Corr,
+		R2:          st.R2,
+		Mode:        st.Mode,
+		Common:      st.Common,
+		Pos:         pos,
+		Action:      action,
+		NowBTC:      nowBTC,
+		NowETH:      nowETH,
 		ClosedMinMs: closedMinMs,
 	}
 	if trade != nil && trade.Pos != Flat {
@@ -923,10 +905,8 @@ func pnlPctPortfolio(pos Position, entryBTC, entryETH, nowBTC, nowETH, beta floa
 
 	switch pos {
 	case ShortSpread:
-		// short $1 BTC, long $beta ETH
 		return (-rBTC) + beta*(rETH)
 	case LongSpread:
-		// long $1 BTC, short $beta ETH
 		return (rBTC) - beta*(rETH)
 	default:
 		return 0
@@ -939,9 +919,9 @@ func main() {
 	// ---- params ----
 	entryZ := 2.2
 	exitZ := 0.8
-	freshMs := int64(300)        // require BTC/ETH tick timestamps within 300ms
-	holdMs := int64(1000)        // condition must hold for 1000ms before entering (0 disables)
-	calcThrottleMs := int64(150) // don’t calc faster than every 150ms on ticks
+	freshMs := int64(300)
+	holdMs := int64(1000)
+	calcThrottleMs := int64(150)
 	// --------------
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -956,7 +936,7 @@ func main() {
 	rBTC := NewRing(windowBars + ringExtra)
 	rETH := NewRing(windowBars + ringExtra)
 
-	// warmup history (take a bit more than needed)
+	// warmup history
 	nowSec := time.Now().Unix()
 	startSec := nowSec - int64((windowBars+ringExtra+30)*60)
 
@@ -1027,8 +1007,8 @@ func main() {
 		}
 	}()
 
-	aggBTC := NewMinuteAgg("BTC-USDT")
-	aggETH := NewMinuteAgg("ETH-USDT")
+	aggBTC := NewMinuteAgg()
+	aggETH := NewMinuteAgg()
 
 	// last tick times for freshness
 	var lastBTCms int64
@@ -1090,7 +1070,6 @@ func main() {
 		if trade.Pos == Flat {
 			return
 		}
-
 		st, nowBTC, nowETH, _, ok := computeClosed()
 		if !ok {
 			return
@@ -1114,38 +1093,38 @@ func main() {
 		case <-ctx.Done():
 			return
 
-		// 5m log: ALWAYS print something, CLOSED-only
+		// 5m log (closed-only)
 		case <-log5mCh:
 			st, nowBTC, nowETH, minMs, ok := computeClosed()
 			if !ok {
 				fmt.Printf("[5m log] SKIP: not enough closed common minutes (need=%d)\n", windowBars)
 				logg.Write(LogRow{
-					AtUTC:   time.Now().UTC().Format(time.RFC3339),
-					Mode:    "skip",
-					Pos:     trade.Pos.String(),
-					Action:  "LOG_5M_SKIP",
+					AtUTC:  time.Now().UTC().Format(time.RFC3339),
+					Mode:   "skip",
+					Pos:    trade.Pos.String(),
+					Action: "LOG_5M_SKIP",
 				})
 				continue
 			}
-			writeLog(logg, "LOG_5M", trade.Pos.String(), st, func() *TradeState {
-				if trade.Pos == Flat {
-					return nil
-				}
-				return &trade
-			}(), nil, nil, nowBTC, nowETH, minMs)
+
+			var tradePtr *TradeState
+			if trade.Pos != Flat {
+				tradePtr = &trade
+			}
+			writeLog(logg, "LOG_5M", trade.Pos.String(), st, tradePtr, nil, nowBTC, nowETH, minMs)
 
 			fmt.Printf("[5m log] z=%+.3f alpha=%.4f beta=%.4f corr=%.3f r2=%.3f res=%.6f common=%d pos=%s\n",
 				st.Z, st.Alpha, st.Beta, st.Corr, st.R2, st.Res, st.Common, trade.Pos.String())
 
 		case t := <-ticks:
-			// update freshness timestamps
+			// freshness timestamps
 			if t.Symbol == "BTC-USDT" {
 				lastBTCms = t.TimeMs
 			} else if t.Symbol == "ETH-USDT" {
 				lastETHms = t.TimeMs
 			}
 
-			// update aggregators and push closed bars, detect same-minute close for 1m PnL
+			// minute close handling + strict PnL on close
 			if t.Symbol == "BTC-USDT" {
 				if bar, ok := aggBTC.Update(t); ok {
 					rBTC.Push(bar)
@@ -1168,7 +1147,7 @@ func main() {
 				}
 			}
 
-			// compute stats and fire signals ASAP (intra-minute)
+			// intra-minute stats (ASAP signals)
 			nowMs := time.Now().UnixMilli()
 			st, nowBTC, nowETH, ok := computeIntra(nowMs)
 			if !ok {
@@ -1187,6 +1166,7 @@ func main() {
 						hold.shortSince = nowMs
 					}
 					hold.longSince = 0
+
 					if holdMs == 0 || nowMs-hold.shortSince >= holdMs {
 						trade.Pos = ShortSpread
 						trade.EntryAlpha = st.Alpha
@@ -1197,13 +1177,14 @@ func main() {
 						hold.shortSince, hold.longSince = 0, 0
 
 						printSignal("ENTER SHORT_SPREAD (short BTC, long beta*ETH)", st)
-						writeLog(logg, "ENTER_SHORT", trade.Pos.String(), st, &trade, nil, nil, nowBTC, nowETH, st.MinMs)
+						writeLog(logg, "ENTER_SHORT", trade.Pos.String(), st, &trade, nil, nowBTC, nowETH, st.MinMs)
 					}
 				} else if st.Z <= -entryZ {
 					if hold.longSince == 0 {
 						hold.longSince = nowMs
 					}
 					hold.shortSince = 0
+
 					if holdMs == 0 || nowMs-hold.longSince >= holdMs {
 						trade.Pos = LongSpread
 						trade.EntryAlpha = st.Alpha
@@ -1214,7 +1195,7 @@ func main() {
 						hold.shortSince, hold.longSince = 0, 0
 
 						printSignal("ENTER LONG_SPREAD (long BTC, short beta*ETH)", st)
-						writeLog(logg, "ENTER_LONG", trade.Pos.String(), st, &trade, nil, nil, nowBTC, nowETH, st.MinMs)
+						writeLog(logg, "ENTER_LONG", trade.Pos.String(), st, &trade, nil, nowBTC, nowETH, st.MinMs)
 					}
 				} else {
 					hold.shortSince, hold.longSince = 0, 0
@@ -1222,8 +1203,6 @@ func main() {
 
 			case LongSpread, ShortSpread:
 				if absZ <= exitZ {
-					// compute current closed stats for a more stable exit print is optional,
-					// but we exit "ASAP" by intra-minute z.
 					p := pnlPctPortfolio(trade.Pos, trade.EntryBTC, trade.EntryETH, nowBTC, nowETH, trade.EntryBeta)
 					printSignal(fmt.Sprintf("EXIT (back to FLAT) | pnl=%.4f%%", p*100.0), st)
 					writeLog(logg, "EXIT", trade.Pos.String(), st, &trade, &p, nowBTC, nowETH, st.MinMs)
@@ -1236,81 +1215,6 @@ func main() {
 	}
 }
 
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": {
-		"value": "WrongArgCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongArgCount"
-		}
-	},
-	"severity": 8,
-	"message": "too many arguments in call to writeLog\n\thave (*JSONLLogger, string, string, Stats, *TradeState, nil, nil, float64, float64, int64)\n\twant (*JSONLLogger, string, string, Stats, *TradeState, *float64, float64, float64, int64)",
-	"source": "compiler",
-	"startLineNumber": 1049,
-	"startColumn": 35,
-	"endLineNumber": 1049,
-	"endColumn": 40,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": {
-		"value": "WrongArgCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongArgCount"
-		}
-	},
-	"severity": 8,
-	"message": "too many arguments in call to writeLog\n\thave (*JSONLLogger, string, string, Stats, *TradeState, nil, nil, float64, float64, int64)\n\twant (*JSONLLogger, string, string, Stats, *TradeState, *float64, float64, float64, int64)",
-	"source": "compiler",
-	"startLineNumber": 1114,
-	"startColumn": 95,
-	"endLineNumber": 1114,
-	"endColumn": 103,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/cmd/stat_arb/stat_arb.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": {
-		"value": "WrongArgCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongArgCount"
-		}
-	},
-	"severity": 8,
-	"message": "too many arguments in call to writeLog\n\thave (*JSONLLogger, string, string, Stats, *TradeState, nil, nil, float64, float64, int64)\n\twant (*JSONLLogger, string, string, Stats, *TradeState, *float64, float64, float64, int64)",
-	"source": "compiler",
-	"startLineNumber": 1131,
-	"startColumn": 94,
-	"endLineNumber": 1131,
-	"endColumn": 102,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
 
 
 
