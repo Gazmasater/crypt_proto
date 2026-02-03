@@ -279,4 +279,16 @@ func main() {
 }
 
 
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/trade_f$ go run .
+1H range (last 24h) XBTUSDTM:
+R_high = 78702.10
+R_low  = 73144.50
+R_mid  = 75923.30
+Range  = 5557.60 (7.32%)
+Now    = 75540.30 (latest 1H close, ts=1770148800000)
+distToRes = 4.186% | distToSup = 3.172%
+Near resistance (<0.25%)? false
+Near support     (<0.25%)? false
+
+
 
