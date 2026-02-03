@@ -14,7 +14,7 @@ func main() {
 
 	// ---------- KUCOIN ----------
 	kucoinMarkets := kucoin.LoadMarkets()
-	kucoinTriangles := builder.BuildTriangles(kucoinMarkets, "USDT")
+	kucoinTriangles := builder.BuildTriangles(kucoinMarkets, "USDC")
 	if err := common.SaveTrianglesCSV(
 		"data/kucoin_triangles_usdt.csv",
 		kucoinTriangles,

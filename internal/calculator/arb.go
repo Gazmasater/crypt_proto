@@ -11,7 +11,7 @@ import (
 	"crypt_proto/pkg/models"
 )
 
-const feeM = 0.999
+const feeM = 0.9992
 
 type LegIndex struct {
 	Key    string
@@ -150,7 +150,9 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
 
-	if profitPct > 0.001 && profitUSDT > 20 {
+	if profitPct > 0.001 && maxUSDT > 50 {
+		//if maxUSDT < 0.1 {
+
 		msg := fmt.Sprintf(
 			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
 			tri.A, tri.B, tri.C,
