@@ -89,1174 +89,138 @@ GOMAXPROCS=8 go run -race main.go
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"net/url"
-	"os"
-	"os/signal"
-	"sort"
 	"strconv"
-	"sync"
-	"syscall"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
-
-/*
-KuCoin stat-arb (isolated, one file) — FIXED MODEL + REALISTIC PnL (NET of fees)
-
-✅ OLS with intercept: ln(BTC) = alpha + beta*ln(ETH) + e
-✅ Spread = residual e
-✅ z-score computed on residuals
-✅ Entry alpha/beta FIXED at entry (no repainting)
-✅ PnL = portfolio returns (not exp(delta_spread))
-✅ PnL printed strictly on CLOSED minute (both markets closed same minute)
-✅ Logging aligned (UTC): 5m CLOSED-only + ENTER/EXIT + PNL_1M(CLOSED)
-
-Fees:
-✅ feeRate is PER LEG per trade (e.g. 0.1% per order per instrument)
-✅ Roundtrip fee = entry+exit across both legs, weighted by notionals:
-   BTC notional = 1.0, ETH notional = |beta|
-   feePctRoundtrip = 2 * feeRate * (1 + |beta|)
-   (2 = entry+exit)
-*/
 
 const (
-	windowBars = 120
-	ringExtra  = 30
-	tf         = "1min"
-	logPath    = "statarb_5m.jsonl"
-
-	feeRate = 0.001 // 0.1% per leg per trade (PER ORDER, PER INSTRUMENT)
+	symbol      = "XBTUSDTM"
+	futuresBase = "https://api-futures.kucoin.com"
 )
 
-// ====================== Bars / Ring ======================
-
-type Bar struct {
-	MinuteMs int64
-	High     float64
-	Low      float64
-	Mean     float64 // warmup: close; live: mean(mid)
-	Count    int
+type tsResp struct {
+	Code string `json:"code"`
+	Data int64  `json:"data"` // ms
 }
 
-type Ring struct {
-	buf   []Bar
-	cap   int
-	head  int
-	size  int
-	mutex sync.Mutex
+type klineResp struct {
+	Code string        `json:"code"`
+	Data [][]any       `json:"data"` // [ts, open, close, high, low, vol, turnover]
 }
 
-func NewRing(capacity int) *Ring { return &Ring{buf: make([]Bar, capacity), cap: capacity} }
-
-func (r *Ring) Push(b Bar) {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	r.buf[r.head] = b
-	r.head = (r.head + 1) % r.cap
-	if r.size < r.cap {
-		r.size++
+func getServerTimeMs() (int64, error) {
+	resp, err := http.Get("https://api.kucoin.com/api/v1/timestamp")
+	if err != nil {
+		return 0, err
 	}
-}
+	defer resp.Body.Close()
 
-func (r *Ring) Snapshot() []Bar {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-
-	out := make([]Bar, 0, r.size)
-	start := (r.head - r.size + r.cap) % r.cap
-	for i := 0; i < r.size; i++ {
-		out = append(out, r.buf[(start+i)%r.cap])
+	b, _ := io.ReadAll(resp.Body)
+	var r tsResp
+	if err := json.Unmarshal(b, &r); err != nil {
+		return 0, err
 	}
-	return out
-}
-
-func (r *Ring) Len() int {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	return r.size
-}
-
-// ====================== Ticks / Minute Aggregation ======================
-
-type Tick struct {
-	Symbol string
-	TimeMs int64
-	Bid    float64
-	Ask    float64
-}
-
-func (t Tick) Mid() float64 {
-	if t.Bid <= 0 || t.Ask <= 0 {
-		return 0
+	if r.Code != "200000" {
+		return 0, fmt.Errorf("timestamp bad code=%s body=%s", r.Code, string(b))
 	}
-	return 0.5 * (t.Bid + t.Ask)
+	return r.Data, nil
 }
 
-type MinuteAgg struct {
-	curMin int64
-	high   float64
-	low    float64
-	sum    float64
-	cnt    int
-}
-
-func NewMinuteAgg() *MinuteAgg { return &MinuteAgg{} }
-
-func minuteStartMs(tsMs int64) int64 { return (tsMs / 60000) * 60000 }
-
-func (a *MinuteAgg) Update(t Tick) (Bar, bool) {
-	mid := t.Mid()
-	if mid <= 0 {
-		return Bar{}, false
-	}
-	m := minuteStartMs(t.TimeMs)
-
-	if a.curMin == 0 {
-		a.curMin = m
-		a.high, a.low = mid, mid
-		a.sum, a.cnt = mid, 1
-		return Bar{}, false
-	}
-
-	if m == a.curMin {
-		if mid > a.high {
-			a.high = mid
-		}
-		if mid < a.low {
-			a.low = mid
-		}
-		a.sum += mid
-		a.cnt++
-		return Bar{}, false
-	}
-
-	closed := Bar{
-		MinuteMs: a.curMin,
-		High:     a.high,
-		Low:      a.low,
-		Mean:     a.sum / float64(a.cnt),
-		Count:    a.cnt,
-	}
-
-	// start new minute
-	a.curMin = m
-	a.high, a.low = mid, mid
-	a.sum, a.cnt = mid, 1
-
-	return closed, true
-}
-
-func (a *MinuteAgg) Partial() (Bar, bool) {
-	if a.curMin == 0 || a.cnt == 0 {
-		return Bar{}, false
-	}
-	return Bar{
-		MinuteMs: a.curMin,
-		High:     a.high,
-		Low:      a.low,
-		Mean:     a.sum / float64(a.cnt),
-		Count:    a.cnt,
-	}, true
-}
-
-// ====================== REST Warmup ======================
-
-type restKlinesResp struct {
-	Code string     `json:"code"`
-	Data [][]string `json:"data"`
-}
-
-type Kline struct {
-	StartSec int64
-	Open     float64
-	Close    float64
-	High     float64
-	Low      float64
-}
-
-func fetchKlines(ctx context.Context, symbol string, startAtSec, endAtSec int64) ([]Kline, error) {
-	u, _ := url.Parse("https://api.kucoin.com/api/v1/market/candles")
+func fetchKlines1H(fromMs, toMs int64) ([][]any, error) {
+	u, _ := url.Parse(futuresBase + "/api/v1/kline/query")
 	q := u.Query()
 	q.Set("symbol", symbol)
-	q.Set("type", tf)
-	q.Set("startAt", strconv.FormatInt(startAtSec, 10))
-	q.Set("endAt", strconv.FormatInt(endAtSec, 10))
+	q.Set("granularity", "3600") // 1h in seconds
+	q.Set("from", strconv.FormatInt(fromMs, 10))
+	q.Set("to", strconv.FormatInt(toMs, 10))
 	u.RawQuery = q.Encode()
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	req, _ := http.NewRequest("GET", u.String(), nil)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("rest http %d: %s", resp.StatusCode, string(b))
-	}
-
-	var r restKlinesResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	b, _ := io.ReadAll(resp.Body)
+	var r klineResp
+	if err := json.Unmarshal(b, &r); err != nil {
 		return nil, err
 	}
 	if r.Code != "200000" {
-		return nil, fmt.Errorf("rest code=%s", r.Code)
+		return nil, fmt.Errorf("kline bad code=%s body=%s", r.Code, string(b))
+	}
+	return r.Data, nil
+}
+
+func toFloat(v any) (float64, error) {
+	// API может отдавать string или number — обработаем оба
+	switch t := v.(type) {
+	case string:
+		return strconv.ParseFloat(t, 64)
+	case float64:
+		return t, nil
+	case json.Number:
+		return t.Float64()
+	default:
+		return 0, fmt.Errorf("unexpected type %T", v)
+	}
+}
+
+func main() {
+	nowMs, err := getServerTimeMs()
+	if err != nil {
+		panic(err)
 	}
 
-	out := make([]Kline, 0, len(r.Data))
-	for _, row := range r.Data {
+	fromMs := nowMs - 24*60*60*1000 // 24 часа назад
+	toMs := nowMs
+
+	klines, err := fetchKlines1H(fromMs, toMs)
+	if err != nil {
+		panic(err)
+	}
+	if len(klines) == 0 {
+		panic("no klines returned")
+	}
+
+	// KuCoin futures kline: [ts, open, close, high, low, vol, turnover]
+	hi := -math.MaxFloat64
+	lo := math.MaxFloat64
+
+	for _, row := range klines {
 		if len(row) < 5 {
 			continue
 		}
-		ts, _ := strconv.ParseInt(row[0], 10, 64)
-		op, _ := strconv.ParseFloat(row[1], 64)
-		cl, _ := strconv.ParseFloat(row[2], 64)
-		hi, _ := strconv.ParseFloat(row[3], 64)
-		lo, _ := strconv.ParseFloat(row[4], 64)
-
-		if ts == 0 || op <= 0 || cl <= 0 || hi <= 0 || lo <= 0 {
-			continue
-		}
-		out = append(out, Kline{StartSec: ts, Open: op, Close: cl, High: hi, Low: lo})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].StartSec < out[j].StartSec })
-	return out, nil
-}
-
-// ====================== KuCoin WS ======================
-
-type bulletResp struct {
-	Code string `json:"code"`
-	Data struct {
-		Token           string `json:"token"`
-		InstanceServers []struct {
-			Endpoint     string `json:"endpoint"`
-			PingInterval int    `json:"pingInterval"`
-		} `json:"instanceServers"`
-	} `json:"data"`
-}
-
-func getWSEndpoint(ctx context.Context) (endpoint, token string, pingInterval time.Duration, err error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.kucoin.com/api/v1/bullet-public", nil)
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
-	if err != nil {
-		return "", "", 0, err
-	}
-	defer resp.Body.Close()
-
-	var r bulletResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", "", 0, err
-	}
-	if r.Code != "200000" || len(r.Data.InstanceServers) == 0 {
-		return "", "", 0, fmt.Errorf("bullet code=%s servers=%d", r.Code, len(r.Data.InstanceServers))
-	}
-
-	endpoint = r.Data.InstanceServers[0].Endpoint
-	token = r.Data.Token
-	pi := r.Data.InstanceServers[0].PingInterval
-	if pi <= 0 {
-		pi = 18000
-	}
-	return endpoint, token, time.Duration(pi) * time.Millisecond, nil
-}
-
-type wsEnvelope struct {
-	Type    string          `json:"type"`
-	Topic   string          `json:"topic"`
-	Subject string          `json:"subject"`
-	Data    json.RawMessage `json:"data"`
-}
-
-type wsTickerData struct {
-	BestAsk string `json:"bestAsk"`
-	BestBid string `json:"bestBid"`
-	Time    int64  `json:"time"`
-	Time2   int64  `json:"Time"`
-}
-
-func parseTopicSymbol(topic string) string {
-	const p = "/market/ticker:"
-	if len(topic) >= len(p) && topic[:len(p)] == p {
-		return topic[len(p):]
-	}
-	return ""
-}
-
-func runWS(ctx context.Context, tickOut chan<- Tick) error {
-	endpoint, token, pingEvery, err := getWSEndpoint(ctx)
-	if err != nil {
-		return err
-	}
-
-	connectId := fmt.Sprintf("statarb-%d", time.Now().UnixNano())
-	u, _ := url.Parse(endpoint)
-	q := u.Query()
-	q.Set("token", token)
-	q.Set("connectId", connectId)
-	u.RawQuery = q.Encode()
-
-	c, _, err := websocket.DefaultDialer.DialContext(ctx, u.String(), nil)
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-
-	sub := func(topic string) error {
-		msg := map[string]any{
-			"id":       fmt.Sprintf("%d", time.Now().UnixNano()),
-			"type":     "subscribe",
-			"topic":    topic,
-			"response": true,
-		}
-		return c.WriteJSON(msg)
-	}
-	if err := sub("/market/ticker:BTC-USDT"); err != nil {
-		return err
-	}
-	if err := sub("/market/ticker:ETH-USDT"); err != nil {
-		return err
-	}
-
-	done := make(chan struct{})
-	go func() {
-		t := time.NewTicker(pingEvery)
-		defer t.Stop()
-		for {
-			select {
-			case <-t.C:
-				_ = c.WriteJSON(map[string]any{"id": fmt.Sprintf("%d", time.Now().UnixNano()), "type": "ping"})
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	for {
-		_, b, err := c.ReadMessage()
+		high, err := toFloat(row[3])
 		if err != nil {
-			close(done)
-			return err
+			panic(err)
 		}
-
-		var env wsEnvelope
-		if err := json.Unmarshal(b, &env); err != nil {
-			continue
+		low, err := toFloat(row[4])
+		if err != nil {
+			panic(err)
 		}
-		if env.Type != "message" || env.Subject != "trade.ticker" {
-			continue
+		if high > hi {
+			hi = high
 		}
-
-		sym := parseTopicSymbol(env.Topic)
-		if sym != "BTC-USDT" && sym != "ETH-USDT" {
-			continue
-		}
-
-		var d wsTickerData
-		if err := json.Unmarshal(env.Data, &d); err != nil {
-			continue
-		}
-
-		ts := d.Time
-		if ts <= 0 {
-			ts = d.Time2
-		}
-		bid, _ := strconv.ParseFloat(d.BestBid, 64)
-		ask, _ := strconv.ParseFloat(d.BestAsk, 64)
-		if ts <= 0 || bid <= 0 || ask <= 0 {
-			continue
-		}
-
-		select {
-		case tickOut <- Tick{Symbol: sym, TimeMs: ts, Bid: bid, Ask: ask}:
-		case <-ctx.Done():
-			close(done)
-			return ctx.Err()
+		if low < lo {
+			lo = low
 		}
 	}
+
+	fmt.Printf("1H range (last 24h) %s:\n", symbol)
+	fmt.Printf("R_high = %.2f\n", hi)
+	fmt.Printf("R_low  = %.2f\n", lo)
 }
-
-// ====================== Stats (OLS alpha/beta + residual) ======================
-
-type Stats struct {
-	Alpha  float64
-	Beta   float64
-	Res    float64
-	Mu     float64
-	Sigma  float64
-	Z      float64
-	Corr   float64
-	R2     float64
-	Mode   string
-	MinMs  int64
-	Common int
-}
-
-func meanStd(a []float64) (mu, sd float64) {
-	n := len(a)
-	if n == 0 {
-		return 0, 0
-	}
-	for _, v := range a {
-		mu += v
-	}
-	mu /= float64(n)
-	if n == 1 {
-		return mu, 0
-	}
-	var ss float64
-	for _, v := range a {
-		d := v - mu
-		ss += d * d
-	}
-	sd = math.Sqrt(ss / float64(n-1))
-	return mu, sd
-}
-
-func corr(x, y []float64) float64 {
-	n := len(x)
-	if n == 0 || n != len(y) {
-		return 0
-	}
-	var sx, sy float64
-	for i := 0; i < n; i++ {
-		sx += x[i]
-		sy += y[i]
-	}
-	mx := sx / float64(n)
-	my := sy / float64(n)
-
-	var sxx, syy, sxy float64
-	for i := 0; i < n; i++ {
-		dx := x[i] - mx
-		dy := y[i] - my
-		sxx += dx * dx
-		syy += dy * dy
-		sxy += dx * dy
-	}
-	if sxx == 0 || syy == 0 {
-		return 0
-	}
-	return sxy / math.Sqrt(sxx*syy)
-}
-
-func olsAlphaBeta(x, y []float64) (alpha, beta, r2 float64) {
-	n := len(x)
-	if n == 0 || n != len(y) {
-		return 0, 1, 0
-	}
-	var sx, sy float64
-	for i := 0; i < n; i++ {
-		sx += x[i]
-		sy += y[i]
-	}
-	mx := sx / float64(n)
-	my := sy / float64(n)
-
-	var cov, vx float64
-	for i := 0; i < n; i++ {
-		dx := x[i] - mx
-		dy := y[i] - my
-		cov += dx * dy
-		vx += dx * dx
-	}
-	if vx == 0 {
-		return my, 1, 0
-	}
-	beta = cov / vx
-	alpha = my - beta*mx
-
-	var sse, sst float64
-	for i := 0; i < n; i++ {
-		yhat := alpha + beta*x[i]
-		err := y[i] - yhat
-		sse += err * err
-		dy := y[i] - my
-		sst += dy * dy
-	}
-	if sst > 0 {
-		r2 = 1 - sse/sst
-		if r2 < 0 {
-			r2 = 0
-		}
-		if r2 > 1 {
-			r2 = 1
-		}
-	}
-	return
-}
-
-func calcStatsFromPrices(btc, eth []float64, mode string, minMs int64, common int) (Stats, bool) {
-	n := len(btc)
-	if n == 0 || n != len(eth) {
-		return Stats{}, false
-	}
-
-	lbtc := make([]float64, n)
-	leth := make([]float64, n)
-	for i := 0; i < n; i++ {
-		if btc[i] <= 0 || eth[i] <= 0 {
-			return Stats{}, false
-		}
-		lbtc[i] = math.Log(btc[i])
-		leth[i] = math.Log(eth[i])
-	}
-
-	c := corr(leth, lbtc)
-	alpha, beta, r2 := olsAlphaBeta(leth, lbtc)
-
-	res := make([]float64, n)
-	for i := 0; i < n; i++ {
-		res[i] = lbtc[i] - (alpha + beta*leth[i])
-	}
-	mu, sigma := meanStd(res)
-
-	last := res[n-1]
-	z := 0.0
-	if sigma > 0 {
-		z = (last - mu) / sigma
-	}
-
-	return Stats{
-		Alpha:  alpha,
-		Beta:   beta,
-		Res:    last,
-		Mu:     mu,
-		Sigma:  sigma,
-		Z:      z,
-		Corr:   c,
-		R2:     r2,
-		Mode:   mode,
-		MinMs:  minMs,
-		Common: common,
-	}, true
-}
-
-// ====================== Alignment helpers ======================
-
-func buildAlignedClosed(rBTC, rETH *Ring, window int) (btc, eth []float64, lastBTC, lastETH float64, minMs int64, common int, ok bool) {
-	sBTC := rBTC.Snapshot()
-	sETH := rETH.Snapshot()
-
-	mB := make(map[int64]float64, len(sBTC))
-	for _, b := range sBTC {
-		mB[b.MinuteMs] = b.Mean
-	}
-	mE := make(map[int64]float64, len(sETH))
-	for _, b := range sETH {
-		mE[b.MinuteMs] = b.Mean
-	}
-
-	commonMs := make([]int64, 0, len(mB))
-	for ms := range mB {
-		if _, ok := mE[ms]; ok {
-			commonMs = append(commonMs, ms)
-		}
-	}
-	sort.Slice(commonMs, func(i, j int) bool { return commonMs[i] < commonMs[j] })
-	common = len(commonMs)
-	if common < window {
-		return nil, nil, 0, 0, 0, common, false
-	}
-	commonMs = commonMs[common-window:]
-
-	btc = make([]float64, 0, window)
-	eth = make([]float64, 0, window)
-	for _, ms := range commonMs {
-		btc = append(btc, mB[ms])
-		eth = append(eth, mE[ms])
-	}
-	lastBTC = btc[len(btc)-1]
-	lastETH = eth[len(eth)-1]
-	return btc, eth, lastBTC, lastETH, commonMs[len(commonMs)-1], common, true
-}
-
-func buildAlignedIntra(rBTC, rETH *Ring, aggBTC, aggETH *MinuteAgg, window int) (btc, eth []float64, lastBTC, lastETH float64, mode string, minMs int64, common int, ok bool) {
-	sBTC := rBTC.Snapshot()
-	sETH := rETH.Snapshot()
-
-	mB := make(map[int64]float64, len(sBTC))
-	for _, b := range sBTC {
-		mB[b.MinuteMs] = b.Mean
-	}
-	mE := make(map[int64]float64, len(sETH))
-	for _, b := range sETH {
-		mE[b.MinuteMs] = b.Mean
-	}
-
-	commonMs := make([]int64, 0, len(mB))
-	for ms := range mB {
-		if _, ok := mE[ms]; ok {
-			commonMs = append(commonMs, ms)
-		}
-	}
-	sort.Slice(commonMs, func(i, j int) bool { return commonMs[i] < commonMs[j] })
-	common = len(commonMs)
-
-	pbB, okB := aggBTC.Partial()
-	pbE, okE := aggETH.Partial()
-	usePartial := okB && okE && pbB.MinuteMs == pbE.MinuteMs && pbB.Mean > 0 && pbE.Mean > 0
-
-	if usePartial {
-		if common < window-1 {
-			return nil, nil, 0, 0, "", 0, common, false
-		}
-		commonMs = commonMs[common-(window-1):]
-		btc = make([]float64, 0, window)
-		eth = make([]float64, 0, window)
-		for _, ms := range commonMs {
-			btc = append(btc, mB[ms])
-			eth = append(eth, mE[ms])
-		}
-		btc = append(btc, pbB.Mean)
-		eth = append(eth, pbE.Mean)
-		lastBTC, lastETH = pbB.Mean, pbE.Mean
-		return btc, eth, lastBTC, lastETH, fmt.Sprintf("%d+partial_aligned", window-1), pbB.MinuteMs, common, true
-	}
-
-	if common < window {
-		return nil, nil, 0, 0, "", 0, common, false
-	}
-	commonMs = commonMs[common-window:]
-	btc = make([]float64, 0, window)
-	eth = make([]float64, 0, window)
-	for _, ms := range commonMs {
-		btc = append(btc, mB[ms])
-		eth = append(eth, mE[ms])
-	}
-	lastBTC = btc[len(btc)-1]
-	lastETH = eth[len(eth)-1]
-	return btc, eth, lastBTC, lastETH, fmt.Sprintf("%dclosed_aligned", window), commonMs[len(commonMs)-1], common, true
-}
-
-// ====================== Aligned ticker ======================
-
-func startAlignedTicker(ctx context.Context, period time.Duration) <-chan time.Time {
-	ch := make(chan time.Time, 1)
-	go func() {
-		defer close(ch)
-
-		now := time.Now().UTC()
-		next := now.Truncate(period).Add(period)
-
-		timer := time.NewTimer(time.Until(next))
-		defer timer.Stop()
-
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			return
-		}
-
-		select {
-		case ch <- time.Now().UTC():
-		default:
-		}
-
-		ticker := time.NewTicker(period)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case t := <-ticker.C:
-				select {
-				case ch <- t.UTC():
-				default:
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return ch
-}
-
-// ====================== JSONL logger ======================
-
-type LogRow struct {
-	AtUTC string `json:"at_utc"`
-
-	Alpha  float64 `json:"alpha"`
-	Beta   float64 `json:"beta"`
-	Res    float64 `json:"res"`
-	Mu     float64 `json:"mu"`
-	Sigma  float64 `json:"sigma"`
-	Z      float64 `json:"z"`
-	Corr   float64 `json:"corr"`
-	R2     float64 `json:"r2"`
-	Mode   string  `json:"mode"`
-	Common int     `json:"common"`
-
-	Pos    string `json:"pos"`
-	Action string `json:"action"`
-
-	// NET PnL fields (percent as fraction; UI prints *100)
-	PnLGrossPct float64 `json:"pnl_gross_pct,omitempty"`
-	FeePct      float64 `json:"fee_pct,omitempty"`
-	PnLNetPct   float64 `json:"pnl_net_pct,omitempty"`
-
-	EntryBeta  float64 `json:"entry_beta,omitempty"`
-	EntryAlpha float64 `json:"entry_alpha,omitempty"`
-	EntryBTC   float64 `json:"entry_btc,omitempty"`
-	EntryETH   float64 `json:"entry_eth,omitempty"`
-
-	NowBTC      float64 `json:"now_btc,omitempty"`
-	NowETH      float64 `json:"now_eth,omitempty"`
-	ClosedMinMs int64   `json:"closed_min_ms,omitempty"`
-}
-
-type JSONLLogger struct {
-	mu  sync.Mutex
-	f   *os.File
-	enc *json.Encoder
-}
-
-func NewJSONLLogger(path string) (*JSONLLogger, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return nil, err
-	}
-	return &JSONLLogger{f: f, enc: json.NewEncoder(f)}, nil
-}
-func (l *JSONLLogger) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.f.Close()
-}
-func (l *JSONLLogger) Write(row LogRow) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	_ = l.enc.Encode(row)
-}
-
-func writeLog(logg *JSONLLogger, action string, pos string, st Stats, trade *TradeState,
-	gross, fee, net *float64, nowBTC, nowETH float64, closedMinMs int64) {
-
-	row := LogRow{
-		AtUTC:       time.Now().UTC().Format(time.RFC3339),
-		Alpha:       st.Alpha,
-		Beta:        st.Beta,
-		Res:         st.Res,
-		Mu:          st.Mu,
-		Sigma:       st.Sigma,
-		Z:           st.Z,
-		Corr:        st.Corr,
-		R2:          st.R2,
-		Mode:        st.Mode,
-		Common:      st.Common,
-		Pos:         pos,
-		Action:      action,
-		NowBTC:      nowBTC,
-		NowETH:      nowETH,
-		ClosedMinMs: closedMinMs,
-	}
-	if trade != nil && trade.Pos != Flat {
-		row.EntryBeta = trade.EntryBeta
-		row.EntryAlpha = trade.EntryAlpha
-		row.EntryBTC = trade.EntryBTC
-		row.EntryETH = trade.EntryETH
-	}
-	if gross != nil {
-		row.PnLGrossPct = *gross
-	}
-	if fee != nil {
-		row.FeePct = *fee
-	}
-	if net != nil {
-		row.PnLNetPct = *net
-	}
-	logg.Write(row)
-}
-
-// ====================== Trading state + PnL (NET) ======================
-
-type Position int
-
-const (
-	Flat Position = iota
-	LongSpread
-	ShortSpread
-)
-
-func (p Position) String() string {
-	switch p {
-	case LongSpread:
-		return "LONG_SPREAD"
-	case ShortSpread:
-		return "SHORT_SPREAD"
-	default:
-		return "FLAT"
-	}
-}
-
-type HoldState struct {
-	longSince  int64
-	shortSince int64
-}
-
-type TradeState struct {
-	Pos Position
-
-	EntryAlpha float64
-	EntryBeta  float64
-
-	EntryBTC float64
-	EntryETH float64
-
-	EntryAtMs int64
-}
-
-func pnlPctPortfolio(pos Position, entryBTC, entryETH, nowBTC, nowETH, beta float64) float64 {
-	if entryBTC <= 0 || entryETH <= 0 || nowBTC <= 0 || nowETH <= 0 {
-		return 0
-	}
-	rBTC := nowBTC/entryBTC - 1.0
-	rETH := nowETH/entryETH - 1.0
-
-	// notionals: BTC = 1.0, ETH = beta
-	switch pos {
-	case ShortSpread:
-		return (-rBTC) + beta*(rETH)
-	case LongSpread:
-		return (rBTC) - beta*(rETH)
-	default:
-		return 0
-	}
-}
-
-// feePctRoundtrip returns total fee as a fraction of "BTC $1 notional" base.
-// feeRate is PER LEG per trade.
-// We apply it to both legs and both sides (entry+exit):
-// fee = 2 * feeRate * (1 + |beta|)
-func feePctRoundtrip(beta float64) float64 {
-	return 2.0 * feeRate * (1.0 + math.Abs(beta))
-}
-
-func pnlPctNet(pos Position, entryBTC, entryETH, nowBTC, nowETH, beta float64) (gross, fee, net float64) {
-	gross = pnlPctPortfolio(pos, entryBTC, entryETH, nowBTC, nowETH, beta)
-	fee = feePctRoundtrip(beta)
-	net = gross - fee
-	return
-}
-
-// ====================== Main ======================
-
-func main() {
-	// ---- params ----
-	entryZ := 4.0
-	exitZ := 0.8
-
-	freshMs := int64(300)
-	holdMs := int64(1000)
-	calcThrottleMs := int64(150)
-
-	logPeriod := 5 * time.Minute // REAL 5m aligned logs
-	// --------------
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// graceful stop
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	go func() { <-sig; cancel() }()
-
-	// rings with EXTRA capacity
-	rBTC := NewRing(windowBars + ringExtra)
-	rETH := NewRing(windowBars + ringExtra)
-
-	// warmup history
-	nowSec := time.Now().Unix()
-	startSec := nowSec - int64((windowBars+ringExtra+30)*60)
-
-	btcK, err := fetchKlines(ctx, "BTC-USDT", startSec, nowSec)
-	if err != nil {
-		fmt.Println("history BTC error:", err)
-		return
-	}
-	ethK, err := fetchKlines(ctx, "ETH-USDT", startSec, nowSec)
-	if err != nil {
-		fmt.Println("history ETH error:", err)
-		return
-	}
-
-	// align warmup by startSec and push CLOSE into Mean
-	mBTC := make(map[int64]Kline, len(btcK))
-	for _, k := range btcK {
-		mBTC[k.StartSec] = k
-	}
-	mETH := make(map[int64]Kline, len(ethK))
-	for _, k := range ethK {
-		mETH[k.StartSec] = k
-	}
-
-	secs := make([]int64, 0, len(mBTC))
-	for s := range mBTC {
-		if _, ok := mETH[s]; ok {
-			secs = append(secs, s)
-		}
-	}
-	sort.Slice(secs, func(i, j int) bool { return secs[i] < secs[j] })
-	if len(secs) > windowBars {
-		secs = secs[len(secs)-windowBars:]
-	}
-	for _, s := range secs {
-		kb := mBTC[s]
-		ke := mETH[s]
-		rBTC.Push(Bar{MinuteMs: s * 1000, High: kb.High, Low: kb.Low, Mean: kb.Close, Count: 1})
-		rETH.Push(Bar{MinuteMs: s * 1000, High: ke.High, Low: ke.Low, Mean: ke.Close, Count: 1})
-	}
-
-	fmt.Printf("Warmup done: BTC=%d bars, ETH=%d bars | entryZ=%.2f exitZ=%.2f holdMs=%d freshMs=%d | ringCap=%d | feeRate=%.4f (per leg)\n",
-		rBTC.Len(), rETH.Len(), entryZ, exitZ, holdMs, freshMs, windowBars+ringExtra, feeRate)
-
-	// logger
-	logg, err := NewJSONLLogger(logPath)
-	if err != nil {
-		fmt.Println("logger error:", err)
-		return
-	}
-	defer logg.Close()
-	fmt.Println("Logging: 5m(aligned, CLOSED) + ENTER/EXIT + PNL_1M(CLOSED) to:", logPath)
-
-	// aligned 5m ticker
-	log5mCh := startAlignedTicker(ctx, logPeriod)
-
-	// WS ticks
-	ticks := make(chan Tick, 20000)
-	go func() {
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			if err := runWS(ctx, ticks); err != nil && ctx.Err() == nil {
-				fmt.Println("ws error:", err, "reconnect in 1s")
-				time.Sleep(1 * time.Second)
-			}
-		}
-	}()
-
-	aggBTC := NewMinuteAgg()
-	aggETH := NewMinuteAgg()
-
-	// last tick times for freshness
-	var lastBTCms int64
-	var lastETHms int64
-
-	// state
-	hold := HoldState{}
-	trade := TradeState{Pos: Flat}
-	var lastCalcAtMs int64
-
-	// pending closed bars (to detect same-minute close)
-	pendingBTC := make(map[int64]Bar)
-	pendingETH := make(map[int64]Bar)
-
-	// compute stats (intra-minute) with throttle + freshness
-	computeIntra := func(nowMs int64) (Stats, float64, float64, bool) {
-		if nowMs-lastCalcAtMs < calcThrottleMs {
-			return Stats{}, 0, 0, false
-		}
-		lastCalcAtMs = nowMs
-
-		if lastBTCms == 0 || lastETHms == 0 {
-			return Stats{}, 0, 0, false
-		}
-		d := lastBTCms - lastETHms
-		if d < 0 {
-			d = -d
-		}
-		if d > freshMs {
-			return Stats{}, 0, 0, false
-		}
-
-		btc, eth, lastBTC, lastETH, mode, minMs, common, ok := buildAlignedIntra(rBTC, rETH, aggBTC, aggETH, windowBars)
-		if !ok {
-			return Stats{}, 0, 0, false
-		}
-		st, ok := calcStatsFromPrices(btc, eth, mode, minMs, common)
-		return st, lastBTC, lastETH, ok
-	}
-
-	// compute stats strictly on closed minutes (for 1m PnL + 5m logs)
-	computeClosed := func() (Stats, float64, float64, int64, bool) {
-		btc, eth, lastBTC, lastETH, minMs, common, ok := buildAlignedClosed(rBTC, rETH, windowBars)
-		if !ok {
-			return Stats{}, 0, 0, 0, false
-		}
-		st, ok := calcStatsFromPrices(btc, eth, "closed_aligned", minMs, common)
-		return st, lastBTC, lastETH, minMs, ok
-	}
-
-	printSignal := func(tag string, st Stats) {
-		t := time.Now().UTC().Format("2006-01-02 15:04:05")
-		min := time.UnixMilli(st.MinMs).UTC().Format("2006-01-02 15:04")
-		fmt.Printf("[%s] %s | minute=%s | z=%+.3f alpha=%.4f beta=%.4f corr=%.3f r2=%.3f res=%.6f mode=%s pos=%s\n",
-			t, tag, min, st.Z, st.Alpha, st.Beta, st.Corr, st.R2, st.Res, st.Mode, trade.Pos.String())
-	}
-
-	printPnLClosed := func(closedMinuteMs int64) {
-		if trade.Pos == Flat {
-			return
-		}
-		st, nowBTC, nowETH, _, ok := computeClosed()
-		if !ok {
-			return
-		}
-
-		gross, fee, net := pnlPctNet(trade.Pos, trade.EntryBTC, trade.EntryETH, nowBTC, nowETH, trade.EntryBeta)
-
-		min := time.UnixMilli(closedMinuteMs).UTC().Format("2006-01-02 15:04")
-		sign := "PROFIT"
-		if net < 0 {
-			sign = "LOSS"
-		}
-		fmt.Printf("[1m %s] net=%.4f%% gross=%.4f%% fee=%.4f%% | minute=%s | pos=%s | z=%+.3f entryBeta=%.4f liveBeta=%.4f\n",
-			sign, net*100.0, gross*100.0, fee*100.0, min, trade.Pos.String(), st.Z, trade.EntryBeta, st.Beta)
-
-		writeLog(logg, "PNL_1M", trade.Pos.String(), st, &trade, &gross, &fee, &net, nowBTC, nowETH, closedMinuteMs)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-
-		// 5m log (closed-only)
-		case <-log5mCh:
-			st, nowBTC, nowETH, minMs, ok := computeClosed()
-			if !ok {
-				fmt.Printf("[5m log] SKIP: not enough closed common minutes (need=%d)\n", windowBars)
-				logg.Write(LogRow{
-					AtUTC:  time.Now().UTC().Format(time.RFC3339),
-					Mode:   "skip",
-					Pos:    trade.Pos.String(),
-					Action: "LOG_5M_SKIP",
-				})
-				continue
-			}
-
-			var tradePtr *TradeState
-			if trade.Pos != Flat {
-				tradePtr = &trade
-			}
-			writeLog(logg, "LOG_5M", trade.Pos.String(), st, tradePtr, nil, nil, nil, nowBTC, nowETH, minMs)
-
-			fmt.Printf("[5m log] z=%+.3f alpha=%.4f beta=%.4f corr=%.3f r2=%.3f res=%.6f common=%d pos=%s\n",
-				st.Z, st.Alpha, st.Beta, st.Corr, st.R2, st.Res, st.Common, trade.Pos.String())
-
-		case t := <-ticks:
-			// freshness timestamps
-			if t.Symbol == "BTC-USDT" {
-				lastBTCms = t.TimeMs
-			} else if t.Symbol == "ETH-USDT" {
-				lastETHms = t.TimeMs
-			}
-
-			// minute close handling + strict PnL on close
-			if t.Symbol == "BTC-USDT" {
-				if bar, ok := aggBTC.Update(t); ok {
-					rBTC.Push(bar)
-					pendingBTC[bar.MinuteMs] = bar
-					if _, ok2 := pendingETH[bar.MinuteMs]; ok2 {
-						delete(pendingBTC, bar.MinuteMs)
-						delete(pendingETH, bar.MinuteMs)
-						printPnLClosed(bar.MinuteMs)
-					}
-				}
-			} else if t.Symbol == "ETH-USDT" {
-				if bar, ok := aggETH.Update(t); ok {
-					rETH.Push(bar)
-					pendingETH[bar.MinuteMs] = bar
-					if _, ok2 := pendingBTC[bar.MinuteMs]; ok2 {
-						delete(pendingBTC, bar.MinuteMs)
-						delete(pendingETH, bar.MinuteMs)
-						printPnLClosed(bar.MinuteMs)
-					}
-				}
-			}
-
-			// intra-minute stats (ASAP signals)
-			nowMs := time.Now().UnixMilli()
-			st, nowBTC, nowETH, ok := computeIntra(nowMs)
-			if !ok {
-				continue
-			}
-
-			absZ := st.Z
-			if absZ < 0 {
-				absZ = -absZ
-			}
-
-			switch trade.Pos {
-			case Flat:
-				if st.Z >= entryZ {
-					if hold.shortSince == 0 {
-						hold.shortSince = nowMs
-					}
-					hold.longSince = 0
-
-					if holdMs == 0 || nowMs-hold.shortSince >= holdMs {
-						trade.Pos = ShortSpread
-						trade.EntryAlpha = st.Alpha
-						trade.EntryBeta = st.Beta
-						trade.EntryBTC = nowBTC
-						trade.EntryETH = nowETH
-						trade.EntryAtMs = nowMs
-						hold.shortSince, hold.longSince = 0, 0
-
-						printSignal("ENTER SHORT_SPREAD (short BTC, long beta*ETH)", st)
-						writeLog(logg, "ENTER_SHORT", trade.Pos.String(), st, &trade, nil, nil, nil, nowBTC, nowETH, st.MinMs)
-					}
-				} else if st.Z <= -entryZ {
-					if hold.longSince == 0 {
-						hold.longSince = nowMs
-					}
-					hold.shortSince = 0
-
-					if holdMs == 0 || nowMs-hold.longSince >= holdMs {
-						trade.Pos = LongSpread
-						trade.EntryAlpha = st.Alpha
-						trade.EntryBeta = st.Beta
-						trade.EntryBTC = nowBTC
-						trade.EntryETH = nowETH
-						trade.EntryAtMs = nowMs
-						hold.shortSince, hold.longSince = 0, 0
-
-						printSignal("ENTER LONG_SPREAD (long BTC, short beta*ETH)", st)
-						writeLog(logg, "ENTER_LONG", trade.Pos.String(), st, &trade, nil, nil, nil, nowBTC, nowETH, st.MinMs)
-					}
-				} else {
-					hold.shortSince, hold.longSince = 0, 0
-				}
-
-			case LongSpread, ShortSpread:
-				if absZ <= exitZ {
-					gross, fee, net := pnlPctNet(trade.Pos, trade.EntryBTC, trade.EntryETH, nowBTC, nowETH, trade.EntryBeta)
-
-					printSignal(fmt.Sprintf("EXIT (back to FLAT) | net=%.4f%% gross=%.4f%% fee=%.4f%%",
-						net*100.0, gross*100.0, fee*100.0), st)
-
-					writeLog(logg, "EXIT", trade.Pos.String(), st, &trade, &gross, &fee, &net, nowBTC, nowETH, st.MinMs)
-
-					trade = TradeState{Pos: Flat}
-					hold.shortSince, hold.longSince = 0, 0
-				}
-			}
-		}
-	}
-}
-
-
-
 
 
