@@ -224,3 +224,11 @@ func main() {
 }
 
 
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/trade_f$ go run .
+panic: kline bad code=300000 body={"msg":"Unsupported granularity","code":"300000"}
+
+goroutine 1 [running]:
+main.main()
+        /home/gaz358/myprog/crypt_proto/cmd/trade_f/trade_f.go:103 +0x256
+exit status 2
+gaz358@gaz358-BO
