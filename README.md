@@ -117,3 +117,9 @@ func fetchKlines1H(fromMs, toMs int64) ([][]any, error) {
 	return r.Data, nil
 }
 
+
+az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/trade_f$ go run .
+1H range (last 24h) XBTUSDTM:
+R_high = 78702.10
+R_low  = 73144.50
+
