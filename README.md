@@ -86,57 +86,11 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-package main
-
-import (
-	"encoding/json"
-	"fmt"
-	"io"
-	"math"
-	"net/http"
-	"net/url"
-	"strconv"
-	"time"
-)
-
-const (
-	symbol      = "XBTUSDTM"
-	futuresBase = "https://api-futures.kucoin.com"
-)
-
-type tsResp struct {
-	Code string `json:"code"`
-	Data int64  `json:"data"` // ms
-}
-
-type klineResp struct {
-	Code string        `json:"code"`
-	Data [][]any       `json:"data"` // [ts, open, close, high, low, vol, turnover]
-}
-
-func getServerTimeMs() (int64, error) {
-	resp, err := http.Get("https://api.kucoin.com/api/v1/timestamp")
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	b, _ := io.ReadAll(resp.Body)
-	var r tsResp
-	if err := json.Unmarshal(b, &r); err != nil {
-		return 0, err
-	}
-	if r.Code != "200000" {
-		return 0, fmt.Errorf("timestamp bad code=%s body=%s", r.Code, string(b))
-	}
-	return r.Data, nil
-}
-
 func fetchKlines1H(fromMs, toMs int64) ([][]any, error) {
 	u, _ := url.Parse(futuresBase + "/api/v1/kline/query")
 	q := u.Query()
 	q.Set("symbol", symbol)
-	q.Set("granularity", "3600") // 1h in seconds
+	q.Set("granularity", "60") // ✅ 1H for KuCoin Futures
 	q.Set("from", strconv.FormatInt(fromMs, 10))
 	q.Set("to", strconv.FormatInt(toMs, 10))
 	u.RawQuery = q.Encode()
@@ -163,72 +117,3 @@ func fetchKlines1H(fromMs, toMs int64) ([][]any, error) {
 	return r.Data, nil
 }
 
-func toFloat(v any) (float64, error) {
-	// API может отдавать string или number — обработаем оба
-	switch t := v.(type) {
-	case string:
-		return strconv.ParseFloat(t, 64)
-	case float64:
-		return t, nil
-	case json.Number:
-		return t.Float64()
-	default:
-		return 0, fmt.Errorf("unexpected type %T", v)
-	}
-}
-
-func main() {
-	nowMs, err := getServerTimeMs()
-	if err != nil {
-		panic(err)
-	}
-
-	fromMs := nowMs - 24*60*60*1000 // 24 часа назад
-	toMs := nowMs
-
-	klines, err := fetchKlines1H(fromMs, toMs)
-	if err != nil {
-		panic(err)
-	}
-	if len(klines) == 0 {
-		panic("no klines returned")
-	}
-
-	// KuCoin futures kline: [ts, open, close, high, low, vol, turnover]
-	hi := -math.MaxFloat64
-	lo := math.MaxFloat64
-
-	for _, row := range klines {
-		if len(row) < 5 {
-			continue
-		}
-		high, err := toFloat(row[3])
-		if err != nil {
-			panic(err)
-		}
-		low, err := toFloat(row[4])
-		if err != nil {
-			panic(err)
-		}
-		if high > hi {
-			hi = high
-		}
-		if low < lo {
-			lo = low
-		}
-	}
-
-	fmt.Printf("1H range (last 24h) %s:\n", symbol)
-	fmt.Printf("R_high = %.2f\n", hi)
-	fmt.Printf("R_low  = %.2f\n", lo)
-}
-
-
-az358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/trade_f$ go run .
-panic: kline bad code=300000 body={"msg":"Unsupported granularity","code":"300000"}
-
-goroutine 1 [running]:
-main.main()
-        /home/gaz358/myprog/crypt_proto/cmd/trade_f/trade_f.go:103 +0x256
-exit status 2
-gaz358@gaz358-BO
