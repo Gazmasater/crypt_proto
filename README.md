@@ -86,264 +86,14 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-Структура проекта
-trade_f/
-  go.mod
-  main.go
-  internal/
-    ring/ring.go
-    kucoin/kucoin.go
-    engine/engine.go
-
-
-Ниже — готовые файлы. Скопируй 1-в-1.
-
-1) go.mod
-module trade_f
-
-go 1.22
-
-2) internal/ring/ring.go
-package ring
-
-import "sync"
-
-type Ring[T any] struct {
-	mu    sync.RWMutex
-	buf   []T
-	size  int
-	head  int
-	count int
-}
-
-func New[T any](size int) *Ring[T] {
-	return &Ring[T]{buf: make([]T, size), size: size}
-}
-
-func (r *Ring[T]) Push(v T) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.buf[r.head] = v
-	r.head = (r.head + 1) % r.size
-	if r.count < r.size {
-		r.count++
-	}
-}
-
-func (r *Ring[T]) Len() int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.count
-}
-
-// Snapshot returns oldest->newest
-func (r *Ring[T]) Snapshot() []T {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	out := make([]T, r.count)
-	if r.count == 0 {
-		return out
-	}
-	start := (r.head - r.count + r.size) % r.size
-	for i := 0; i < r.count; i++ {
-		out[i] = r.buf[(start+i)%r.size]
-	}
-	return out
-}
-
-3) internal/kucoin/kucoin.go (REST: timestamp + klines + OI)
-package kucoin
-
-import (
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"strconv"
-	"time"
-)
-
-const (
-	FuturesBase = "https://api-futures.kucoin.com"
-	SpotBase    = "https://api.kucoin.com"
-)
-
-type Candle struct {
-	Ts    int64   // close time ms
-	Open  float64
-	High  float64
-	Low   float64
-	Close float64
-	Vol   float64
-}
-
-type OIPoint struct {
-	Ts int64
-	OI float64
-}
-
-type tsResp struct {
-	Code string `json:"code"`
-	Data int64  `json:"data"`
-}
-
-type klineResp struct {
-	Code string  `json:"code"`
-	Data [][]any `json:"data"` // [ts, open, close, high, low, vol, turnover]
-}
-
-type oiResp struct {
-	Code string `json:"code"`
-	Data []struct {
-		OpenInterest string `json:"openInterest"`
-		Ts           int64  `json:"ts"`
-	} `json:"data"`
-}
-
-func ServerTimeMs() (int64, error) {
-	resp, err := http.Get(SpotBase + "/api/v1/timestamp")
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	b, _ := io.ReadAll(resp.Body)
-	var r tsResp
-	if err := json.Unmarshal(b, &r); err != nil {
-		return 0, err
-	}
-	if r.Code != "200000" {
-		return 0, fmt.Errorf("timestamp bad code=%s body=%s", r.Code, string(b))
-	}
-	return r.Data, nil
-}
-
-func FetchKlines(symbol string, granularity string, fromMs, toMs int64) ([]Candle, error) {
-	u, _ := url.Parse(FuturesBase + "/api/v1/kline/query")
-	q := u.Query()
-	q.Set("symbol", symbol)
-	q.Set("granularity", granularity) // futures: 60=1H, 15=15m, 5=5m
-	q.Set("from", strconv.FormatInt(fromMs, 10))
-	q.Set("to", strconv.FormatInt(toMs, 10))
-	u.RawQuery = q.Encode()
-
-	req, _ := http.NewRequest("GET", u.String(), nil)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	b, _ := io.ReadAll(resp.Body)
-	var r klineResp
-	if err := json.Unmarshal(b, &r); err != nil {
-		return nil, err
-	}
-	if r.Code != "200000" {
-		return nil, fmt.Errorf("kline bad code=%s body=%s", r.Code, string(b))
-	}
-
-	out := make([]Candle, 0, len(r.Data))
-	for _, row := range r.Data {
-		if len(row) < 6 {
-			continue
-		}
-		ts, _ := toInt64(row[0])
-		open, _ := toFloat(row[1])
-		closeV, _ := toFloat(row[2])
-		high, _ := toFloat(row[3])
-		low, _ := toFloat(row[4])
-		vol, _ := toFloat(row[5])
-
-		out = append(out, Candle{
-			Ts: ts, Open: open, High: high, Low: low, Close: closeV, Vol: vol,
-		})
-	}
-	return out, nil
-}
-
-func FetchOI15m(symbol string, startAt, endAt int64) ([]OIPoint, error) {
-	u, _ := url.Parse(SpotBase + "/api/ua/v1/market/open-interest")
-	q := u.Query()
-	q.Set("symbol", symbol)
-	q.Set("interval", "15min")
-	q.Set("startAt", strconv.FormatInt(startAt, 10))
-	q.Set("endAt", strconv.FormatInt(endAt, 10))
-	q.Set("pageSize", "200")
-	u.RawQuery = q.Encode()
-
-	req, _ := http.NewRequest("GET", u.String(), nil)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	b, _ := io.ReadAll(resp.Body)
-	var r oiResp
-	if err := json.Unmarshal(b, &r); err != nil {
-		return nil, err
-	}
-	if r.Code != "200000" {
-		return nil, fmt.Errorf("oi bad code=%s body=%s", r.Code, string(b))
-	}
-
-	out := make([]OIPoint, 0, len(r.Data))
-	for _, it := range r.Data {
-		v, err := strconv.ParseFloat(it.OpenInterest, 64)
-		if err != nil {
-			continue
-		}
-		out = append(out, OIPoint{Ts: it.Ts, OI: v})
-	}
-	return out, nil
-}
-
-func toFloat(v any) (float64, error) {
-	switch t := v.(type) {
-	case string:
-		return strconv.ParseFloat(t, 64)
-	case float64:
-		return t, nil
-	case json.Number:
-		return t.Float64()
-	default:
-		return 0, fmt.Errorf("unexpected type %T", v)
-	}
-}
-
-func toInt64(v any) (int64, error) {
-	switch t := v.(type) {
-	case string:
-		return strconv.ParseInt(t, 10, 64)
-	case float64:
-		return int64(t), nil
-	case json.Number:
-		return t.Int64()
-	default:
-		return 0, fmt.Errorf("unexpected type %T", v)
-	}
-}
-
-4) internal/engine/engine.go (ringbuffers + FSM ожидания сигнала)
 package engine
 
 import (
+	"container/ring"
+	"crypt_proto/internal/aring"
 	"fmt"
 	"math"
 	"sort"
-
-	"trade_f/internal/ring"
 )
 
 type Candle = struct {
@@ -373,10 +123,10 @@ const (
 type Engine struct {
 	Symbol string
 
-	R1h  *ring.Ring[Candle]
-	R15  *ring.Ring[Candle]
-	R5   *ring.Ring[Candle]
-	OI15 *ring.Ring[OIPoint]
+	R1h  *aring.Ring[Candle]
+	R15  *aring.Ring[Candle]
+	R5   *aring.Ring[Candle]
+	OI15 *aring.Ring[OIPoint]
 
 	// Levels
 	Rhigh, Rlow float64 // 1H 24h
@@ -651,135 +401,30 @@ func (e *Engine) reset() {
 	e.Trigger = 0
 }
 
-5) main.go (загрузка initial bars → затем “живой” цикл ожидания)
 
-Сначала сделаем простой вариант: каждые 5 минут подтягиваем последние свечи REST’ом и если появилась новая закрытая свеча — пушим в engine. Это уже будет “живой бот”, который ждёт сигнал.
-
-package main
-
-import (
-	"fmt"
-	"sort"
-	"time"
-
-	"trade_f/internal/engine"
-	"trade_f/internal/kucoin"
-)
-
-const symbol = "XBTUSDTM"
-
-func main() {
-	e := engine.New(symbol)
-
-	// ===== initial warmup =====
-	nowMs, err := kucoin.ServerTimeMs()
-	if err != nil {
-		panic(err)
-	}
-
-	// берём чуть с запасом и потом отсортируем
-	c1h, _ := kucoin.FetchKlines(symbol, "60", nowMs-30*60*60*1000, nowMs)
-	c15, _ := kucoin.FetchKlines(symbol, "15", nowMs-12*60*60*1000, nowMs)
-	c5, _ := kucoin.FetchKlines(symbol, "5", nowMs-3*60*60*1000, nowMs)
-	oi, _ := kucoin.FetchOI15m(symbol, nowMs-20*60*60*1000, nowMs)
-
-	// sort by ts asc
-	sort.Slice(c1h, func(i, j int) bool { return c1h[i].Ts < c1h[j].Ts })
-	sort.Slice(c15, func(i, j int) bool { return c15[i].Ts < c15[j].Ts })
-	sort.Slice(c5, func(i, j int) bool { return c5[i].Ts < c5[j].Ts })
-	sort.Slice(oi, func(i, j int) bool { return oi[i].Ts < oi[j].Ts })
-
-	// convert to engine types
-	convC := func(in []kucoin.Candle) []engine.Candle {
-		out := make([]engine.Candle, 0, len(in))
-		for _, c := range in {
-			out = append(out, engine.Candle(c))
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/engine/engine.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "IncompatibleAssign",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "IncompatibleAssign"
 		}
-		return out
-	}
-	convOI := func(in []kucoin.OIPoint) []engine.OIPoint {
-		out := make([]engine.OIPoint, 0, len(in))
-		for _, p := range in {
-			out = append(out, engine.OIPoint(p))
-		}
-		return out
-	}
-
-	e.Warmup(convC(c1h), convC(c15), convC(c5), convOI(oi))
-
-	fmt.Println("engine started; waiting for signals...")
-
-	// ===== live loop (REST polling) =====
-	var last5Ts int64
-	var last15Ts int64
-	var last1hTs int64
-	if s := e.R5.Snapshot(); len(s) > 0 {
-		last5Ts = s[len(s)-1].Ts
-	}
-	if s := e.R15.Snapshot(); len(s) > 0 {
-		last15Ts = s[len(s)-1].Ts
-	}
-	if s := e.R1h.Snapshot(); len(s) > 0 {
-		last1hTs = s[len(s)-1].Ts
-	}
-
-	ticker := time.NewTicker(10 * time.Second) // часто, но запросы делай экономно
-	defer ticker.Stop()
-
-	for range ticker.C {
-		nowMs, err := kucoin.ServerTimeMs()
-		if err != nil {
-			continue
-		}
-
-		// 5m: берём последние ~30 минут
-		c5n, err := kucoin.FetchKlines(symbol, "5", nowMs-40*60*1000, nowMs)
-		if err == nil && len(c5n) > 0 {
-			sort.Slice(c5n, func(i, j int) bool { return c5n[i].Ts < c5n[j].Ts })
-			for _, c := range c5n {
-				if c.Ts > last5Ts {
-					e.OnClose5m(engine.Candle(c))
-					last5Ts = c.Ts
-				}
-			}
-		}
-
-		// 15m: последние ~4 часа
-		c15n, err := kucoin.FetchKlines(symbol, "15", nowMs-5*60*60*1000, nowMs)
-		if err == nil && len(c15n) > 0 {
-			sort.Slice(c15n, func(i, j int) bool { return c15n[i].Ts < c15n[j].Ts })
-			for _, c := range c15n {
-				if c.Ts > last15Ts {
-					e.OnClose15m(engine.Candle(c))
-					last15Ts = c.Ts
-				}
-			}
-		}
-
-		// 1h: последние 30 часов
-		c1n, err := kucoin.FetchKlines(symbol, "60", nowMs-35*60*60*1000, nowMs)
-		if err == nil && len(c1n) > 0 {
-			sort.Slice(c1n, func(i, j int) bool { return c1n[i].Ts < c1n[j].Ts })
-			for _, c := range c1n {
-				if c.Ts > last1hTs {
-					e.OnClose1H(engine.Candle(c))
-					last1hTs = c.Ts
-				}
-			}
-		}
-
-		// OI: раз в минуту достаточно (тут просто берём последние 2 часа и пушим новые точки)
-		oin, err := kucoin.FetchOI15m(symbol, nowMs-2*60*60*1000, nowMs)
-		if err == nil && len(oin) > 0 {
-			sort.Slice(oin, func(i, j int) bool { return oin[i].Ts < oin[j].Ts })
-			// пушим всё, ring сам ограничит; дубликаты можно отфильтровать позже
-			for _, p := range oin {
-				e.OnOI15m(engine.OIPoint(p))
-			}
-		}
-	}
-}
-
+	},
+	"severity": 8,
+	"message": "cannot use ring.New (value of type func(n int) *ring.Ring) as *aring.Ring[Candle] value in struct literal",
+	"source": "compiler",
+	"startLineNumber": 62,
+	"startColumn": 11,
+	"endLineNumber": 62,
+	"endColumn": 19,
+	"modelVersionId": 102,
+	"origin": "extHost1"
+}]
 
 
 
