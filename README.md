@@ -234,8 +234,21 @@ func toInt64(v any) (int64, error) {
 	}
 }
 
+func biasLabel(longOK, shortOK bool) string {
+	switch {
+	case longOK && !shortOK:
+		return "LONG"
+	case shortOK && !longOK:
+		return "SHORT"
+	case longOK && shortOK:
+		return "BOTH"
+	default:
+		return "FLAT"
+	}
+}
+
 func main() {
-	fmt.Println("=== MAIN: 1H(24h) + 15m(8h) + OI15m(20h) ===") // маркер, чтобы точно видеть что это этот файл
+	fmt.Println("=== MAIN: 1H(24h) + 15m(8h) + OI15m(20h) + BIAS ===")
 
 	nowMs, err := getServerTimeMs()
 	if err != nil {
@@ -364,24 +377,59 @@ func main() {
 	fmt.Printf("t-15m ts=%d oi=%.0f\n", prev.Ts, oiPrev)
 	fmt.Printf("t     ts=%d oi=%.0f\n", last.Ts, oiLast)
 	fmt.Printf("ΔOI_15m = %.0f | ΔOI_30m = %.0f\n", dOI15, dOI30)
+
+	// ===== BIAS (simple) =====
+	mid15 := (hi15 + lo15) / 2
+
+	longOK := true
+	shortOK := true
+	reasonsLong := make([]string, 0, 4)
+	reasonsShort := make([]string, 0, 4)
+
+	// 1) не впритык к стенам 1H
+	if distToResPct < nearPct {
+		longOK = false
+		reasonsLong = append(reasonsLong, fmt.Sprintf("too close to 1H resistance (distToRes=%.3f%% < %.2f%%)", distToResPct, nearPct))
+	}
+	if distToSupPct < nearPct {
+		shortOK = false
+		reasonsShort = append(reasonsShort, fmt.Sprintf("too close to 1H support (distToSup=%.3f%% < %.2f%%)", distToSupPct, nearPct))
+	}
+
+	// 2) OI как топливо
+	if dOI30 <= 0 {
+		longOK = false
+		reasonsLong = append(reasonsLong, fmt.Sprintf("OI not supporting long (ΔOI_30m=%.0f <= 0)", dOI30))
+	}
+	if dOI30 >= 0 {
+		shortOK = false
+		reasonsShort = append(reasonsShort, fmt.Sprintf("OI not supporting short (ΔOI_30m=%.0f >= 0)", dOI30))
+	}
+
+	// 3) положение цены относительно середины 15m коробки
+	if latestClose <= mid15 {
+		longOK = false
+		reasonsLong = append(reasonsLong, fmt.Sprintf("price not in upper half of 15m box (price=%.2f <= mid15=%.2f)", latestClose, mid15))
+	}
+	if latestClose >= mid15 {
+		shortOK = false
+		reasonsShort = append(reasonsShort, fmt.Sprintf("price not in lower half of 15m box (price=%.2f >= mid15=%.2f)", latestClose, mid15))
+	}
+
+	bias := biasLabel(longOK, shortOK)
+
+	fmt.Printf("\nBIAS (simple): %s\n", bias)
+	fmt.Printf("mid15=%.2f | price=%.2f | ΔOI_30m=%.0f\n", mid15, latestClose, dOI30)
+
+	if bias != "LONG" {
+		fmt.Printf("LONG blocked by: %v\n", reasonsLong)
+	}
+	if bias != "SHORT" {
+		fmt.Printf("SHORT blocked by: %v\n", reasonsShort)
+	}
 }
 
 
-Range  = 5037.10 (6.66%)
-Now    = 76262.70 (latest 1H close, ts=1770206400000)
-distToRes = 2.516% | distToSup = 4.089%
-Near resistance (<0.25%)? false
-Near support     (<0.25%)? false
-
-15m range (last 8h):
-H15 = 76560.60
-L15 = 75819.50
-
-OI(15m) last points:
-t-30m ts=1770206400000 oi=5595349
-t-15m ts=1770207300000 oi=5595051
-t     ts=1770208200000 oi=5583229
-ΔOI_15m = -11822 | ΔOI_30m = -12120
 
 
 
