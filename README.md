@@ -86,29 +86,107 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-package main
+Структура проекта
+trade_f/
+  go.mod
+  main.go
+  internal/
+    ring/ring.go
+    kucoin/kucoin.go
+    engine/engine.go
+
+
+Ниже — готовые файлы. Скопируй 1-в-1.
+
+1) go.mod
+module trade_f
+
+go 1.22
+
+2) internal/ring/ring.go
+package ring
+
+import "sync"
+
+type Ring[T any] struct {
+	mu    sync.RWMutex
+	buf   []T
+	size  int
+	head  int
+	count int
+}
+
+func New[T any](size int) *Ring[T] {
+	return &Ring[T]{buf: make([]T, size), size: size}
+}
+
+func (r *Ring[T]) Push(v T) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.buf[r.head] = v
+	r.head = (r.head + 1) % r.size
+	if r.count < r.size {
+		r.count++
+	}
+}
+
+func (r *Ring[T]) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.count
+}
+
+// Snapshot returns oldest->newest
+func (r *Ring[T]) Snapshot() []T {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]T, r.count)
+	if r.count == 0 {
+		return out
+	}
+	start := (r.head - r.count + r.size) % r.size
+	for i := 0; i < r.count; i++ {
+		out[i] = r.buf[(start+i)%r.size]
+	}
+	return out
+}
+
+3) internal/kucoin/kucoin.go (REST: timestamp + klines + OI)
+package kucoin
 
 import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"time"
 )
 
 const (
-	symbol      = "XBTUSDTM"
-	futuresBase = "https://api-futures.kucoin.com"
-	spotBase    = "https://api.kucoin.com"
+	FuturesBase = "https://api-futures.kucoin.com"
+	SpotBase    = "https://api.kucoin.com"
 )
+
+type Candle struct {
+	Ts    int64   // close time ms
+	Open  float64
+	High  float64
+	Low   float64
+	Close float64
+	Vol   float64
+}
+
+type OIPoint struct {
+	Ts int64
+	OI float64
+}
 
 type tsResp struct {
 	Code string `json:"code"`
-	Data int64  `json:"data"` // ms
+	Data int64  `json:"data"`
 }
 
 type klineResp struct {
@@ -124,8 +202,8 @@ type oiResp struct {
 	} `json:"data"`
 }
 
-func getServerTimeMs() (int64, error) {
-	resp, err := http.Get(spotBase + "/api/v1/timestamp")
+func ServerTimeMs() (int64, error) {
+	resp, err := http.Get(SpotBase + "/api/v1/timestamp")
 	if err != nil {
 		return 0, err
 	}
@@ -142,8 +220,8 @@ func getServerTimeMs() (int64, error) {
 	return r.Data, nil
 }
 
-func fetchKlines(granularity string, fromMs, toMs int64) ([][]any, error) {
-	u, _ := url.Parse(futuresBase + "/api/v1/kline/query")
+func FetchKlines(symbol string, granularity string, fromMs, toMs int64) ([]Candle, error) {
+	u, _ := url.Parse(FuturesBase + "/api/v1/kline/query")
 	q := u.Query()
 	q.Set("symbol", symbol)
 	q.Set("granularity", granularity) // futures: 60=1H, 15=15m, 5=5m
@@ -170,14 +248,28 @@ func fetchKlines(granularity string, fromMs, toMs int64) ([][]any, error) {
 	if r.Code != "200000" {
 		return nil, fmt.Errorf("kline bad code=%s body=%s", r.Code, string(b))
 	}
-	return r.Data, nil
+
+	out := make([]Candle, 0, len(r.Data))
+	for _, row := range r.Data {
+		if len(row) < 6 {
+			continue
+		}
+		ts, _ := toInt64(row[0])
+		open, _ := toFloat(row[1])
+		closeV, _ := toFloat(row[2])
+		high, _ := toFloat(row[3])
+		low, _ := toFloat(row[4])
+		vol, _ := toFloat(row[5])
+
+		out = append(out, Candle{
+			Ts: ts, Open: open, High: high, Low: low, Close: closeV, Vol: vol,
+		})
+	}
+	return out, nil
 }
 
-func fetchOI15m(startAt, endAt int64) ([]struct {
-	OpenInterest string `json:"openInterest"`
-	Ts           int64  `json:"ts"`
-}, error) {
-	u, _ := url.Parse(spotBase + "/api/ua/v1/market/open-interest")
+func FetchOI15m(symbol string, startAt, endAt int64) ([]OIPoint, error) {
+	u, _ := url.Parse(SpotBase + "/api/ua/v1/market/open-interest")
 	q := u.Query()
 	q.Set("symbol", symbol)
 	q.Set("interval", "15min")
@@ -205,7 +297,16 @@ func fetchOI15m(startAt, endAt int64) ([]struct {
 	if r.Code != "200000" {
 		return nil, fmt.Errorf("oi bad code=%s body=%s", r.Code, string(b))
 	}
-	return r.Data, nil
+
+	out := make([]OIPoint, 0, len(r.Data))
+	for _, it := range r.Data {
+		v, err := strconv.ParseFloat(it.OpenInterest, 64)
+		if err != nil {
+			continue
+		}
+		out = append(out, OIPoint{Ts: it.Ts, OI: v})
+	}
+	return out, nil
 }
 
 func toFloat(v any) (float64, error) {
@@ -234,218 +335,452 @@ func toInt64(v any) (int64, error) {
 	}
 }
 
-func biasLabel(longOK, shortOK bool) string {
-	switch {
-	case longOK && !shortOK:
-		return "LONG"
-	case shortOK && !longOK:
-		return "SHORT"
-	case longOK && shortOK:
-		return "BOTH"
-	default:
-		return "FLAT"
+4) internal/engine/engine.go (ringbuffers + FSM ожидания сигнала)
+package engine
+
+import (
+	"fmt"
+	"math"
+	"sort"
+
+	"trade_f/internal/ring"
+)
+
+type Candle = struct {
+	Ts    int64
+	Open  float64
+	High  float64
+	Low   float64
+	Close float64
+	Vol   float64
+}
+
+type OIPoint = struct {
+	Ts int64
+	OI float64
+}
+
+type State int
+
+const (
+	FLAT State = iota
+	WAIT_RETEST_LONG
+	WAIT_RETEST_SHORT
+	WAIT_HL_LONG
+	WAIT_LH_SHORT
+)
+
+type Engine struct {
+	Symbol string
+
+	R1h  *ring.Ring[Candle]
+	R15  *ring.Ring[Candle]
+	R5   *ring.Ring[Candle]
+	OI15 *ring.Ring[OIPoint]
+
+	// Levels
+	Rhigh, Rlow float64 // 1H 24h
+	H15, L15    float64 // 15m 8h
+	Mid15       float64
+
+	DOI30 float64
+
+	State State
+
+	Level      float64
+	SeenRetest bool
+	RetestLow  float64
+	RetestHigh float64
+	Trigger    float64
+}
+
+func New(symbol string) *Engine {
+	return &Engine{
+		Symbol: symbol,
+		R1h:    ring.New,
+		R15:    ring.New,
+		R5:     ring.New,
+		OI15:   ring.New,
+		State:  FLAT,
 	}
 }
 
-func main() {
-	fmt.Println("=== MAIN: 1H(24h) + 15m(8h) + OI15m(20h) + BIAS ===")
+func (e *Engine) Warmup(c1h, c15, c5 []Candle, oi []OIPoint) {
+	for _, c := range c1h {
+		e.R1h.Push(c)
+	}
+	for _, c := range c15 {
+		e.R15.Push(c)
+	}
+	for _, c := range c5 {
+		e.R5.Push(c)
+	}
+	for _, p := range oi {
+		e.OI15.Push(p)
+	}
+	e.recalc()
+}
 
-	nowMs, err := getServerTimeMs()
-	if err != nil {
-		panic(err)
+func (e *Engine) OnClose1H(c Candle)  { e.R1h.Push(c) }
+func (e *Engine) OnClose15m(c Candle) { e.R15.Push(c); e.recalc(); e.on15mClose(c) }
+func (e *Engine) OnClose5m(c Candle)  { e.R5.Push(c); e.on5mClose(c) }
+func (e *Engine) OnOI15m(p OIPoint)   { e.OI15.Push(p); e.recalcOI() }
+
+func (e *Engine) recalc() {
+	e.recalcLevels()
+	e.recalcOI()
+}
+
+func (e *Engine) recalcLevels() {
+	// 1H last 24 candles
+	c1 := e.R1h.Snapshot()
+	if len(c1) > 24 {
+		c1 = c1[len(c1)-24:]
+	}
+	if len(c1) > 0 {
+		e.Rhigh, e.Rlow = rangeHL(c1)
 	}
 
-	// ===== 1H range (24h) =====
-	kl1h, err := fetchKlines("60", nowMs-24*60*60*1000, nowMs)
-	if err != nil {
-		panic(err)
+	// 15m last 32 candles (8h)
+	c15 := e.R15.Snapshot()
+	if len(c15) > 32 {
+		c15 = c15[len(c15)-32:]
 	}
-	if len(kl1h) == 0 {
-		panic("no 1h klines")
+	if len(c15) > 0 {
+		e.H15, e.L15 = rangeHL(c15)
+		e.Mid15 = (e.H15 + e.L15) / 2
 	}
+}
 
-	hi1 := -math.MaxFloat64
-	lo1 := math.MaxFloat64
-	var latestTs int64 = -1
-	var latestClose float64
+func (e *Engine) recalcOI() {
+	pts := e.OI15.Snapshot()
+	if len(pts) < 3 {
+		e.DOI30 = 0
+		return
+	}
+	// ensure time order
+	sort.Slice(pts, func(i, j int) bool { return pts[i].Ts < pts[j].Ts })
+	last := pts[len(pts)-1]
+	prev2 := pts[len(pts)-3]
+	e.DOI30 = last.OI - prev2.OI
+}
 
-	for _, row := range kl1h {
-		if len(row) < 5 {
-			continue
+func rangeHL(cs []Candle) (hi, lo float64) {
+	hi = -math.MaxFloat64
+	lo = math.MaxFloat64
+	for _, c := range cs {
+		if c.High > hi {
+			hi = c.High
 		}
-		ts, err := toInt64(row[0])
-		if err != nil {
-			panic(err)
-		}
-		high, err := toFloat(row[3])
-		if err != nil {
-			panic(err)
-		}
-		low, err := toFloat(row[4])
-		if err != nil {
-			panic(err)
-		}
-		closeV, err := toFloat(row[2])
-		if err != nil {
-			panic(err)
-		}
-
-		if high > hi1 {
-			hi1 = high
-		}
-		if low < lo1 {
-			lo1 = low
-		}
-		if ts > latestTs {
-			latestTs = ts
-			latestClose = closeV
+		if c.Low < lo {
+			lo = c.Low
 		}
 	}
+	return
+}
 
-	mid1 := (hi1 + lo1) / 2
-	rangeAbs1 := hi1 - lo1
-	rangePct1 := (rangeAbs1 / mid1) * 100
-	distToResPct := (hi1 - latestClose) / latestClose * 100
-	distToSupPct := (latestClose - lo1) / latestClose * 100
+func (e *Engine) lastPrice() float64 {
+	c5 := e.R5.Snapshot()
+	if len(c5) > 0 {
+		return c5[len(c5)-1].Close
+	}
+	c15 := e.R15.Snapshot()
+	if len(c15) > 0 {
+		return c15[len(c15)-1].Close
+	}
+	c1 := e.R1h.Snapshot()
+	if len(c1) > 0 {
+		return c1[len(c1)-1].Close
+	}
+	return 0
+}
 
-	fmt.Printf("1H range (last 24h) %s:\n", symbol)
-	fmt.Printf("R_high = %.2f\nR_low  = %.2f\nR_mid  = %.2f\nRange  = %.2f (%.2f%%)\n",
-		hi1, lo1, mid1, rangeAbs1, rangePct1)
-	fmt.Printf("Now    = %.2f (latest 1H close, ts=%d)\n", latestClose, latestTs)
-	fmt.Printf("distToRes = %.3f%% | distToSup = %.3f%%\n", distToResPct, distToSupPct)
+func (e *Engine) Bias() string {
+	price := e.lastPrice()
+	if price == 0 || e.Rhigh == 0 || e.H15 == 0 {
+		return "FLAT"
+	}
+
+	distToRes := (e.Rhigh - price) / price * 100
+	distToSup := (price - e.Rlow) / price * 100
 	const nearPct = 0.25
-	fmt.Printf("Near resistance (<%.2f%%)? %v\n", nearPct, distToResPct < nearPct)
-	fmt.Printf("Near support     (<%.2f%%)? %v\n\n", nearPct, distToSupPct < nearPct)
 
-	// ===== 15m range (8h) =====
-	kl15, err := fetchKlines("15", nowMs-8*60*60*1000, nowMs)
-	if err != nil {
-		panic(err)
-	}
-	if len(kl15) == 0 {
-		panic("no 15m klines")
-	}
+	longOK := distToRes >= nearPct && e.DOI30 > 0 && price > e.Mid15
+	shortOK := distToSup >= nearPct && e.DOI30 < 0 && price < e.Mid15
 
-	hi15 := -math.MaxFloat64
-	lo15 := math.MaxFloat64
-	for _, row := range kl15 {
-		if len(row) < 5 {
-			continue
-		}
-		high, err := toFloat(row[3])
-		if err != nil {
-			panic(err)
-		}
-		low, err := toFloat(row[4])
-		if err != nil {
-			panic(err)
-		}
-		if high > hi15 {
-			hi15 = high
-		}
-		if low < lo15 {
-			lo15 = low
-		}
+	if longOK && !shortOK {
+		return "LONG"
 	}
-	fmt.Printf("15m range (last 8h):\nH15 = %.2f\nL15 = %.2f\n\n", hi15, lo15)
+	if shortOK && !longOK {
+		return "SHORT"
+	}
+	return "FLAT"
+}
 
-	// ===== OI 15m (last 20h) =====
-	oi, err := fetchOI15m(nowMs-20*60*60*1000, nowMs)
-	if err != nil {
-		panic(err)
-	}
-	if len(oi) < 3 {
-		fmt.Printf("OI(15m) points returned: %d (need >=3 for ΔOI_30m)\n", len(oi))
+func (e *Engine) on15mClose(c Candle) {
+	const buf = 0.0005 // 0.05%
+	breakUp := c.Close > e.H15*(1+buf)
+	breakDn := c.Close < e.L15*(1-buf)
+
+	b := e.Bias()
+	fmt.Printf("[15m] close=%.2f H15=%.2f L15=%.2f ΔOI30=%.0f bias=%s state=%d\n",
+		c.Close, e.H15, e.L15, e.DOI30, b, e.State)
+
+	if e.State != FLAT {
 		return
 	}
 
+	if breakUp && b == "LONG" {
+		e.State = WAIT_RETEST_LONG
+		e.Level = e.H15
+		e.SeenRetest = false
+		e.RetestLow = math.MaxFloat64
+		e.RetestHigh = -math.MaxFloat64
+		e.Trigger = 0
+		fmt.Printf("SETUP: BREAKUP -> WAIT_RETEST_LONG level=%.2f\n", e.Level)
+		return
+	}
+
+	if breakDn && b == "SHORT" {
+		e.State = WAIT_RETEST_SHORT
+		e.Level = e.L15
+		e.SeenRetest = false
+		e.RetestLow = math.MaxFloat64
+		e.RetestHigh = -math.MaxFloat64
+		e.Trigger = 0
+		fmt.Printf("SETUP: BREAKDOWN -> WAIT_RETEST_SHORT level=%.2f\n", e.Level)
+		return
+	}
+}
+
+func (e *Engine) on5mClose(c Candle) {
+	switch e.State {
+	case WAIT_RETEST_LONG:
+		e.handleRetestLong(c)
+	case WAIT_RETEST_SHORT:
+		e.handleRetestShort(c)
+	case WAIT_HL_LONG:
+		e.handleHLTriggerLong(c)
+	case WAIT_LH_SHORT:
+		e.handleLHTriggerShort(c)
+	}
+}
+
+func (e *Engine) handleRetestLong(c Candle) {
+	const buf = 0.0007
+	levelHi := e.Level * (1 + buf)
+	levelLo := e.Level * (1 - buf)
+
+	touched := c.Low <= levelHi && c.High >= levelLo
+	if touched {
+		e.SeenRetest = true
+		if c.Low < e.RetestLow {
+			e.RetestLow = c.Low
+		}
+		if c.High > e.RetestHigh {
+			e.RetestHigh = c.High
+		}
+	}
+
+	// ретест ок: после касания закрылись выше уровня
+	if e.SeenRetest && c.Close > e.Level {
+		e.State = WAIT_HL_LONG
+		fmt.Printf("RETEST OK -> WAIT_HL_LONG retestLow=%.2f\n", e.RetestLow)
+	}
+}
+
+func (e *Engine) handleRetestShort(c Candle) {
+	const buf = 0.0007
+	levelHi := e.Level * (1 + buf)
+	levelLo := e.Level * (1 - buf)
+
+	touched := c.Low <= levelHi && c.High >= levelLo
+	if touched {
+		e.SeenRetest = true
+		if c.High > e.RetestHigh {
+			e.RetestHigh = c.High
+		}
+		if c.Low < e.RetestLow {
+			e.RetestLow = c.Low
+		}
+	}
+
+	if e.SeenRetest && c.Close < e.Level {
+		e.State = WAIT_LH_SHORT
+		fmt.Printf("RETEST OK -> WAIT_LH_SHORT retestHigh=%.2f\n", e.RetestHigh)
+	}
+}
+
+func (e *Engine) handleHLTriggerLong(c Candle) {
+	// упрощённо: после ретеста ждём рост и формируем trigger как max(high) в восстановлении
+	if c.Close > e.Level {
+		if c.High > e.Trigger {
+			e.Trigger = c.High
+		}
+	}
+
+	// вход: пробой trigger (по close)
+	if e.Trigger > 0 && c.Close > e.Trigger {
+		stop := e.RetestLow
+		fmt.Printf("SIGNAL: ENTER_LONG price=%.2f stop=%.2f level=%.2f\n", c.Close, stop, e.Level)
+		e.reset()
+	}
+}
+
+func (e *Engine) handleLHTriggerShort(c Candle) {
+	// упрощённо: trigger как min(low) после отката
+	if c.Close < e.Level {
+		if e.Trigger == 0 || c.Low < e.Trigger {
+			e.Trigger = c.Low
+		}
+	}
+
+	if e.Trigger > 0 && c.Close < e.Trigger {
+		stop := e.RetestHigh
+		fmt.Printf("SIGNAL: ENTER_SHORT price=%.2f stop=%.2f level=%.2f\n", c.Close, stop, e.Level)
+		e.reset()
+	}
+}
+
+func (e *Engine) reset() {
+	e.State = FLAT
+	e.Level = 0
+	e.SeenRetest = false
+	e.RetestLow = 0
+	e.RetestHigh = 0
+	e.Trigger = 0
+}
+
+5) main.go (загрузка initial bars → затем “живой” цикл ожидания)
+
+Сначала сделаем простой вариант: каждые 5 минут подтягиваем последние свечи REST’ом и если появилась новая закрытая свеча — пушим в engine. Это уже будет “живой бот”, который ждёт сигнал.
+
+package main
+
+import (
+	"fmt"
+	"sort"
+	"time"
+
+	"trade_f/internal/engine"
+	"trade_f/internal/kucoin"
+)
+
+const symbol = "XBTUSDTM"
+
+func main() {
+	e := engine.New(symbol)
+
+	// ===== initial warmup =====
+	nowMs, err := kucoin.ServerTimeMs()
+	if err != nil {
+		panic(err)
+	}
+
+	// берём чуть с запасом и потом отсортируем
+	c1h, _ := kucoin.FetchKlines(symbol, "60", nowMs-30*60*60*1000, nowMs)
+	c15, _ := kucoin.FetchKlines(symbol, "15", nowMs-12*60*60*1000, nowMs)
+	c5, _ := kucoin.FetchKlines(symbol, "5", nowMs-3*60*60*1000, nowMs)
+	oi, _ := kucoin.FetchOI15m(symbol, nowMs-20*60*60*1000, nowMs)
+
+	// sort by ts asc
+	sort.Slice(c1h, func(i, j int) bool { return c1h[i].Ts < c1h[j].Ts })
+	sort.Slice(c15, func(i, j int) bool { return c15[i].Ts < c15[j].Ts })
+	sort.Slice(c5, func(i, j int) bool { return c5[i].Ts < c5[j].Ts })
 	sort.Slice(oi, func(i, j int) bool { return oi[i].Ts < oi[j].Ts })
 
-	last := oi[len(oi)-1]
-	prev := oi[len(oi)-2]
-	prev2 := oi[len(oi)-3]
-
-	oiLast, _ := strconv.ParseFloat(last.OpenInterest, 64)
-	oiPrev, _ := strconv.ParseFloat(prev.OpenInterest, 64)
-	oiPrev2, _ := strconv.ParseFloat(prev2.OpenInterest, 64)
-
-	dOI15 := oiLast - oiPrev
-	dOI30 := oiLast - oiPrev2
-
-	fmt.Printf("OI(15m) last points:\n")
-	fmt.Printf("t-30m ts=%d oi=%.0f\n", prev2.Ts, oiPrev2)
-	fmt.Printf("t-15m ts=%d oi=%.0f\n", prev.Ts, oiPrev)
-	fmt.Printf("t     ts=%d oi=%.0f\n", last.Ts, oiLast)
-	fmt.Printf("ΔOI_15m = %.0f | ΔOI_30m = %.0f\n", dOI15, dOI30)
-
-	// ===== BIAS (simple) =====
-	mid15 := (hi15 + lo15) / 2
-
-	longOK := true
-	shortOK := true
-	reasonsLong := make([]string, 0, 4)
-	reasonsShort := make([]string, 0, 4)
-
-	// 1) не впритык к стенам 1H
-	if distToResPct < nearPct {
-		longOK = false
-		reasonsLong = append(reasonsLong, fmt.Sprintf("too close to 1H resistance (distToRes=%.3f%% < %.2f%%)", distToResPct, nearPct))
+	// convert to engine types
+	convC := func(in []kucoin.Candle) []engine.Candle {
+		out := make([]engine.Candle, 0, len(in))
+		for _, c := range in {
+			out = append(out, engine.Candle(c))
+		}
+		return out
 	}
-	if distToSupPct < nearPct {
-		shortOK = false
-		reasonsShort = append(reasonsShort, fmt.Sprintf("too close to 1H support (distToSup=%.3f%% < %.2f%%)", distToSupPct, nearPct))
+	convOI := func(in []kucoin.OIPoint) []engine.OIPoint {
+		out := make([]engine.OIPoint, 0, len(in))
+		for _, p := range in {
+			out = append(out, engine.OIPoint(p))
+		}
+		return out
 	}
 
-	// 2) OI как топливо
-	if dOI30 <= 0 {
-		longOK = false
-		reasonsLong = append(reasonsLong, fmt.Sprintf("OI not supporting long (ΔOI_30m=%.0f <= 0)", dOI30))
+	e.Warmup(convC(c1h), convC(c15), convC(c5), convOI(oi))
+
+	fmt.Println("engine started; waiting for signals...")
+
+	// ===== live loop (REST polling) =====
+	var last5Ts int64
+	var last15Ts int64
+	var last1hTs int64
+	if s := e.R5.Snapshot(); len(s) > 0 {
+		last5Ts = s[len(s)-1].Ts
 	}
-	if dOI30 >= 0 {
-		shortOK = false
-		reasonsShort = append(reasonsShort, fmt.Sprintf("OI not supporting short (ΔOI_30m=%.0f >= 0)", dOI30))
+	if s := e.R15.Snapshot(); len(s) > 0 {
+		last15Ts = s[len(s)-1].Ts
+	}
+	if s := e.R1h.Snapshot(); len(s) > 0 {
+		last1hTs = s[len(s)-1].Ts
 	}
 
-	// 3) положение цены относительно середины 15m коробки
-	if latestClose <= mid15 {
-		longOK = false
-		reasonsLong = append(reasonsLong, fmt.Sprintf("price not in upper half of 15m box (price=%.2f <= mid15=%.2f)", latestClose, mid15))
-	}
-	if latestClose >= mid15 {
-		shortOK = false
-		reasonsShort = append(reasonsShort, fmt.Sprintf("price not in lower half of 15m box (price=%.2f >= mid15=%.2f)", latestClose, mid15))
-	}
+	ticker := time.NewTicker(10 * time.Second) // часто, но запросы делай экономно
+	defer ticker.Stop()
 
-	bias := biasLabel(longOK, shortOK)
+	for range ticker.C {
+		nowMs, err := kucoin.ServerTimeMs()
+		if err != nil {
+			continue
+		}
 
-	fmt.Printf("\nBIAS (simple): %s\n", bias)
-	fmt.Printf("mid15=%.2f | price=%.2f | ΔOI_30m=%.0f\n", mid15, latestClose, dOI30)
+		// 5m: берём последние ~30 минут
+		c5n, err := kucoin.FetchKlines(symbol, "5", nowMs-40*60*1000, nowMs)
+		if err == nil && len(c5n) > 0 {
+			sort.Slice(c5n, func(i, j int) bool { return c5n[i].Ts < c5n[j].Ts })
+			for _, c := range c5n {
+				if c.Ts > last5Ts {
+					e.OnClose5m(engine.Candle(c))
+					last5Ts = c.Ts
+				}
+			}
+		}
 
-	if bias != "LONG" {
-		fmt.Printf("LONG blocked by: %v\n", reasonsLong)
-	}
-	if bias != "SHORT" {
-		fmt.Printf("SHORT blocked by: %v\n", reasonsShort)
+		// 15m: последние ~4 часа
+		c15n, err := kucoin.FetchKlines(symbol, "15", nowMs-5*60*60*1000, nowMs)
+		if err == nil && len(c15n) > 0 {
+			sort.Slice(c15n, func(i, j int) bool { return c15n[i].Ts < c15n[j].Ts })
+			for _, c := range c15n {
+				if c.Ts > last15Ts {
+					e.OnClose15m(engine.Candle(c))
+					last15Ts = c.Ts
+				}
+			}
+		}
+
+		// 1h: последние 30 часов
+		c1n, err := kucoin.FetchKlines(symbol, "60", nowMs-35*60*60*1000, nowMs)
+		if err == nil && len(c1n) > 0 {
+			sort.Slice(c1n, func(i, j int) bool { return c1n[i].Ts < c1n[j].Ts })
+			for _, c := range c1n {
+				if c.Ts > last1hTs {
+					e.OnClose1H(engine.Candle(c))
+					last1hTs = c.Ts
+				}
+			}
+		}
+
+		// OI: раз в минуту достаточно (тут просто берём последние 2 часа и пушим новые точки)
+		oin, err := kucoin.FetchOI15m(symbol, nowMs-2*60*60*1000, nowMs)
+		if err == nil && len(oin) > 0 {
+			sort.Slice(oin, func(i, j int) bool { return oin[i].Ts < oin[j].Ts })
+			// пушим всё, ring сам ограничит; дубликаты можно отфильтровать позже
+			for _, p := range oin {
+				e.OnOI15m(engine.OIPoint(p))
+			}
+		}
 	}
 }
 
 
-
-15m range (last 8h):
-H15 = 76560.60
-L15 = 75819.50
-
-OI(15m) last points:
-t-30m ts=1770208200000 oi=5583229
-t-15m ts=1770209100000 oi=5594676
-t     ts=1770210000000 oi=5594018
-ΔOI_15m = -658 | ΔOI_30m = 10789
-
-BIAS (simple): FLAT
-mid15=76190.05 | price=76175.30 | ΔOI_30m=10789
-LONG blocked by: [price not in upper half of 15m box (price=76175.30 <= mid15=76190.05)]
-SHORT blocked by: [OI not supporting short (ΔOI_30m=10789 >= 0)]
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/trade_f$ 
 
 
 
