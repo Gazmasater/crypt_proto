@@ -86,78 +86,17 @@ GOMAXPROCS=8 go run -race main.go
 
 
 
-package aring
+func New(symbol string) *Engine {
+	return &Engine{
+		Symbol: symbol,
 
-import "sync"
+		R1h:  aring.New,
+		R15:  aring.New,
+		R5:   aring.New,
+		OI15: aring.New,
 
-type Ring[T any] struct {
-	mu    sync.RWMutex
-	buf   []T
-	size  int
-	head  int
-	count int
-}
-
-func New[T any](size int) *Ring[T] {
-	return &Ring[T]{buf: make([]T, size), size: size}
-}
-
-func (r *Ring[T]) Push(v T) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.buf[r.head] = v
-	r.head = (r.head + 1) % r.size
-	if r.count < r.size {
-		r.count++
+		State: FLAT,
 	}
 }
-
-func (r *Ring[T]) Len() int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.count
-}
-
-// Snapshot returns oldest->newest
-func (r *Ring[T]) Snapshot() []T {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	out := make([]T, r.count)
-	if r.count == 0 {
-		return out
-	}
-	start := (r.head - r.count + r.size) % r.size
-	for i := 0; i < r.count; i++ {
-		out[i] = r.buf[(start+i)%r.size]
-	}
-	return out
-}
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/engine/engine.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "WrongTypeArgCount",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "WrongTypeArgCount"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use generic function aring.New without instantiation",
-	"source": "compiler",
-	"startLineNumber": 63,
-	"startColumn": 9,
-	"endLineNumber": 63,
-	"endColumn": 18,
-	"modelVersionId": 4,
-	"origin": "extHost1"
-}]
-
 
 
