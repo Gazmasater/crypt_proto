@@ -367,5 +367,21 @@ func main() {
 }
 
 
+Range  = 5037.10 (6.66%)
+Now    = 76262.70 (latest 1H close, ts=1770206400000)
+distToRes = 2.516% | distToSup = 4.089%
+Near resistance (<0.25%)? false
+Near support     (<0.25%)? false
+
+15m range (last 8h):
+H15 = 76560.60
+L15 = 75819.50
+
+OI(15m) last points:
+t-30m ts=1770206400000 oi=5595349
+t-15m ts=1770207300000 oi=5595051
+t     ts=1770208200000 oi=5583229
+ΔOI_15m = -11822 | ΔOI_30m = -12120
+
 
 
