@@ -95,6 +95,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -102,6 +103,7 @@ import (
 const (
 	symbol      = "XBTUSDTM"
 	futuresBase = "https://api-futures.kucoin.com"
+	spotBase    = "https://api.kucoin.com"
 )
 
 type tsResp struct {
@@ -114,8 +116,16 @@ type klineResp struct {
 	Data [][]any `json:"data"` // [ts, open, close, high, low, vol, turnover]
 }
 
+type oiResp struct {
+	Code string `json:"code"`
+	Data []struct {
+		OpenInterest string `json:"openInterest"`
+		Ts           int64  `json:"ts"`
+	} `json:"data"`
+}
+
 func getServerTimeMs() (int64, error) {
-	resp, err := http.Get("https://api.kucoin.com/api/v1/timestamp")
+	resp, err := http.Get(spotBase + "/api/v1/timestamp")
 	if err != nil {
 		return 0, err
 	}
@@ -132,11 +142,11 @@ func getServerTimeMs() (int64, error) {
 	return r.Data, nil
 }
 
-func fetchKlines1H(fromMs, toMs int64) ([][]any, error) {
+func fetchKlines(granularity string, fromMs, toMs int64) ([][]any, error) {
 	u, _ := url.Parse(futuresBase + "/api/v1/kline/query")
 	q := u.Query()
 	q.Set("symbol", symbol)
-	q.Set("granularity", "60") // ✅ 1H for KuCoin Futures kline/query
+	q.Set("granularity", granularity) // futures: 60=1H, 15=15m, 5=5m
 	q.Set("from", strconv.FormatInt(fromMs, 10))
 	q.Set("to", strconv.FormatInt(toMs, 10))
 	u.RawQuery = q.Encode()
@@ -159,6 +169,41 @@ func fetchKlines1H(fromMs, toMs int64) ([][]any, error) {
 	}
 	if r.Code != "200000" {
 		return nil, fmt.Errorf("kline bad code=%s body=%s", r.Code, string(b))
+	}
+	return r.Data, nil
+}
+
+func fetchOI15m(startAt, endAt int64) ([]struct {
+	OpenInterest string `json:"openInterest"`
+	Ts           int64  `json:"ts"`
+}, error) {
+	u, _ := url.Parse(spotBase + "/api/ua/v1/market/open-interest")
+	q := u.Query()
+	q.Set("symbol", symbol)
+	q.Set("interval", "15min")
+	q.Set("startAt", strconv.FormatInt(startAt, 10))
+	q.Set("endAt", strconv.FormatInt(endAt, 10))
+	q.Set("pageSize", "200")
+	u.RawQuery = q.Encode()
+
+	req, _ := http.NewRequest("GET", u.String(), nil)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	var r oiResp
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
+	if r.Code != "200000" {
+		return nil, fmt.Errorf("oi bad code=%s body=%s", r.Code, string(b))
 	}
 	return r.Data, nil
 }
@@ -190,40 +235,35 @@ func toInt64(v any) (int64, error) {
 }
 
 func main() {
+	fmt.Println("=== MAIN: 1H(24h) + 15m(8h) + OI15m(20h) ===") // маркер, чтобы точно видеть что это этот файл
+
 	nowMs, err := getServerTimeMs()
 	if err != nil {
 		panic(err)
 	}
 
-	fromMs := nowMs - 24*60*60*1000 // 24 часа назад
-	toMs := nowMs
-
-	klines, err := fetchKlines1H(fromMs, toMs)
+	// ===== 1H range (24h) =====
+	kl1h, err := fetchKlines("60", nowMs-24*60*60*1000, nowMs)
 	if err != nil {
 		panic(err)
 	}
-	if len(klines) == 0 {
-		panic("no klines returned")
+	if len(kl1h) == 0 {
+		panic("no 1h klines")
 	}
 
-	// KuCoin futures kline: [ts, open, close, high, low, vol, turnover]
-	hi := -math.MaxFloat64
-	lo := math.MaxFloat64
-
-	// найдём самую "новую" свечу по ts, чтобы взять её close как текущую цену
+	hi1 := -math.MaxFloat64
+	lo1 := math.MaxFloat64
 	var latestTs int64 = -1
 	var latestClose float64
 
-	for _, row := range klines {
+	for _, row := range kl1h {
 		if len(row) < 5 {
 			continue
 		}
-
 		ts, err := toInt64(row[0])
 		if err != nil {
 			panic(err)
 		}
-
 		high, err := toFloat(row[3])
 		if err != nil {
 			panic(err)
@@ -232,63 +272,100 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		if high > hi {
-			hi = high
-		}
-		if low < lo {
-			lo = low
+		closeV, err := toFloat(row[2])
+		if err != nil {
+			panic(err)
 		}
 
-		// close
-		if len(row) > 2 {
-			closeV, err := toFloat(row[2])
-			if err != nil {
-				panic(err)
-			}
-			if ts > latestTs {
-				latestTs = ts
-				latestClose = closeV
-			}
+		if high > hi1 {
+			hi1 = high
+		}
+		if low < lo1 {
+			lo1 = low
+		}
+		if ts > latestTs {
+			latestTs = ts
+			latestClose = closeV
 		}
 	}
 
-	if hi == -math.MaxFloat64 || lo == math.MaxFloat64 {
-		panic("failed to compute range: empty/invalid rows")
-	}
-
-	mid := (hi + lo) / 2
-	rangeAbs := hi - lo
-	rangePct := (rangeAbs / mid) * 100
-
-	// расстояние до стен (в % от текущей цены)
-	distToResPct := (hi - latestClose) / latestClose * 100
-	distToSupPct := (latestClose - lo) / latestClose * 100
+	mid1 := (hi1 + lo1) / 2
+	rangeAbs1 := hi1 - lo1
+	rangePct1 := (rangeAbs1 / mid1) * 100
+	distToResPct := (hi1 - latestClose) / latestClose * 100
+	distToSupPct := (latestClose - lo1) / latestClose * 100
 
 	fmt.Printf("1H range (last 24h) %s:\n", symbol)
-	fmt.Printf("R_high = %.2f\n", hi)
-	fmt.Printf("R_low  = %.2f\n", lo)
-	fmt.Printf("R_mid  = %.2f\n", mid)
-	fmt.Printf("Range  = %.2f (%.2f%%)\n", rangeAbs, rangePct)
+	fmt.Printf("R_high = %.2f\nR_low  = %.2f\nR_mid  = %.2f\nRange  = %.2f (%.2f%%)\n",
+		hi1, lo1, mid1, rangeAbs1, rangePct1)
 	fmt.Printf("Now    = %.2f (latest 1H close, ts=%d)\n", latestClose, latestTs)
 	fmt.Printf("distToRes = %.3f%% | distToSup = %.3f%%\n", distToResPct, distToSupPct)
-
-	// “впритык” фильтр (стартовый)
 	const nearPct = 0.25
 	fmt.Printf("Near resistance (<%.2f%%)? %v\n", nearPct, distToResPct < nearPct)
-	fmt.Printf("Near support     (<%.2f%%)? %v\n", nearPct, distToSupPct < nearPct)
+	fmt.Printf("Near support     (<%.2f%%)? %v\n\n", nearPct, distToSupPct < nearPct)
+
+	// ===== 15m range (8h) =====
+	kl15, err := fetchKlines("15", nowMs-8*60*60*1000, nowMs)
+	if err != nil {
+		panic(err)
+	}
+	if len(kl15) == 0 {
+		panic("no 15m klines")
+	}
+
+	hi15 := -math.MaxFloat64
+	lo15 := math.MaxFloat64
+	for _, row := range kl15 {
+		if len(row) < 5 {
+			continue
+		}
+		high, err := toFloat(row[3])
+		if err != nil {
+			panic(err)
+		}
+		low, err := toFloat(row[4])
+		if err != nil {
+			panic(err)
+		}
+		if high > hi15 {
+			hi15 = high
+		}
+		if low < lo15 {
+			lo15 = low
+		}
+	}
+	fmt.Printf("15m range (last 8h):\nH15 = %.2f\nL15 = %.2f\n\n", hi15, lo15)
+
+	// ===== OI 15m (last 20h) =====
+	oi, err := fetchOI15m(nowMs-20*60*60*1000, nowMs)
+	if err != nil {
+		panic(err)
+	}
+	if len(oi) < 3 {
+		fmt.Printf("OI(15m) points returned: %d (need >=3 for ΔOI_30m)\n", len(oi))
+		return
+	}
+
+	sort.Slice(oi, func(i, j int) bool { return oi[i].Ts < oi[j].Ts })
+
+	last := oi[len(oi)-1]
+	prev := oi[len(oi)-2]
+	prev2 := oi[len(oi)-3]
+
+	oiLast, _ := strconv.ParseFloat(last.OpenInterest, 64)
+	oiPrev, _ := strconv.ParseFloat(prev.OpenInterest, 64)
+	oiPrev2, _ := strconv.ParseFloat(prev2.OpenInterest, 64)
+
+	dOI15 := oiLast - oiPrev
+	dOI30 := oiLast - oiPrev2
+
+	fmt.Printf("OI(15m) last points:\n")
+	fmt.Printf("t-30m ts=%d oi=%.0f\n", prev2.Ts, oiPrev2)
+	fmt.Printf("t-15m ts=%d oi=%.0f\n", prev.Ts, oiPrev)
+	fmt.Printf("t     ts=%d oi=%.0f\n", last.Ts, oiLast)
+	fmt.Printf("ΔOI_15m = %.0f | ΔOI_30m = %.0f\n", dOI15, dOI30)
 }
 
-
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/trade_f$ go run .
-1H range (last 24h) XBTUSDTM:
-R_high = 78702.10
-R_low  = 73144.50
-R_mid  = 75923.30
-Range  = 5557.60 (7.32%)
-Now    = 75540.30 (latest 1H close, ts=1770148800000)
-distToRes = 4.186% | distToSup = 3.172%
-Near resistance (<0.25%)? false
-Near support     (<0.25%)? false
 
 
 
