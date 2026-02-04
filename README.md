@@ -89,14 +89,13 @@ GOMAXPROCS=8 go run -race main.go
 package engine
 
 import (
-	"container/ring"
 	"crypt_proto/internal/aring"
 	"fmt"
 	"math"
 	"sort"
 )
 
-type Candle = struct {
+type Candle struct {
 	Ts    int64
 	Open  float64
 	High  float64
@@ -105,7 +104,7 @@ type Candle = struct {
 	Vol   float64
 }
 
-type OIPoint = struct {
+type OIPoint struct {
 	Ts int64
 	OI float64
 }
@@ -147,11 +146,14 @@ type Engine struct {
 func New(symbol string) *Engine {
 	return &Engine{
 		Symbol: symbol,
-		R1h:    ring.New,
-		R15:    ring.New,
-		R5:     ring.New,
-		OI15:   ring.New,
-		State:  FLAT,
+
+		// размеры буферов: с запасом, но без фанатизма
+		R1h:  aring.New,   // > 24
+		R15:  aring.New,  // > 32
+		R5:   aring.New, // много 5m
+		OI15: aring.New,
+
+		State: FLAT,
 	}
 }
 
@@ -171,10 +173,26 @@ func (e *Engine) Warmup(c1h, c15, c5 []Candle, oi []OIPoint) {
 	e.recalc()
 }
 
-func (e *Engine) OnClose1H(c Candle)  { e.R1h.Push(c) }
-func (e *Engine) OnClose15m(c Candle) { e.R15.Push(c); e.recalc(); e.on15mClose(c) }
-func (e *Engine) OnClose5m(c Candle)  { e.R5.Push(c); e.on5mClose(c) }
-func (e *Engine) OnOI15m(p OIPoint)   { e.OI15.Push(p); e.recalcOI() }
+func (e *Engine) OnClose1H(c Candle) {
+	e.R1h.Push(c)
+	// 1H не обязательно пересчитывать каждый раз; достаточно на 15m close
+}
+
+func (e *Engine) OnClose15m(c Candle) {
+	e.R15.Push(c)
+	e.recalc()
+	e.on15mClose(c)
+}
+
+func (e *Engine) OnClose5m(c Candle) {
+	e.R5.Push(c)
+	e.on5mClose(c)
+}
+
+func (e *Engine) OnOI15m(p OIPoint) {
+	e.OI15.Push(p)
+	e.recalcOI()
+}
 
 func (e *Engine) recalc() {
 	e.recalcLevels()
@@ -208,8 +226,10 @@ func (e *Engine) recalcOI() {
 		e.DOI30 = 0
 		return
 	}
-	// ensure time order
+
+	// На случай если пушишь не строго по времени (REST-пакетом и т.п.)
 	sort.Slice(pts, func(i, j int) bool { return pts[i].Ts < pts[j].Ts })
+
 	last := pts[len(pts)-1]
 	prev2 := pts[len(pts)-3]
 	e.DOI30 = last.OI - prev2.OI
@@ -355,6 +375,7 @@ func (e *Engine) handleRetestShort(c Candle) {
 		}
 	}
 
+	// ретест ок: после касания закрылись ниже уровня
 	if e.SeenRetest && c.Close < e.Level {
 		e.State = WAIT_LH_SHORT
 		fmt.Printf("RETEST OK -> WAIT_LH_SHORT retestHigh=%.2f\n", e.RetestHigh)
@@ -362,14 +383,14 @@ func (e *Engine) handleRetestShort(c Candle) {
 }
 
 func (e *Engine) handleHLTriggerLong(c Candle) {
-	// упрощённо: после ретеста ждём рост и формируем trigger как max(high) в восстановлении
+	// упрощенно: trigger = max(high) в восстановлении выше уровня
 	if c.Close > e.Level {
 		if c.High > e.Trigger {
 			e.Trigger = c.High
 		}
 	}
 
-	// вход: пробой trigger (по close)
+	// вход: пробой trigger по close
 	if e.Trigger > 0 && c.Close > e.Trigger {
 		stop := e.RetestLow
 		fmt.Printf("SIGNAL: ENTER_LONG price=%.2f stop=%.2f level=%.2f\n", c.Close, stop, e.Level)
@@ -378,7 +399,7 @@ func (e *Engine) handleHLTriggerLong(c Candle) {
 }
 
 func (e *Engine) handleLHTriggerShort(c Candle) {
-	// упрощённо: trigger как min(low) после отката
+	// упрощенно: trigger = min(low) после отката ниже уровня
 	if c.Close < e.Level {
 		if e.Trigger == 0 || c.Low < e.Trigger {
 			e.Trigger = c.Low
@@ -400,31 +421,6 @@ func (e *Engine) reset() {
 	e.RetestHigh = 0
 	e.Trigger = 0
 }
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/engine/engine.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "IncompatibleAssign",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "IncompatibleAssign"
-		}
-	},
-	"severity": 8,
-	"message": "cannot use ring.New (value of type func(n int) *ring.Ring) as *aring.Ring[Candle] value in struct literal",
-	"source": "compiler",
-	"startLineNumber": 62,
-	"startColumn": 11,
-	"endLineNumber": 62,
-	"endColumn": 19,
-	"modelVersionId": 102,
-	"origin": "extHost1"
-}]
 
 
 
