@@ -431,5 +431,21 @@ func main() {
 
 
 
+15m range (last 8h):
+H15 = 76560.60
+L15 = 75819.50
+
+OI(15m) last points:
+t-30m ts=1770208200000 oi=5583229
+t-15m ts=1770209100000 oi=5594676
+t     ts=1770210000000 oi=5594018
+ΔOI_15m = -658 | ΔOI_30m = 10789
+
+BIAS (simple): FLAT
+mid15=76190.05 | price=76175.30 | ΔOI_30m=10789
+LONG blocked by: [price not in upper half of 15m box (price=76175.30 <= mid15=76190.05)]
+SHORT blocked by: [OI not supporting short (ΔOI_30m=10789 >= 0)]
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/trade_f$ 
+
 
 
