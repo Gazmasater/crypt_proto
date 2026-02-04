@@ -84,7 +84,114 @@ go run -race main.go
 GOMAXPROCS=8 go run -race main.go
 
 
+package aring
 
+import "sync"
+
+type Ring[T any] struct {
+	mu    sync.RWMutex
+	buf   []T
+	size  int
+	head  int
+	count int
+}
+
+func New[T any](size int) *Ring[T] {
+	return &Ring[T]{buf: make([]T, size), size: size}
+}
+
+func (r *Ring[T]) Push(v T) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.buf[r.head] = v
+	r.head = (r.head + 1) % r.size
+	if r.count < r.size {
+		r.count++
+	}
+}
+
+func (r *Ring[T]) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.count
+}
+
+// Snapshot returns oldest->newest
+func (r *Ring[T]) Snapshot() []T {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]T, r.count)
+	if r.count == 0 {
+		return out
+	}
+	start := (r.head - r.count + r.size) % r.size
+	for i := 0; i < r.count; i++ {
+		out[i] = r.buf[(start+i)%r.size]
+	}
+	return out
+}
+
+
+
+
+
+package engine
+
+import (
+	"crypt_proto/internal/aring"
+	"fmt"
+	"math"
+	"sort"
+)
+
+type Candle struct {
+	Ts    int64
+	Open  float64
+	High  float64
+	Low   float64
+	Close float64
+	Vol   float64
+}
+
+type OIPoint struct {
+	Ts int64
+	OI float64
+}
+
+type State int
+
+const (
+	FLAT State = iota
+	WAIT_RETEST_LONG
+	WAIT_RETEST_SHORT
+	WAIT_HL_LONG
+	WAIT_LH_SHORT
+)
+
+type Engine struct {
+	Symbol string
+
+	R1h  *aring.Ring[Candle]
+	R15  *aring.Ring[Candle]
+	R5   *aring.Ring[Candle]
+	OI15 *aring.Ring[OIPoint]
+
+	// Levels
+	Rhigh, Rlow float64 // 1H 24h
+	H15, L15    float64 // 15m 8h
+	Mid15       float64
+
+	DOI30 float64
+
+	State State
+
+	Level      float64
+	SeenRetest bool
+	RetestLow  float64
+	RetestHigh float64
+	Trigger    float64
+}
 
 func New(symbol string) *Engine {
 	return &Engine{
@@ -98,5 +205,296 @@ func New(symbol string) *Engine {
 		State: FLAT,
 	}
 }
+
+func (e *Engine) Warmup(c1h, c15, c5 []Candle, oi []OIPoint) {
+	for _, c := range c1h {
+		e.R1h.Push(c)
+	}
+	for _, c := range c15 {
+		e.R15.Push(c)
+	}
+	for _, c := range c5 {
+		e.R5.Push(c)
+	}
+	for _, p := range oi {
+		e.OI15.Push(p)
+	}
+	e.recalc()
+}
+
+func (e *Engine) OnClose1H(c Candle) {
+	e.R1h.Push(c)
+	// 1H не обязательно пересчитывать каждый раз; достаточно на 15m close
+}
+
+func (e *Engine) OnClose15m(c Candle) {
+	e.R15.Push(c)
+	e.recalc()
+	e.on15mClose(c)
+}
+
+func (e *Engine) OnClose5m(c Candle) {
+	e.R5.Push(c)
+	e.on5mClose(c)
+}
+
+func (e *Engine) OnOI15m(p OIPoint) {
+	e.OI15.Push(p)
+	e.recalcOI()
+}
+
+func (e *Engine) recalc() {
+	e.recalcLevels()
+	e.recalcOI()
+}
+
+func (e *Engine) recalcLevels() {
+	// 1H last 24 candles
+	c1 := e.R1h.Snapshot()
+	if len(c1) > 24 {
+		c1 = c1[len(c1)-24:]
+	}
+	if len(c1) > 0 {
+		e.Rhigh, e.Rlow = rangeHL(c1)
+	}
+
+	// 15m last 32 candles (8h)
+	c15 := e.R15.Snapshot()
+	if len(c15) > 32 {
+		c15 = c15[len(c15)-32:]
+	}
+	if len(c15) > 0 {
+		e.H15, e.L15 = rangeHL(c15)
+		e.Mid15 = (e.H15 + e.L15) / 2
+	}
+}
+
+func (e *Engine) recalcOI() {
+	pts := e.OI15.Snapshot()
+	if len(pts) < 3 {
+		e.DOI30 = 0
+		return
+	}
+
+	// На случай если пушишь не строго по времени (REST-пакетом и т.п.)
+	sort.Slice(pts, func(i, j int) bool { return pts[i].Ts < pts[j].Ts })
+
+	last := pts[len(pts)-1]
+	prev2 := pts[len(pts)-3]
+	e.DOI30 = last.OI - prev2.OI
+}
+
+func rangeHL(cs []Candle) (hi, lo float64) {
+	hi = -math.MaxFloat64
+	lo = math.MaxFloat64
+	for _, c := range cs {
+		if c.High > hi {
+			hi = c.High
+		}
+		if c.Low < lo {
+			lo = c.Low
+		}
+	}
+	return
+}
+
+func (e *Engine) lastPrice() float64 {
+	c5 := e.R5.Snapshot()
+	if len(c5) > 0 {
+		return c5[len(c5)-1].Close
+	}
+	c15 := e.R15.Snapshot()
+	if len(c15) > 0 {
+		return c15[len(c15)-1].Close
+	}
+	c1 := e.R1h.Snapshot()
+	if len(c1) > 0 {
+		return c1[len(c1)-1].Close
+	}
+	return 0
+}
+
+func (e *Engine) Bias() string {
+	price := e.lastPrice()
+	if price == 0 || e.Rhigh == 0 || e.H15 == 0 {
+		return "FLAT"
+	}
+
+	distToRes := (e.Rhigh - price) / price * 100
+	distToSup := (price - e.Rlow) / price * 100
+	const nearPct = 0.25
+
+	longOK := distToRes >= nearPct && e.DOI30 > 0 && price > e.Mid15
+	shortOK := distToSup >= nearPct && e.DOI30 < 0 && price < e.Mid15
+
+	if longOK && !shortOK {
+		return "LONG"
+	}
+	if shortOK && !longOK {
+		return "SHORT"
+	}
+	return "FLAT"
+}
+
+func (e *Engine) on15mClose(c Candle) {
+	const buf = 0.0005 // 0.05%
+	breakUp := c.Close > e.H15*(1+buf)
+	breakDn := c.Close < e.L15*(1-buf)
+
+	b := e.Bias()
+	fmt.Printf("[15m] close=%.2f H15=%.2f L15=%.2f ΔOI30=%.0f bias=%s state=%d\n",
+		c.Close, e.H15, e.L15, e.DOI30, b, e.State)
+
+	if e.State != FLAT {
+		return
+	}
+
+	if breakUp && b == "LONG" {
+		e.State = WAIT_RETEST_LONG
+		e.Level = e.H15
+		e.SeenRetest = false
+		e.RetestLow = math.MaxFloat64
+		e.RetestHigh = -math.MaxFloat64
+		e.Trigger = 0
+		fmt.Printf("SETUP: BREAKUP -> WAIT_RETEST_LONG level=%.2f\n", e.Level)
+		return
+	}
+
+	if breakDn && b == "SHORT" {
+		e.State = WAIT_RETEST_SHORT
+		e.Level = e.L15
+		e.SeenRetest = false
+		e.RetestLow = math.MaxFloat64
+		e.RetestHigh = -math.MaxFloat64
+		e.Trigger = 0
+		fmt.Printf("SETUP: BREAKDOWN -> WAIT_RETEST_SHORT level=%.2f\n", e.Level)
+		return
+	}
+}
+
+func (e *Engine) on5mClose(c Candle) {
+	switch e.State {
+	case WAIT_RETEST_LONG:
+		e.handleRetestLong(c)
+	case WAIT_RETEST_SHORT:
+		e.handleRetestShort(c)
+	case WAIT_HL_LONG:
+		e.handleHLTriggerLong(c)
+	case WAIT_LH_SHORT:
+		e.handleLHTriggerShort(c)
+	}
+}
+
+func (e *Engine) handleRetestLong(c Candle) {
+	const buf = 0.0007
+	levelHi := e.Level * (1 + buf)
+	levelLo := e.Level * (1 - buf)
+
+	touched := c.Low <= levelHi && c.High >= levelLo
+	if touched {
+		e.SeenRetest = true
+		if c.Low < e.RetestLow {
+			e.RetestLow = c.Low
+		}
+		if c.High > e.RetestHigh {
+			e.RetestHigh = c.High
+		}
+	}
+
+	// ретест ок: после касания закрылись выше уровня
+	if e.SeenRetest && c.Close > e.Level {
+		e.State = WAIT_HL_LONG
+		fmt.Printf("RETEST OK -> WAIT_HL_LONG retestLow=%.2f\n", e.RetestLow)
+	}
+}
+
+func (e *Engine) handleRetestShort(c Candle) {
+	const buf = 0.0007
+	levelHi := e.Level * (1 + buf)
+	levelLo := e.Level * (1 - buf)
+
+	touched := c.Low <= levelHi && c.High >= levelLo
+	if touched {
+		e.SeenRetest = true
+		if c.High > e.RetestHigh {
+			e.RetestHigh = c.High
+		}
+		if c.Low < e.RetestLow {
+			e.RetestLow = c.Low
+		}
+	}
+
+	// ретест ок: после касания закрылись ниже уровня
+	if e.SeenRetest && c.Close < e.Level {
+		e.State = WAIT_LH_SHORT
+		fmt.Printf("RETEST OK -> WAIT_LH_SHORT retestHigh=%.2f\n", e.RetestHigh)
+	}
+}
+
+func (e *Engine) handleHLTriggerLong(c Candle) {
+	// упрощенно: trigger = max(high) в восстановлении выше уровня
+	if c.Close > e.Level {
+		if c.High > e.Trigger {
+			e.Trigger = c.High
+		}
+	}
+
+	// вход: пробой trigger по close
+	if e.Trigger > 0 && c.Close > e.Trigger {
+		stop := e.RetestLow
+		fmt.Printf("SIGNAL: ENTER_LONG price=%.2f stop=%.2f level=%.2f\n", c.Close, stop, e.Level)
+		e.reset()
+	}
+}
+
+func (e *Engine) handleLHTriggerShort(c Candle) {
+	// упрощенно: trigger = min(low) после отката ниже уровня
+	if c.Close < e.Level {
+		if e.Trigger == 0 || c.Low < e.Trigger {
+			e.Trigger = c.Low
+		}
+	}
+
+	if e.Trigger > 0 && c.Close < e.Trigger {
+		stop := e.RetestHigh
+		fmt.Printf("SIGNAL: ENTER_SHORT price=%.2f stop=%.2f level=%.2f\n", c.Close, stop, e.Level)
+		e.reset()
+	}
+}
+
+func (e *Engine) reset() {
+	e.State = FLAT
+	e.Level = 0
+	e.SeenRetest = false
+	e.RetestLow = 0
+	e.RetestHigh = 0
+	e.Trigger = 0
+}
+
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/engine/engine.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "WrongTypeArgCount",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "WrongTypeArgCount"
+		}
+	},
+	"severity": 8,
+	"message": "cannot use generic function aring.New without instantiation",
+	"source": "compiler",
+	"startLineNumber": 62,
+	"startColumn": 9,
+	"endLineNumber": 62,
+	"endColumn": 18,
+	"modelVersionId": 2,
+	"origin": "extHost1"
+}]
 
 
