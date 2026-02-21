@@ -84,26 +84,21 @@ go run -race main.go
 GOMAXPROCS=8 go run -race main.go
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/arb/cmd/server$ go run .
-{"time":"2026-02-21T08:41:19.966673021+03:00","level":"INFO","msg":"starting scalper","version":"0.1.0","exchanges":"okx"}
-{"time":"2026-02-21T08:41:19.966724375+03:00","level":"WARN","msg":"OKX API keys not configured, skipping auth check"}
-{"time":"2026-02-21T08:41:19.966791017+03:00","level":"INFO","msg":"pprof server starting","addr":"localhost:6060"}
-{"time":"2026-02-21T08:41:20.583535623+03:00","level":"INFO","msg":"instruments loaded","exchange":"okx","count":745}
-{"time":"2026-02-21T08:41:20.583610278+03:00","level":"INFO","msg":"inventory initialized","usdt_per_exchange":10000,"max_seeds":50,"seed_per_coin":60,"stop_loss_pct":0.05,"seed_expiry":1800000000000,"cross_coins":0}
-{"time":"2026-02-21T08:41:20.583767878+03:00","level":"INFO","msg":"trade log file opened","path":"trades.log"}
-{"time":"2026-02-21T08:41:20.592421615+03:00","level":"INFO","msg":"triangles built","exchange":"okx","count":512}
-{"time":"2026-02-21T08:41:21.383801621+03:00","level":"INFO","msg":"OKX ws connected","http_status":101}
-{"time":"2026-02-21T08:41:21.385556968+03:00","level":"INFO","msg":"OKX subscribed to books5","count":745}
-{"time":"2026-02-21T08:41:21.385594669+03:00","level":"INFO","msg":"ws started","exchange":"okx","instruments":745}
-{"time":"2026-02-21T08:41:21.385672274+03:00","level":"INFO","msg":"startup complete","elapsed":1419012897,"exchanges":"okx","triangles":512,"cross_pairs":745}
-{"time":"2026-02-21T08:41:21.385790833+03:00","level":"INFO","msg":"http server starting","addr":"0.0.0.0:8080"}
-{"time":"2026-02-21T08:41:51.386201488+03:00","level":"INFO","msg":"heartbeat","uptime":"0d0h0m30s","okx_ping":"123ms(avg:157ms)"}
-{"time":"2026-02-21T08:41:51.3862504+03:00","level":"INFO","msg":"triangle stats","scanned":10650,"stale":6009,"volume":1555,"opps":0,"best_pct":0,"best_tri":""}
-{"time":"2026-02-21T08:41:51.386299441+03:00","level":"INFO","msg":"inventory","portfolio":10000,"unrealized":0,"free_usdt":10000,"seeds":0,"rated":0,"promoted":0,"demoted":0,"stop_loss":0,"expired":0}
-{"time":"2026-02-21T08:42:21.386239862+03:00","level":"INFO","msg":"heartbeat","uptime":"0d0h1m0s","okx_ping":"121ms(avg:145ms)"}
-{"time":"2026-02-21T08:42:21.386289808+03:00","level":"INFO","msg":"triangle stats","scanned":21840,"stale":11604,"volume":3145,"opps":0,"best_pct":0,"best_tri":""}
-{"time":"2026-02-21T08:42:21.386328704+03:00","level":"INFO","msg":"inventory","portfolio":10000,"unrealized":0,"free_usdt":10000,"seeds":0,"rated":0,"promoted":0,"demoted":0,"stop_loss":0,"expired":0}
-{"time":"2026-02-21T08:42:51.386668024+03:00","level":"INFO","msg":"heartbeat","uptime":"0d0h1m30s","okx_ping":"122ms(avg:141ms)"}
-{"time":"2026-02-21T08:42:51.386709136+03:00","level":"INFO","msg":"triangle stats","scanned":31832,"stale":16175,"volume":3777,"opps":0,"best_pct":0,"best_tri":""}
-{"time":"2026-02-21T08:42:51.386746052+03:00","level":"INFO","msg":"inventory","portfolio":10000,"unrealized":0,"free_usdt":10000,"seeds":0,"rated":0,"promoted":0,"demoted":0,"stop_loss":0,"expired":0}
+s.nearMissMu.Lock()
+if takerProfit > s.bestNearMiss {
+    s.bestNearMiss = takerProfit
+    s.bestNearMissTri = tri.ID
 
+    // логируем 3 ноги
+    legs := fmt.Sprintf("%s | %s | %s",
+        fmtEdge(tri.Edges[0]),
+        fmtEdge(tri.Edges[1]),
+        fmtEdge(tri.Edges[2]),
+    )
+    s.logger.Info("best near-miss updated",
+        slog.String("tri", tri.ID),
+        slog.Float64("taker_profit_pct", takerProfit),
+        slog.String("legs", legs),
+    )
+}
+s.nearMissMu.Unlock()
