@@ -84,21 +84,5 @@ go run -race main.go
 GOMAXPROCS=8 go run -race main.go
 
 
-s.nearMissMu.Lock()
-if takerProfit > s.bestNearMiss {
-    s.bestNearMiss = takerProfit
-    s.bestNearMissTri = tri.ID
-
-    // логируем 3 ноги
-    legs := fmt.Sprintf("%s | %s | %s",
-        fmtEdge(tri.Edges[0]),
-        fmtEdge(tri.Edges[1]),
-        fmtEdge(tri.Edges[2]),
-    )
-    s.logger.Info("best near-miss updated",
-        slog.String("tri", tri.ID),
-        slog.Float64("taker_profit_pct", takerProfit),
-        slog.String("legs", legs),
-    )
-}
-s.nearMissMu.Unlock()
+!!!!!!!!! takerProfit  -0.30140591587728416
+leg1 leg2 leg3 {ADA-USDT ADA USDT false ADA USDT} {USDC-USDT USDC USDT true USDT USDC} {ADA-USDC ADA USDC true USDC ADA}
