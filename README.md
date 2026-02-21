@@ -154,7 +154,7 @@ func (s *Scanner) evaluate(triIdx int) {
 		return
 	}
 
-	// Дальше s.books уже не нужны — освобождаем RLock перед тяжёлой частью и I/O
+	// дальше s.books не нужен
 	s.mu.RUnlock()
 
 	takerMul := 1.0 - fees.TakerPct
@@ -204,34 +204,34 @@ func (s *Scanner) evaluate(triIdx int) {
 	makerProfit := (makerAmt/startAmount - 1.0) * 100
 	totalSlippage := slippages[0] + slippages[1] + slippages[2]
 
-	edgeStr := func(e Edge) string {
-		side := "SELL"
-		if e.Buy {
-			side = "BUY"
-		}
-		return fmt.Sprintf("%s %s (%s→%s)", side, e.InstID, e.From, e.To)
-	}
-
-	writeLine := func(kind string) {
-		path := os.Getenv("TRI_LOG_FILE")
-		if path == "" {
-			path = "triangles_profit.jsonl"
+	// В ФАЙЛ — только положительный профит
+	if takerProfit > 0 {
+		edgeStr := func(e Edge) string {
+			side := "SELL"
+			if e.Buy {
+				side = "BUY"
+			}
+			return fmt.Sprintf("%s %s (%s→%s)", side, e.InstID, e.From, e.To)
 		}
 
 		type line struct {
-			AtUTC          string    `json:"at_utc"`
-			Kind           string    `json:"kind"` // near_miss | opp
-			Exchange       string    `json:"exchange"`
-			TriID          string    `json:"tri_id"`
-			Start          string    `json:"start"`
-			Legs           string    `json:"legs"`
-			VolumeUSDT     float64   `json:"volume_usdt"`
-			TakerProfitPct float64   `json:"taker_profit_pct"`
-			MakerProfitPct float64   `json:"maker_profit_pct"`
-			ProfitUSDT     float64   `json:"profit_usdt"`
+			AtUTC          string     `json:"at_utc"`
+			Exchange       string     `json:"exchange"`
+			TriID          string     `json:"tri_id"`
+			Start          string     `json:"start"`
+			Legs           string     `json:"legs"`
+			VolumeUSDT     float64    `json:"volume_usdt"`
+			TakerProfitPct float64    `json:"taker_profit_pct"`
+			MakerProfitPct float64    `json:"maker_profit_pct"`
+			ProfitUSDT     float64    `json:"profit_usdt"`
 			SpreadsPct     [3]float64 `json:"spreads_pct"`
 			SlippagesPct   [3]float64 `json:"slippages_pct"`
 			TotalSlippage  float64    `json:"total_slippage_pct"`
+		}
+
+		path := os.Getenv("TRI_LOG_FILE")
+		if path == "" {
+			path = "triangles_profit.jsonl"
 		}
 
 		legs := strings.Join([]string{
@@ -242,7 +242,6 @@ func (s *Scanner) evaluate(triIdx int) {
 
 		l := line{
 			AtUTC:          now.UTC().Format(time.RFC3339Nano),
-			Kind:           kind,
 			Exchange:       tri.Exchange,
 			TriID:          tri.ID,
 			Start:          tri.Start,
@@ -256,31 +255,12 @@ func (s *Scanner) evaluate(triIdx int) {
 			TotalSlippage:  totalSlippage,
 		}
 
-		b, err := json.Marshal(l)
-		if err != nil {
-			return
+		if b, err := json.Marshal(l); err == nil {
+			if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+				_, _ = f.Write(append(b, '\n'))
+				_ = f.Close()
+			}
 		}
-
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			return
-		}
-		_, _ = f.Write(append(b, '\n'))
-		_ = f.Close()
-	}
-
-	// Track best near-miss for diagnostics (обновляем даже если всё в минус — при первом значении)
-	updatedNear := false
-	s.nearMissMu.Lock()
-	if s.bestNearMissTri == "" || takerProfit > s.bestNearMiss {
-		s.bestNearMiss = takerProfit
-		s.bestNearMissTri = tri.ID
-		updatedNear = true
-	}
-	s.nearMissMu.Unlock()
-
-	if updatedNear {
-		writeLine("near_miss")
 	}
 
 	if takerProfit >= s.minProfitPct {
@@ -289,8 +269,6 @@ func (s *Scanner) evaluate(triIdx int) {
 		s.cooldownMu.Lock()
 		s.cooldowns[triIdx] = now
 		s.cooldownMu.Unlock()
-
-		writeLine("opp")
 
 		s.onOpportunity(Opportunity{
 			Type:           OpTriangle,
