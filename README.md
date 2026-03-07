@@ -84,206 +84,264 @@ go run -race main.go
 GOMAXPROCS=8 go run -race main.go
 
 
-// +imports needed:
-//   "encoding/json"
-//   "fmt"
-//   "os"
-//   "strings"
 
-func (s *Scanner) evaluate(triIdx int) {
-	s.cooldownMu.Lock()
-	if last, ok := s.cooldowns[triIdx]; ok && time.Since(last) < s.cooldownDuration {
-		s.cooldownMu.Unlock()
-		s.stats.cooldownSkips.Add(1)
-		return
+
+package calculator
+
+import (
+	"encoding/csv"
+	"fmt"
+	"log"
+	"math"
+	"os"
+	"strings"
+
+	"crypt_proto/internal/queue"
+	"crypt_proto/pkg/models"
+)
+
+const feeM = 0.9992
+
+type LegIndex struct {
+	Symbol string
+	IsBuy  bool
+}
+
+type Triangle struct {
+	A, B, C string
+	Legs    [3]LegIndex
+}
+
+type Calculator struct {
+	mem      *queue.MemoryStore
+	bySymbol map[string][]*Triangle
+	fileLog  *log.Logger
+}
+
+func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
+	f, err := os.OpenFile("arb_opportunities.log",
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatalf("failed to open log: %v", err)
 	}
-	s.cooldownMu.Unlock()
 
-	s.mu.RLock()
+	bySymbol := make(map[string][]*Triangle, 1024)
 
-	tri := s.triangles[triIdx]
-	s.stats.scanned.Add(1)
+	for _, t := range triangles {
+		for _, leg := range t.Legs {
+			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
+		}
+	}
 
-	fees, ok := s.fees[tri.Exchange]
+	log.Printf("[Calculator] indexed %d symbols\n", len(bySymbol))
+
+	return &Calculator{
+		mem:      mem,
+		bySymbol: bySymbol,
+		fileLog:  log.New(f, "", log.LstdFlags),
+	}
+}
+
+func (c *Calculator) Run(in <-chan *models.MarketData) {
+	for md := range in {
+		c.mem.Push(md)
+
+		tris := c.bySymbol[md.Symbol]
+		if len(tris) == 0 {
+			continue
+		}
+
+		for _, tri := range tris {
+			c.calcTriangle(tri)
+		}
+	}
+}
+
+// maxLegInput возвращает максимальный входной объем, который может принять нога.
+// BUY A/B  -> вход в quote, лимит = Ask * AskSize
+// SELL A/B -> вход в base,  лимит = BidSize
+func maxLegInput(leg LegIndex, q queue.Quote) (float64, bool) {
+	if leg.IsBuy {
+		if q.Ask <= 0 || q.AskSize <= 0 {
+			return 0, false
+		}
+		return q.Ask * q.AskSize, true
+	}
+
+	if q.Bid <= 0 || q.BidSize <= 0 {
+		return 0, false
+	}
+	return q.BidSize, true
+}
+
+// forwardAmount считает, сколько выйдет после исполнения ноги.
+func forwardAmount(in float64, leg LegIndex, q queue.Quote) (float64, bool) {
+	if in <= 0 {
+		return 0, false
+	}
+
+	if leg.IsBuy {
+		if q.Ask <= 0 {
+			return 0, false
+		}
+		return (in / q.Ask) * feeM, true
+	}
+
+	if q.Bid <= 0 {
+		return 0, false
+	}
+	return (in * q.Bid) * feeM, true
+}
+
+// backwardAmount переводит допустимый выход ноги назад во вход ноги.
+// То есть отвечает на вопрос:
+// "какой вход нужен, чтобы получить out после этой ноги?"
+func backwardAmount(out float64, leg LegIndex, q queue.Quote) (float64, bool) {
+	if out <= 0 {
+		return 0, false
+	}
+
+	if leg.IsBuy {
+		if q.Ask <= 0 || feeM <= 0 {
+			return 0, false
+		}
+		return (out * q.Ask) / feeM, true
+	}
+
+	if q.Bid <= 0 || feeM <= 0 {
+		return 0, false
+	}
+	return out / (q.Bid * feeM), true
+}
+
+func (c *Calculator) calcTriangle(tri *Triangle) {
+	var q [3]queue.Quote
+
+	for i, leg := range tri.Legs {
+		quote, ok := c.mem.Get("KuCoin", leg.Symbol)
+		if !ok {
+			return
+		}
+		q[i] = quote
+	}
+
+	// 1) Лимит по 1-й ноге уже в стартовом активе
+	limit1, ok := maxLegInput(tri.Legs[0], q[0])
 	if !ok {
-		s.mu.RUnlock()
 		return
 	}
 
-	var books [3]exchange.OrderBook
-	var spreads [3]float64
-	now := time.Now()
-
-	for i, edge := range tri.Edges {
-		key := bookKey(tri.Exchange, edge.InstID)
-		book, ok := s.books[key]
-		if !ok || len(book.Asks) == 0 || len(book.Bids) == 0 {
-			s.mu.RUnlock()
-			return
-		}
-
-		if now.Sub(book.ReceivedAt) > s.maxBookAge {
-			s.mu.RUnlock()
-			s.stats.staleSkips.Add(1)
-			return
-		}
-
-		spread := (book.Asks[0].Price - book.Bids[0].Price) / ((book.Asks[0].Price + book.Bids[0].Price) / 2)
-		if spread > s.maxSpreadPct {
-			s.mu.RUnlock()
-			s.stats.spreadSkips.Add(1)
-			return
-		}
-		spreads[i] = spread * 100
-		books[i] = book
-	}
-
-	volumeUSDT := s.adaptiveVolume(tri, books)
-	if volumeUSDT < s.minVolumeUSDT {
-		s.mu.RUnlock()
-		s.stats.volumeSkips.Add(1)
-		return
-	}
-	if volumeUSDT > s.maxTradeSizeUSDT {
-		volumeUSDT = s.maxTradeSizeUSDT
-	}
-
-	startAmount := s.fromUSDT(tri.Exchange, tri.Start, volumeUSDT)
-	if startAmount <= 0 {
-		s.mu.RUnlock()
+	// 2) Лимит по 2-й ноге -> назад через 1-ю ногу
+	leg2InputCap, ok := maxLegInput(tri.Legs[1], q[1])
+	if !ok {
 		return
 	}
 
-	// дальше s.books не нужен
-	s.mu.RUnlock()
-
-	takerMul := 1.0 - fees.TakerPct
-	makerMul := 1.0 - fees.MakerPct
-
-	takerAmt := startAmount
-	makerAmt := startAmount
-	var prices, bestPrices, slippages [3]float64
-
-	for i, edge := range tri.Edges {
-		if edge.Buy {
-			bestPrices[i] = books[i].Asks[0].Price
-			out, ok := calcBuyOutput(books[i].Asks, takerAmt)
-			if !ok {
-				s.stats.noLiquidity.Add(1)
-				return
-			}
-			prices[i] = takerAmt / out
-			slippages[i] = (prices[i]/bestPrices[i] - 1.0) * 100
-			takerAmt = out * takerMul
-
-			outM, ok := calcBuyOutput(books[i].Asks, makerAmt)
-			if !ok {
-				return
-			}
-			makerAmt = outM * makerMul
-		} else {
-			bestPrices[i] = books[i].Bids[0].Price
-			out, ok := calcSellOutput(books[i].Bids, takerAmt)
-			if !ok {
-				s.stats.noLiquidity.Add(1)
-				return
-			}
-			prices[i] = out / takerAmt
-			slippages[i] = (1.0 - prices[i]/bestPrices[i]) * 100
-			takerAmt = out * takerMul
-
-			outM, ok := calcSellOutput(books[i].Bids, makerAmt)
-			if !ok {
-				return
-			}
-			makerAmt = outM * makerMul
-		}
+	limit2, ok := backwardAmount(leg2InputCap, tri.Legs[0], q[0])
+	if !ok {
+		return
 	}
 
-	takerProfit := (takerAmt/startAmount - 1.0) * 100
-	makerProfit := (makerAmt/startAmount - 1.0) * 100
-	totalSlippage := slippages[0] + slippages[1] + slippages[2]
-
-	// В ФАЙЛ — только положительный профит
-	if takerProfit > 0 {
-		edgeStr := func(e Edge) string {
-			side := "SELL"
-			if e.Buy {
-				side = "BUY"
-			}
-			return fmt.Sprintf("%s %s (%s→%s)", side, e.InstID, e.From, e.To)
-		}
-
-		type line struct {
-			AtUTC          string     `json:"at_utc"`
-			Exchange       string     `json:"exchange"`
-			TriID          string     `json:"tri_id"`
-			Start          string     `json:"start"`
-			Legs           string     `json:"legs"`
-			VolumeUSDT     float64    `json:"volume_usdt"`
-			TakerProfitPct float64    `json:"taker_profit_pct"`
-			MakerProfitPct float64    `json:"maker_profit_pct"`
-			ProfitUSDT     float64    `json:"profit_usdt"`
-			SpreadsPct     [3]float64 `json:"spreads_pct"`
-			SlippagesPct   [3]float64 `json:"slippages_pct"`
-			TotalSlippage  float64    `json:"total_slippage_pct"`
-		}
-
-		path := os.Getenv("TRI_LOG_FILE")
-		if path == "" {
-			path = "triangles_profit.jsonl"
-		}
-
-		legs := strings.Join([]string{
-			edgeStr(tri.Edges[0]),
-			edgeStr(tri.Edges[1]),
-			edgeStr(tri.Edges[2]),
-		}, " | ")
-
-		l := line{
-			AtUTC:          now.UTC().Format(time.RFC3339Nano),
-			Exchange:       tri.Exchange,
-			TriID:          tri.ID,
-			Start:          tri.Start,
-			Legs:           legs,
-			VolumeUSDT:     volumeUSDT,
-			TakerProfitPct: takerProfit,
-			MakerProfitPct: makerProfit,
-			ProfitUSDT:     volumeUSDT * takerProfit / 100,
-			SpreadsPct:     spreads,
-			SlippagesPct:   slippages,
-			TotalSlippage:  totalSlippage,
-		}
-
-		if b, err := json.Marshal(l); err == nil {
-			if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
-				_, _ = f.Write(append(b, '\n'))
-				_ = f.Close()
-			}
-		}
+	// 3) Лимит по 3-й ноге -> назад через 2-ю и 1-ю ноги
+	leg3InputCap, ok := maxLegInput(tri.Legs[2], q[2])
+	if !ok {
+		return
 	}
 
-	if takerProfit >= s.minProfitPct {
-		s.stats.opportunities.Add(1)
-
-		s.cooldownMu.Lock()
-		s.cooldowns[triIdx] = now
-		s.cooldownMu.Unlock()
-
-		s.onOpportunity(Opportunity{
-			Type:           OpTriangle,
-			Exchange:       tri.Exchange,
-			Triangle:       tri,
-			TakerProfitPct: takerProfit,
-			MakerProfitPct: makerProfit,
-			Prices:         prices,
-			BestPrices:     bestPrices,
-			Slippages:      slippages,
-			TotalSlippage:  totalSlippage,
-			VolumeUSDT:     volumeUSDT,
-			ProfitUSDT:     volumeUSDT * takerProfit / 100,
-			Spreads:        spreads,
-			Timestamp:      now,
-		})
+	beforeLeg2, ok := backwardAmount(leg3InputCap, tri.Legs[1], q[1])
+	if !ok {
+		return
 	}
+
+	limit3, ok := backwardAmount(beforeLeg2, tri.Legs[0], q[0])
+	if !ok {
+		return
+	}
+
+	maxStart := math.Min(limit1, math.Min(limit2, limit3))
+	if maxStart <= 0 || math.IsNaN(maxStart) || math.IsInf(maxStart, 0) {
+		return
+	}
+
+	amount := maxStart
+
+	amount, ok = forwardAmount(amount, tri.Legs[0], q[0])
+	if !ok {
+		return
+	}
+
+	amount, ok = forwardAmount(amount, tri.Legs[1], q[1])
+	if !ok {
+		return
+	}
+
+	amount, ok = forwardAmount(amount, tri.Legs[2], q[2])
+	if !ok {
+		return
+	}
+
+	profit := amount - maxStart
+	profitPct := profit / maxStart
+
+	if profitPct > 0.001 && maxStart > 50 {
+		msg := fmt.Sprintf(
+			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f | profit=%.4f",
+			tri.A, tri.B, tri.C,
+			profitPct*100, maxStart, profit,
+		)
+		log.Println(msg)
+		c.fileLog.Println(msg)
+	}
+}
+
+func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	rows, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	var res []*Triangle
+
+	for _, row := range rows[1:] {
+		if len(row) < 6 {
+			continue
+		}
+
+		t := &Triangle{
+			A: strings.TrimSpace(row[0]),
+			B: strings.TrimSpace(row[1]),
+			C: strings.TrimSpace(row[2]),
+		}
+
+		for i, leg := range []string{row[3], row[4], row[5]} {
+			leg = strings.ToUpper(strings.TrimSpace(leg))
+			parts := strings.Fields(leg)
+			if len(parts) != 2 {
+				continue
+			}
+
+			isBuy := parts[0] == "BUY"
+			pair := strings.Split(parts[1], "/")
+			if len(pair) != 2 {
+				continue
+			}
+
+			symbol := pair[0] + "-" + pair[1]
+
+			t.Legs[i] = LegIndex{
+				Symbol: symbol,
+				IsBuy:  isBuy,
+			}
+		}
+
+		res = append(res, t)
+	}
+
+	return res, nil
 }
