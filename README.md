@@ -345,3 +345,16 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 
 	return res, nil
 }
+
+
+
+
+if profitPct > 0.0 && maxStart > 0 {
+		msg := fmt.Sprintf(
+			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f | profit=%.4f",
+			tri.A, tri.B, tri.C,
+			profitPct*100, maxStart, profit,
+		)
+		log.Println(msg)
+		c.fileLog.Println(msg)
+	}
