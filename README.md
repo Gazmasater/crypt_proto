@@ -46,4 +46,11 @@ ENTER ising_short_signal side=short px=71062.10 bid=71062.10 ask=71062.20 L=-0.0
 EXIT ising_reversal_short side=short exit=71065.75 gross=-3.653110 net=-145.780963 pUp=0.093 pDn=0.907 m=-1.000 h=0.333
 ENTER ising_short_signal side=short px=71062.10 bid=71062.10 ask=71062.20 L=0.016 S=0.778 pUp=0.009 pDn=0.991 m=-1.000 h=-0.231
 EXIT ising_reversal_short side=short exit=71065.85 gross=-3.753115 net=-145.881068 pUp=0.080 pDn=0.920 m=-1.000 h=0.296
+ENTER ising_short_signal side=short px=71182.90 bid=71182.90 ask=71183.00 L=-0.130 S=0.959 pUp=0.004 pDn=0.996 m=-0.917 h=-0.501
+EXIT ising_reversal_short side=short exit=71179.86 gross=3.041185 net=-139.321574 pUp=0.181 pDn=0.819 m=-0.917 h=0.436
+ENTER ising_short_signal side=short px=71176.20 bid=71176.20 ask=71176.30 L=-0.084 S=1.000 pUp=0.004 pDn=0.996 m=-0.917 h=-0.484
+EXIT ising_reversal_short side=short exit=71179.86 gross=-3.658815 net=-146.014874 pUp=0.994 pDn=0.006 m=-0.958 h=2.000
+ENTER ising_short_signal side=short px=71190.10 bid=71190.10 ask=71190.20 L=-0.032 S=0.859 pUp=0.005 pDn=0.995 m=-1.000 h=-0.354
+EXIT ising_reversal_short side=short exit=71193.76 gross=-3.659510 net=-146.043370 pUp=0.989 pDn=0.011 m=-0.958 h=1.871
+
 
