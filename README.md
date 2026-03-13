@@ -52,3 +52,40 @@ git branch -M main
 git push -u origin main
 
 
+
+gaz358@gaz358-BOD-WXX9:~/myprog/kucoin-ising-bot$ echo "# ising_model" >> README.md
+gaz358@gaz358-BOD-WXX9:~/myprog/kucoin-ising-bot$ git init
+hint: Using 'master' as the name for the initial branch. This default branch name
+hint: is subject to change. To configure the initial branch name to use in all
+hint: of your new repositories, which will suppress this warning, call:
+hint: 
+hint:   git config --global init.defaultBranch <name>
+hint: 
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint: 
+hint:   git branch -m <name>
+Initialized empty Git repository in /home/gaz358/myprog/kucoin-ising-bot/.git/
+gaz358@gaz358-BOD-WXX9:~/myprog/kucoin-ising-bot$ git add README.md
+fatal: detected dubious ownership in repository at '/home/gaz358/myprog/kucoin-ising-bot'
+To add an exception for this directory, call:
+
+        git config --global --add safe.directory /home/gaz358/myprog/kucoin-ising-bot
+gaz358@gaz358-BOD-WXX9:~/myprog/kucoin-ising-bot$ git commit -m "first commit"
+fatal: detected dubious ownership in repository at '/home/gaz358/myprog/kucoin-ising-bot'
+To add an exception for this directory, call:
+
+        git config --global --add safe.directory /home/gaz358/myprog/kucoin-ising-bot
+gaz358@gaz358-BOD-WXX9:~/myprog/kucoin-ising-bot$ git add .
+fatal: detected dubious ownership in repository at '/home/gaz358/myprog/kucoin-ising-bot'
+To add an exception for this directory, call:
+
+        git config --global --add safe.directory /home/gaz358/myprog/kucoin-ising-bot
+gaz358@gaz358-BOD-WXX9:~/myprog/kucoin-ising-bot$ git commit -m "first commit"
+fatal: detected dubious ownership in repository at '/home/gaz358/myprog/kucoin-ising-bot'
+To add an exception for this directory, call:
+
+        git config --global --add safe.directory /home/gaz358/myprog/kucoin-ising-bot
+gaz358@gaz358-BOD-WXX9:~/myprog/kucoin-ising-bot$ 
+
+
