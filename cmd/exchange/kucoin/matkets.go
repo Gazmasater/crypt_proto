@@ -7,9 +7,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
-// Структуры API KuCoin
 type kuCoinSymbol struct {
 	Symbol         string `json:"symbol"`
 	BaseCurrency   string `json:"baseCurrency"`
@@ -20,6 +20,7 @@ type kuCoinSymbol struct {
 	BaseIncrement  string `json:"baseIncrement"`
 	QuoteIncrement string `json:"quoteIncrement"`
 	PriceIncrement string `json:"priceIncrement"`
+	MinFunds       string `json:"minFunds"`
 }
 
 type kuCoinResponse struct {
@@ -27,36 +28,40 @@ type kuCoinResponse struct {
 	Data []kuCoinSymbol `json:"data"`
 }
 
-// LoadMarkets загружает все рынки KuCoin и возвращает map[string]common.Market
 func LoadMarkets() map[string]common.Market {
-	resp, err := http.Get("https://api.kucoin.com/api/v2/symbols")
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.kucoin.com/api/v2/symbols", nil)
 	if err != nil {
-		log.Fatalf("http error: %v", err)
+		log.Fatalf("kucoin request build error: %v", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatalf("kucoin http error: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		log.Fatalf("bad status %d: %s", resp.StatusCode, body)
+		log.Fatalf("kucoin bad status %d: %s", resp.StatusCode, body)
 	}
 
 	var api kuCoinResponse
 	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
-		log.Fatalf("decode error: %v", err)
+		log.Fatalf("kucoin decode error: %v", err)
 	}
 
-	markets := make(map[string]common.Market)
+	if api.Code != "200000" {
+		log.Fatalf("kucoin api returned code %s", api.Code)
+	}
+
+	markets := make(map[string]common.Market, len(api.Data))
+
 	for _, s := range api.Data {
 		if !s.EnableTrading || s.BaseCurrency == "" || s.QuoteCurrency == "" {
 			continue
 		}
-
-		// Преобразуем строки в float64
-		bMin := parseFloat(s.BaseMinSize)
-		qMin := parseFloat(s.QuoteMinSize)
-		bInc := parseFloat(s.BaseIncrement)
-		qInc := parseFloat(s.QuoteIncrement)
-		pInc := parseFloat(s.PriceIncrement)
 
 		key := s.BaseCurrency + "_" + s.QuoteCurrency
 		markets[key] = common.Market{
@@ -64,11 +69,12 @@ func LoadMarkets() map[string]common.Market {
 			Base:           s.BaseCurrency,
 			Quote:          s.QuoteCurrency,
 			EnableTrading:  s.EnableTrading,
-			BaseMinSize:    bMin,
-			QuoteMinSize:   qMin,
-			BaseIncrement:  bInc,
-			QuoteIncrement: qInc,
-			PriceIncrement: pInc,
+			BaseMinSize:    parseFloat(s.BaseMinSize),
+			QuoteMinSize:   parseFloat(s.QuoteMinSize),
+			BaseIncrement:  parseFloat(s.BaseIncrement),
+			QuoteIncrement: parseFloat(s.QuoteIncrement),
+			PriceIncrement: parseFloat(s.PriceIncrement),
+			MinNotional:    parseFloat(s.MinFunds),
 		}
 	}
 

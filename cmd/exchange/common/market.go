@@ -14,4 +14,6 @@ type Market struct {
 	BaseIncrement  float64
 	QuoteIncrement float64
 	PriceIncrement float64
+
+	MinNotional float64
 }

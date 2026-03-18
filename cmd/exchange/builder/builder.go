@@ -6,27 +6,25 @@ func BuildTriangles(
 	markets map[string]common.Market,
 	anchor string,
 ) []common.Triangle {
-
-	result := []common.Triangle{}
-	seen := map[string]bool{}
+	result := make([]common.Triangle, 0, 1024)
+	seen := make(map[string]bool, 1024)
 
 	for _, m1 := range markets {
 		if !m1.EnableTrading {
 			continue
 		}
 
-		// шаг 1: A -> B
-		var B string
-		if m1.Base == anchor {
-			B = m1.Quote
-		} else if m1.Quote == anchor {
-			B = m1.Base
-		} else {
+		var b string
+		switch {
+		case m1.Base == anchor:
+			b = m1.Quote
+		case m1.Quote == anchor:
+			b = m1.Base
+		default:
 			continue
 		}
 
-		// ❌ нельзя стейб в середине
-		if common.StableCoins[B] {
+		if common.StableCoins[b] {
 			continue
 		}
 
@@ -35,38 +33,32 @@ func BuildTriangles(
 				continue
 			}
 
-			// шаг 2: B -> C
-			var C string
-			if m2.Base == B {
-				C = m2.Quote
-			} else if m2.Quote == B {
-				C = m2.Base
-			} else {
+			var c string
+			switch {
+			case m2.Base == b:
+				c = m2.Quote
+			case m2.Quote == b:
+				c = m2.Base
+			default:
 				continue
 			}
 
-			if C == anchor || C == B {
+			if c == anchor || c == b {
 				continue
 			}
 
-			if common.StableCoins[C] {
+			if common.StableCoins[c] {
 				continue
 			}
 
-			// шаг 3: C -> A должен существовать
-			l3, ok := common.FindLeg(C, anchor, markets)
-			if !ok {
+			l1, ok1 := common.FindLeg(anchor, b, markets)
+			l2, ok2 := common.FindLeg(b, c, markets)
+			l3, ok3 := common.FindLeg(c, anchor, markets)
+			if !ok1 || !ok2 || !ok3 {
 				continue
 			}
 
-			l1, ok1 := common.FindLeg(anchor, B, markets)
-			l2, ok2 := common.FindLeg(B, C, markets)
-			if !ok1 || !ok2 {
-				continue
-			}
-
-			// 🔒 дедупликация A-X-Y-A / A-Y-X-A
-			key := common.TriangleKey(anchor, B, C)
+			key := common.TriangleKey(anchor, b, c)
 			if seen[key] {
 				continue
 			}
@@ -74,12 +66,24 @@ func BuildTriangles(
 
 			t := common.Triangle{
 				A: anchor,
-				B: B,
-				C: C,
+				B: b,
+				C: c,
 
-				Leg1: common.ResolveSide(anchor, B, l1) + " " + l1.Base + "/" + l1.Quote,
-				Leg2: common.ResolveSide(B, C, l2) + " " + l2.Base + "/" + l2.Quote,
-				Leg3: common.ResolveSide(C, anchor, l3) + " " + l3.Base + "/" + l3.Quote,
+				Leg1: common.ResolveSide(anchor, b, l1) + " " + l1.Base + "/" + l1.Quote,
+				Leg2: common.ResolveSide(b, c, l2) + " " + l2.Base + "/" + l2.Quote,
+				Leg3: common.ResolveSide(c, anchor, l3) + " " + l3.Base + "/" + l3.Quote,
+
+				Step1:        l1.BaseIncrement,
+				MinQty1:      l1.BaseMinSize,
+				MinNotional1: l1.MinNotional,
+
+				Step2:        l2.BaseIncrement,
+				MinQty2:      l2.BaseMinSize,
+				MinNotional2: l2.MinNotional,
+
+				Step3:        l3.BaseIncrement,
+				MinQty3:      l3.BaseMinSize,
+				MinNotional3: l3.MinNotional,
 			}
 
 			result = append(result, t)
