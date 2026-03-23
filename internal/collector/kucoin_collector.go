@@ -82,10 +82,12 @@ func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	c.out = out
+	total := 0
 	for _, ws := range c.wsList {
-		go ws.run(c) // запускаем WS с авто-перезапуском
+		total += len(ws.symbols)
+		go ws.run(c)
 	}
-	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
+	log.Printf("[KuCoin] started with %d WS, total symbols=%d\n", len(c.wsList), total)
 	return nil
 }
 
@@ -262,18 +264,35 @@ func readPairsFromCSV(path string) ([]string, error) {
 		return nil, err
 	}
 	defer f.Close()
+
 	rows, err := csv.NewReader(f).ReadAll()
 	if err != nil {
 		return nil, err
 	}
+
 	set := make(map[string]struct{})
+
 	for _, row := range rows[1:] {
-		for i := 3; i <= 5 && i < len(row); i++ {
-			if p := parseLeg(row[i]); p != "" {
-				set[p] = struct{}{}
+		if len(row) >= 15 {
+			for _, idx := range []int{3, 7, 11} {
+				if idx < len(row) {
+					if p := parseLeg(row[idx]); p != "" {
+						set[p] = struct{}{}
+					}
+				}
+			}
+			continue
+		}
+
+		if len(row) >= 6 {
+			for i := 3; i <= 5 && i < len(row); i++ {
+				if p := parseLeg(row[i]); p != "" {
+					set[p] = struct{}{}
+				}
 			}
 		}
 	}
+
 	res := make([]string, 0, len(set))
 	for k := range set {
 		res = append(res, k)
