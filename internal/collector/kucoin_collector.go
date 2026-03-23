@@ -82,11 +82,13 @@ func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	c.out = out
+
 	total := 0
 	for _, ws := range c.wsList {
 		total += len(ws.symbols)
 		go ws.run(c)
 	}
+
 	log.Printf("[KuCoin] started with %d WS, total symbols=%d\n", len(c.wsList), total)
 	return nil
 }

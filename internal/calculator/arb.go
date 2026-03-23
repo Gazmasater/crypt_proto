@@ -146,7 +146,7 @@ func (c *Calculator) calcTriangleWithCurrent(md *models.MarketData, tri *Triangl
 	profitPct := profitUSDT / maxUSDT
 
 	msg := fmt.Sprintf(
-		"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.6f USDT",
+		"[ARB] %s→%s→%s | %.4f%% | volume=%.8f USDT | profit=%.6f USDT",
 		tri.A, tri.B, tri.C,
 		profitPct*100, maxUSDT, profitUSDT,
 	)
