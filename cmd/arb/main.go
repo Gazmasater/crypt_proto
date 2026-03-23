@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"crypt_proto/internal/calculator"
 	"crypt_proto/internal/collector"
 	"crypt_proto/internal/queue"
 	"crypt_proto/pkg/models"
@@ -32,9 +33,9 @@ func main() {
 	}
 	log.Println("[Main] KuCoinCollector started")
 
-	//triangles, _ := calculator.ParseTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
-	//calc := calculator.NewCalculator(mem, triangles)
-	//go calc.Run(out)
+	triangles, _ := calculator.ParseTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
+	calc := calculator.NewCalculator(mem, triangles)
+	go calc.Run(out)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
