@@ -14,31 +14,24 @@ type Quote struct {
 }
 
 type MemoryStore struct {
-	mu    sync.RWMutex
-	data  map[string]Quote
-	batch chan *models.MarketData
+	mu   sync.RWMutex
+	data map[string]Quote
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		data:  make(map[string]Quote),
-		batch: make(chan *models.MarketData, 10_000),
+		data: make(map[string]Quote),
 	}
 }
 
-// Run обрабатывает входящие данные и обновляет snapshot
-func (s *MemoryStore) Run() {
-	for md := range s.batch {
-		s.apply(md)
-	}
-}
+// Run оставлен для совместимости со старым кодом.
+func (s *MemoryStore) Run() {}
 
 func (s *MemoryStore) Push(md *models.MarketData) {
-	select {
-	case s.batch <- md:
-	default:
-		// drop if full
+	if md == nil {
+		return
 	}
+	s.apply(md)
 }
 
 // Get snapshot lock-safe
@@ -52,12 +45,16 @@ func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
 // apply обновляет тикер на месте без копирования всей карты
 func (s *MemoryStore) apply(md *models.MarketData) {
 	key := md.Exchange + "|" + md.Symbol
+	timestamp := md.Timestamp
+	if timestamp == 0 {
+		timestamp = time.Now().UnixMilli()
+	}
 	quote := Quote{
 		Bid:       md.Bid,
 		Ask:       md.Ask,
 		BidSize:   md.BidSize,
 		AskSize:   md.AskSize,
-		Timestamp: time.Now().UnixMilli(),
+		Timestamp: timestamp,
 	}
 
 	s.mu.Lock()

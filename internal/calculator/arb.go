@@ -13,6 +13,8 @@ import (
 
 const feeM = 0.999
 
+var triangleLegColumns = [3]int{3, 7, 11}
+
 type LegIndex struct {
 	Key    string
 	Symbol string
@@ -42,6 +44,9 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 
 	for _, t := range triangles {
 		for _, leg := range t.Legs {
+			if leg.Symbol == "" {
+				continue
+			}
 			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
 		}
 	}
@@ -75,12 +80,17 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	var q [3]queue.Quote
 
 	for i, leg := range tri.Legs {
+		if leg.Symbol == "" {
+			log.Printf("skip triangle %s->%s->%s: empty symbol for leg=%d", tri.A, tri.B, tri.C, i)
+			return
+		}
+
 		quote, ok := c.mem.Get("KuCoin", leg.Symbol)
 		if !ok {
+			log.Printf("skip triangle %s->%s->%s: no quote for leg=%d symbol=%s", tri.A, tri.B, tri.C, i, leg.Symbol)
 			return
 		}
 		q[i] = quote
-		fmt.Println("q[i]", i, q[i])
 	}
 
 	var usdtLimits [3]float64
@@ -151,7 +161,6 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	profitUSDT := amount - maxUSDT
 	profitPct := profitUSDT / maxUSDT
 
-	//	if profitPct > 0.001 && profitUSDT > 20 {
 	msg := fmt.Sprintf(
 		"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.4f USDT",
 		tri.A, tri.B, tri.C,
@@ -159,10 +168,8 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	)
 	log.Println(msg)
 	c.fileLog.Println(msg)
-	// }
 }
 
-// CSV без изменений логики, но сразу сохраняем Symbol
 func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -177,8 +184,8 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 
 	var res []*Triangle
 
-	for _, row := range rows[1:] {
-		if len(row) < 6 {
+	for rowIdx, row := range rows[1:] {
+		if len(row) < 15 {
 			continue
 		}
 
@@ -188,31 +195,41 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 			C: strings.TrimSpace(row[2]),
 		}
 
-		for i, leg := range []string{row[3], row[4], row[5]} {
-			leg = strings.ToUpper(strings.TrimSpace(leg))
-			parts := strings.Fields(leg)
-			if len(parts) != 2 {
-				continue
+		for i, col := range triangleLegColumns {
+			leg, err := parseTriangleLeg(row[col])
+			if err != nil {
+				return nil, fmt.Errorf("row %d leg %d: %w", rowIdx+2, i+1, err)
 			}
-
-			isBuy := parts[0] == "BUY"
-			pair := strings.Split(parts[1], "/")
-			if len(pair) != 2 {
-				continue
-			}
-
-			symbol := pair[0] + "-" + pair[1]
-			key := "KuCoin|" + symbol
-
-			t.Legs[i] = LegIndex{
-				Key:    key,
-				Symbol: symbol,
-				IsBuy:  isBuy,
-			}
+			t.Legs[i] = leg
 		}
 
 		res = append(res, t)
 	}
 
 	return res, nil
+}
+
+func parseTriangleLeg(raw string) (LegIndex, error) {
+	leg := strings.ToUpper(strings.TrimSpace(raw))
+	parts := strings.Fields(leg)
+	if len(parts) != 2 {
+		return LegIndex{}, fmt.Errorf("bad leg format: %q", raw)
+	}
+
+	isBuy := parts[0] == "BUY"
+	if parts[0] != "BUY" && parts[0] != "SELL" {
+		return LegIndex{}, fmt.Errorf("bad leg side: %q", raw)
+	}
+
+	pair := strings.Split(parts[1], "/")
+	if len(pair) != 2 {
+		return LegIndex{}, fmt.Errorf("bad pair format: %q", raw)
+	}
+
+	symbol := pair[0] + "-" + pair[1]
+	return LegIndex{
+		Key:    "KuCoin|" + symbol,
+		Symbol: symbol,
+		IsBuy:  isBuy,
+	}, nil
 }

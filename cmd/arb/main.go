@@ -22,7 +22,6 @@ func main() {
 
 	out := make(chan *models.MarketData, 100_000)
 	mem := queue.NewMemoryStore()
-	go mem.Run()
 
 	kc, _, err := collector.NewKuCoinCollectorFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
 	if err != nil {
@@ -33,7 +32,10 @@ func main() {
 	}
 	log.Println("[Main] KuCoinCollector started")
 
-	triangles, _ := calculator.ParseTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
+	triangles, err := calculator.ParseTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
+	if err != nil {
+		log.Fatal(err)
+	}
 	calc := calculator.NewCalculator(mem, triangles)
 	go calc.Run(out)
 

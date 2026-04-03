@@ -231,9 +231,13 @@ func readPairsFromCSV(path string) ([]string, error) {
 		return nil, err
 	}
 	set := make(map[string]struct{})
+	legColumns := []int{3, 7, 11}
 	for _, row := range rows[1:] {
-		for i := 3; i <= 5 && i < len(row); i++ {
-			if p := parseLeg(row[i]); p != "" {
+		for _, col := range legColumns {
+			if col >= len(row) {
+				continue
+			}
+			if p := parseLeg(row[col]); p != "" {
 				set[p] = struct{}{}
 			}
 		}
