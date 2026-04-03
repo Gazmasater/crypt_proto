@@ -18,10 +18,9 @@ import (
 )
 
 const (
-	maxSubsPerWS   = 126
-	subRate        = 120 * time.Millisecond
-	pingInterval   = 20 * time.Second
-	reconnectDelay = 3 * time.Second
+	maxSubsPerWS = 126
+	subRate      = 120 * time.Millisecond
+	pingInterval = 20 * time.Second
 )
 
 type KuCoinCollector struct {
@@ -82,14 +81,15 @@ func (c *KuCoinCollector) Name() string { return "KuCoin" }
 
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	c.out = out
-
-	total := 0
 	for _, ws := range c.wsList {
-		total += len(ws.symbols)
-		go ws.run(c)
+		if err := ws.connect(); err != nil {
+			return err
+		}
+		go ws.readLoop(c)
+		go ws.subscribeLoop()
+		go ws.pingLoop()
 	}
-
-	log.Printf("[KuCoin] started with %d WS, total symbols=%d\n", len(c.wsList), total)
+	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
 	return nil
 }
 
@@ -101,45 +101,6 @@ func (c *KuCoinCollector) Stop() error {
 		}
 	}
 	return nil
-}
-
-func (ws *kucoinWS) run(c *KuCoinCollector) {
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-		}
-
-		// подключаемся
-		if err := ws.connect(); err != nil {
-			log.Printf("[KuCoin WS %d] connect error: %v, retry in %v\n", ws.id, err, reconnectDelay)
-			time.Sleep(reconnectDelay)
-			continue
-		}
-
-		// запускаем подписки и пинг
-		done := make(chan struct{})
-		go func() {
-			ws.subscribeLoop()
-			close(done)
-		}()
-		go ws.pingLoop()
-
-		// читаем данные
-		if err := ws.readLoop(c); err != nil {
-			log.Printf("[KuCoin WS %d] readLoop ended: %v\n", ws.id, err)
-		}
-
-		// закрываем соединение и перезапускаем
-		if ws.conn != nil {
-			_ = ws.conn.Close()
-			ws.conn = nil
-		}
-
-		log.Printf("[KuCoin WS %d] reconnecting in %v...\n", ws.id, reconnectDelay)
-		time.Sleep(reconnectDelay)
-	}
 }
 
 func (ws *kucoinWS) connect() error {
@@ -198,20 +159,16 @@ func (ws *kucoinWS) pingLoop() {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
 	for range t.C {
-		if ws.conn != nil {
-			_ = ws.conn.WriteJSON(map[string]any{"id": time.Now().UnixNano(), "type": "ping"})
-		}
+		_ = ws.conn.WriteJSON(map[string]any{"id": time.Now().UnixNano(), "type": "ping"})
 	}
 }
 
-func (ws *kucoinWS) readLoop(c *KuCoinCollector) error {
+func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
 	for {
-		if ws.conn == nil {
-			return fmt.Errorf("connection closed")
-		}
 		_, msg, err := ws.conn.ReadMessage()
 		if err != nil {
-			return err
+			log.Printf("[KuCoin WS %d] read error: %v\n", ws.id, err)
+			return
 		}
 		ws.handle(c, msg)
 	}
@@ -231,10 +188,13 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	if raw[1:1+prefixLen] != prefix { // пропускаем первую кавычку
+	// проверяем префикс без создания строки
+	// raw[1:] — пропускаем первую кавычку
+	if raw[1:1+prefixLen] != prefix {
 		return
 	}
 
+	// извлекаем symbol (без кавычек)
 	symbol := raw[1+prefixLen : len(raw)-1]
 
 	data := gjson.GetBytes(msg, "data")
@@ -266,35 +226,18 @@ func readPairsFromCSV(path string) ([]string, error) {
 		return nil, err
 	}
 	defer f.Close()
-
 	rows, err := csv.NewReader(f).ReadAll()
 	if err != nil {
 		return nil, err
 	}
-
 	set := make(map[string]struct{})
-
 	for _, row := range rows[1:] {
-		if len(row) >= 15 {
-			for _, idx := range []int{3, 7, 11} {
-				if idx < len(row) {
-					if p := parseLeg(row[idx]); p != "" {
-						set[p] = struct{}{}
-					}
-				}
-			}
-			continue
-		}
-
-		if len(row) >= 6 {
-			for i := 3; i <= 5 && i < len(row); i++ {
-				if p := parseLeg(row[i]); p != "" {
-					set[p] = struct{}{}
-				}
+		for i := 3; i <= 5 && i < len(row); i++ {
+			if p := parseLeg(row[i]); p != "" {
+				set[p] = struct{}{}
 			}
 		}
 	}
-
 	res := make([]string, 0, len(set))
 	for k := range set {
 		res = append(res, k)

@@ -33,10 +33,7 @@ func main() {
 	}
 	log.Println("[Main] KuCoinCollector started")
 
-	triangles, err := calculator.ParseTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
-	if err != nil {
-		log.Fatal(err)
-	}
+	triangles, _ := calculator.ParseTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
 	calc := calculator.NewCalculator(mem, triangles)
 	go calc.Run(out)
 
