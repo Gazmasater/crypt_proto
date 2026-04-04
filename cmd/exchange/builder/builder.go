@@ -64,14 +64,18 @@ func BuildTriangles(
 			}
 			seen[key] = true
 
+			side1 := common.ResolveSide(anchor, b, l1)
+			side2 := common.ResolveSide(b, c, l2)
+			side3 := common.ResolveSide(c, anchor, l3)
+
 			t := common.Triangle{
 				A: anchor,
 				B: b,
 				C: c,
 
-				Leg1: common.ResolveSide(anchor, b, l1) + " " + l1.Base + "/" + l1.Quote,
-				Leg2: common.ResolveSide(b, c, l2) + " " + l2.Base + "/" + l2.Quote,
-				Leg3: common.ResolveSide(c, anchor, l3) + " " + l3.Base + "/" + l3.Quote,
+				Leg1: side1 + " " + l1.Base + "/" + l1.Quote,
+				Leg2: side2 + " " + l2.Base + "/" + l2.Quote,
+				Leg3: side3 + " " + l3.Base + "/" + l3.Quote,
 
 				Step1:        l1.BaseIncrement,
 				MinQty1:      l1.BaseMinSize,
@@ -84,6 +88,39 @@ func BuildTriangles(
 				Step3:        l3.BaseIncrement,
 				MinQty3:      l3.BaseMinSize,
 				MinNotional3: l3.MinNotional,
+
+				Leg1Symbol:      l1.Symbol,
+				Leg1Side:        side1,
+				Leg1Base:        l1.Base,
+				Leg1Quote:       l1.Quote,
+				Leg1QtyStep:     l1.BaseIncrement,
+				Leg1QuoteStep:   l1.QuoteIncrement,
+				Leg1PriceStep:   l1.PriceIncrement,
+				Leg1MinQty:      l1.BaseMinSize,
+				Leg1MinQuote:    l1.QuoteMinSize,
+				Leg1MinNotional: l1.MinNotional,
+
+				Leg2Symbol:      l2.Symbol,
+				Leg2Side:        side2,
+				Leg2Base:        l2.Base,
+				Leg2Quote:       l2.Quote,
+				Leg2QtyStep:     l2.BaseIncrement,
+				Leg2QuoteStep:   l2.QuoteIncrement,
+				Leg2PriceStep:   l2.PriceIncrement,
+				Leg2MinQty:      l2.BaseMinSize,
+				Leg2MinQuote:    l2.QuoteMinSize,
+				Leg2MinNotional: l2.MinNotional,
+
+				Leg3Symbol:      l3.Symbol,
+				Leg3Side:        side3,
+				Leg3Base:        l3.Base,
+				Leg3Quote:       l3.Quote,
+				Leg3QtyStep:     l3.BaseIncrement,
+				Leg3QuoteStep:   l3.QuoteIncrement,
+				Leg3PriceStep:   l3.PriceIncrement,
+				Leg3MinQty:      l3.BaseMinSize,
+				Leg3MinQuote:    l3.QuoteMinSize,
+				Leg3MinNotional: l3.MinNotional,
 			}
 
 			result = append(result, t)
