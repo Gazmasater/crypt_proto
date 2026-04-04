@@ -1,46 +1,36 @@
 package calculator
 
 import (
-	"fmt"
 	"math"
 
 	"crypt_proto/internal/queue"
 )
 
-type ExecutorFilter struct{}
+type ExecutorFilter struct {
+	cfg Config
+}
 
-func NewExecutorFilter() *ExecutorFilter {
-	return &ExecutorFilter{}
+func NewExecutorFilter(cfg Config) *ExecutorFilter {
+	return &ExecutorFilter{cfg: cfg}
 }
 
 func (f *ExecutorFilter) Evaluate(cand ScanCandidate) (ExecutableOpportunity, string, bool) {
-	if cand.MaxStartUSDT < minVolumeUSDT {
-		return ExecutableOpportunity{}, fmt.Sprintf("max_start_lt_%.2f", minVolumeUSDT), false
-	}
-
-	if cand.EstimatedPct < 0 {
-		return ExecutableOpportunity{}, "estimated_negative", false
-	}
-
-	minStart, ok := findMinStartForTriangle(cand.Triangle, cand.Quotes, minVolumeUSDT, cand.MaxStartUSDT)
+	minStart, ok := findMinStartForTriangle(cand.Triangle, cand.Quotes, f.cfg.MinVolumeUSDT, cand.MaxStartUSDT, f.cfg.SearchStepUSDT)
 	if !ok {
 		return ExecutableOpportunity{}, "cannot_find_valid_start", false
 	}
 
-	startUSDT := floorToStep(math.Max(minVolumeUSDT, minStart), searchStepUSDT)
-	if startUSDT < minVolumeUSDT {
-		return ExecutableOpportunity{}, "start_lt_min_volume", false
-	}
-	if startUSDT > cand.MaxStartUSDT {
-		return ExecutableOpportunity{}, "start_gt_max_start", false
+	startUSDT := floorToStep(math.Max(f.cfg.MinVolumeUSDT, minStart), f.cfg.SearchStepUSDT)
+	if startUSDT < f.cfg.MinVolumeUSDT || startUSDT > cand.MaxStartUSDT {
+		return ExecutableOpportunity{}, "max_start_lt_min_volume", false
 	}
 
 	state, ok := simulateTriangle(startUSDT, cand.Triangle, cand.Quotes)
 	if !ok {
 		return ExecutableOpportunity{}, "simulate_failed", false
 	}
-	if state.ProfitPct < minProfitPct {
-		return ExecutableOpportunity{}, fmt.Sprintf("profit_lt_%.4f%%", minProfitPct*100), false
+	if state.ProfitPct < f.cfg.MinProfitPct {
+		return ExecutableOpportunity{}, "profit_below_threshold", false
 	}
 
 	return ExecutableOpportunity{
@@ -57,14 +47,14 @@ func (f *ExecutorFilter) Evaluate(cand ScanCandidate) (ExecutableOpportunity, st
 	}, "", true
 }
 
-func findMinStartForTriangle(tri *Triangle, q [3]queue.Quote, lowerBound, upperBound float64) (float64, bool) {
+func findMinStartForTriangle(tri *Triangle, q [3]queue.Quote, lowerBound, upperBound, searchStep float64) (float64, bool) {
 	if upperBound <= 0 || upperBound+1e-12 < lowerBound {
 		return 0, false
 	}
 
-	lo := math.Max(searchStepUSDT, floorToStep(lowerBound, searchStepUSDT))
+	lo := math.Max(searchStep, floorToStep(lowerBound, searchStep))
 	if lo < lowerBound {
-		lo += searchStepUSDT
+		lo += searchStep
 	}
 	if lo > upperBound {
 		return 0, false
@@ -74,18 +64,22 @@ func findMinStartForTriangle(tri *Triangle, q [3]queue.Quote, lowerBound, upperB
 		return lo, true
 	}
 
+	step := searchStep
 	high := lo
 	for high <= upperBound {
-		high = floorToStep(high+searchStepUSDT, searchStepUSDT)
-		if high > upperBound {
+		next := floorToStep(high+step, searchStep)
+		if next <= high {
+			next = floorToStep(high+searchStep, searchStep)
+		}
+		if next > upperBound {
 			break
 		}
-		if _, ok := simulateTriangle(high, tri, q); ok {
-			left, right := lo, high
-			for right-left > searchStepUSDT+1e-12 {
-				mid := floorToStep((left+right)/2, searchStepUSDT)
+		if _, ok := simulateTriangle(next, tri, q); ok {
+			left, right := high, next
+			for right-left > searchStep+1e-12 {
+				mid := floorToStep((left+right)/2, searchStep)
 				if mid <= left {
-					mid = floorToStep(left+searchStepUSDT, searchStepUSDT)
+					mid = floorToStep(left+searchStep, searchStep)
 				}
 				if mid >= right {
 					break
@@ -98,7 +92,8 @@ func findMinStartForTriangle(tri *Triangle, q [3]queue.Quote, lowerBound, upperB
 			}
 			return right, true
 		}
-		lo = high
+		high = next
+		step *= 2
 	}
 
 	return 0, false

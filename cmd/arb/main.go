@@ -36,7 +36,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	calc := calculator.NewCalculator(mem, triangles)
+
+	cfg := calculator.DefaultConfig()
+	cfg.LogMode = calculator.LogNormal
+	cfg.MinVolumeUSDT = 50
+	cfg.MinProfitPct = 0.001
+	cfg.QuoteAgeMaxMS = 2500
+	cfg.StatsEverySec = 5
+
+	calc := calculator.NewCalculator(mem, triangles, cfg)
 	go calc.Run(out)
 
 	stop := make(chan os.Signal, 1)

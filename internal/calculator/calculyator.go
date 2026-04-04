@@ -14,78 +14,129 @@ import (
 )
 
 type Calculator struct {
-	mem      *queue.MemoryStore
-	scanner  *Scanner
-	filter   *ExecutorFilter
-	oppLog   *log.Logger
-	debugLog *log.Logger
-	stats    *pipelineStats
-	lastStat time.Time
+	mem     *queue.MemoryStore
+	scanner *Scanner
+	filter  *ExecutorFilter
+	log     *log.Logger
+	cfg     Config
+	stats   Stats
 }
 
-func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
-	oppFile, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Fatalf("failed to open opportunities log: %v", err)
+func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle, cfg Config) *Calculator {
+	if cfg.MinVolumeUSDT <= 0 {
+		cfg.MinVolumeUSDT = defaultMinVolumeUSDT
 	}
-	debugFile, err := os.OpenFile("arb_debug.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Fatalf("failed to open debug log: %v", err)
+	if cfg.MinProfitPct < 0 {
+		cfg.MinProfitPct = 0
+	}
+	if cfg.SearchStepUSDT <= 0 {
+		cfg.SearchStepUSDT = defaultSearchStep
+	}
+	if cfg.StatsEverySec <= 0 {
+		cfg.StatsEverySec = 5
 	}
 
-	oppMW := io.MultiWriter(os.Stdout, oppFile)
-	debugMW := io.MultiWriter(os.Stdout, debugFile)
-
-	return &Calculator{
-		mem:      mem,
-		scanner:  NewScanner(mem, triangles),
-		filter:   NewExecutorFilter(),
-		oppLog:   log.New(oppMW, "", log.LstdFlags),
-		debugLog: log.New(debugMW, "", log.LstdFlags),
-		stats:    newPipelineStats(),
-		lastStat: time.Now(),
+	f, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Fatalf("failed to open log: %v", err)
 	}
+
+	mw := io.MultiWriter(os.Stdout, f)
+	c := &Calculator{
+		mem:     mem,
+		scanner: NewScanner(mem, triangles, cfg),
+		filter:  NewExecutorFilter(cfg),
+		log:     log.New(mw, "", log.LstdFlags),
+		cfg:     cfg,
+		stats: Stats{
+			ScanRejects: make(map[string]int64),
+			ExecRejects: make(map[string]int64),
+		},
+	}
+
+	if cfg.LogMode != LogSilent {
+		c.log.Printf(
+			"[CALC] started | triangles indexed=%d | minVolume=%.2f USDT | minProfit=%.4f%% | quoteAgeMax=%dms | logMode=%s",
+			len(triangles),
+			cfg.MinVolumeUSDT,
+			cfg.MinProfitPct*100,
+			cfg.QuoteAgeMaxMS,
+			c.logModeString(),
+		)
+	}
+
+	return c
 }
 
 func (c *Calculator) Run(in <-chan *models.MarketData) {
-	c.debugLog.Printf("[CALC] started | triangles indexed=%d | minVolume=%.2f USDT | minProfit=%.4f%% | quoteAgeMax=%dms",
-		countTriangles(c.scanner.bySymbol), minVolumeUSDT, minProfitPct*100, maxQuoteAgeMS)
+	ticker := time.NewTicker(time.Duration(c.cfg.StatsEverySec) * time.Second)
+	defer ticker.Stop()
 
-	for md := range in {
-		c.mem.Push(md)
-		c.stats.Ticks++
-
-		cands, scanRejects, triSeen := c.scanner.CandidatesFor(md.Symbol, md.Timestamp)
-		c.stats.TrianglesSeen += uint64(triSeen)
-		for reason, n := range scanRejects {
-			c.stats.ScanRejects[reason] += uint64(n)
-		}
-
-		if len(cands) == 0 {
-			c.flushStatsIfNeeded(md)
-			continue
-		}
-
-		c.stats.Candidates += uint64(len(cands))
-		for _, cand := range cands {
-			opp, reason, ok := c.filter.Evaluate(cand)
+	for {
+		select {
+		case md, ok := <-in:
 			if !ok {
-				c.stats.ExecRejects[reason]++
+				if c.cfg.LogMode != LogSilent {
+					c.logStats()
+				}
+				return
+			}
+			if md == nil {
 				continue
 			}
-			c.stats.Opportunities++
-			c.logOpportunity(opp)
+
+			c.stats.Ticks++
+			c.mem.Push(md)
+
+			results := c.scanner.CandidatesFor(md.Symbol, md.Timestamp)
+			if len(results) == 0 {
+				continue
+			}
+
+			for _, res := range results {
+				c.stats.TrianglesSeen++
+				if !res.OK {
+					c.addScanReject(res.Reject, res.Candidate.Triangle)
+					continue
+				}
+
+				c.stats.Candidates++
+				opp, reason, ok := c.filter.Evaluate(res.Candidate)
+				if !ok {
+					c.addExecReject(reason, res.Candidate.Triangle)
+					continue
+				}
+
+				c.stats.Opportunities++
+				c.logOpportunity(opp)
+			}
+		case <-ticker.C:
+			if c.cfg.LogMode != LogSilent {
+				c.logStats()
+			}
 		}
-
-		c.flushStatsIfNeeded(md)
 	}
+}
 
-	c.flushStats(true)
+func (c *Calculator) addScanReject(reason string, tri *Triangle) {
+	if reason == "" {
+		reason = "unknown"
+	}
+	c.stats.ScanRejects[reason]++
+	c.logReject("scan", reason, tri, c.stats.ScanRejects[reason])
+}
+
+func (c *Calculator) addExecReject(reason string, tri *Triangle) {
+	if reason == "" {
+		reason = "unknown"
+	}
+	c.stats.ExecRejects[reason]++
+	c.logReject("exec", reason, tri, c.stats.ExecRejects[reason])
 }
 
 func (c *Calculator) logOpportunity(opp ExecutableOpportunity) {
-	c.oppLog.Printf(
-		"[ARB] %s→%s→%s | est=%.4f%% | real=%.4f%% | start=%.2f USDT | minStart=%.2f USDT | final=%.4f USDT | profit=%.4f USDT | trigger=%s",
+	c.log.Printf(
+		"[ARB] %s→%s→%s | est=%.4f%% | real=%.4f%% | start=%.2f USDT | minStart=%.2f USDT | final=%.4f USDT | profit=%.4f USDT | symbol=%s",
 		opp.Triangle.A,
 		opp.Triangle.B,
 		opp.Triangle.C,
@@ -99,56 +150,64 @@ func (c *Calculator) logOpportunity(opp ExecutableOpportunity) {
 	)
 }
 
-func (c *Calculator) flushStatsIfNeeded(md *models.MarketData) {
-	if time.Since(c.lastStat) < statsFlushEvery*time.Second {
+func (c *Calculator) logReject(stage, reason string, tri *Triangle, count int64) {
+	if c.cfg.LogMode != LogDebug {
 		return
 	}
-	c.flushStats(false)
-	c.lastStat = time.Now()
-	if md != nil {
-		c.debugLog.Printf("[TICK] exchange=%s symbol=%s bid=%.8f ask=%.8f bidSize=%.8f askSize=%.8f ts=%d",
-			md.Exchange, md.Symbol, md.Bid, md.Ask, md.BidSize, md.AskSize, md.Timestamp)
+	if count != 1 && count != 10 && count != 100 && count%1000 != 0 {
+		return
 	}
+	if tri == nil {
+		c.log.Printf("[REJECT] stage=%s reason=%s count=%d", stage, reason, count)
+		return
+	}
+	c.log.Printf("[REJECT] stage=%s reason=%s count=%d tri=%s->%s->%s", stage, reason, count, tri.A, tri.B, tri.C)
 }
 
-func (c *Calculator) flushStats(final bool) {
-	prefix := "[STATS]"
-	if final {
-		prefix = "[STATS_FINAL]"
-	}
-	c.debugLog.Printf("%s ticks=%d triangles_seen=%d candidates=%d opportunities=%d | scan_rejects={%s} | exec_rejects={%s}",
-		prefix,
+func (c *Calculator) logStats() {
+	c.log.Printf(
+		"[STATS] ticks=%d triangles_seen=%d candidates=%d opportunities=%d | scan_rejects={%s} | exec_rejects={%s}",
 		c.stats.Ticks,
 		c.stats.TrianglesSeen,
 		c.stats.Candidates,
 		c.stats.Opportunities,
-		formatReasonMap(c.stats.ScanRejects),
-		formatReasonMap(c.stats.ExecRejects),
+		formatCounts(c.stats.ScanRejects),
+		formatCounts(c.stats.ExecRejects),
 	)
 }
 
-func formatReasonMap(m map[string]uint64) string {
+func formatCounts(m map[string]int64) string {
 	if len(m) == 0 {
 		return "none"
 	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+	type kv struct {
+		k string
+		v int64
 	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%s=%d", k, m[k]))
+	items := make([]kv, 0, len(m))
+	for k, v := range m {
+		items = append(items, kv{k: k, v: v})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].v == items[j].v {
+			return items[i].k < items[j].k
+		}
+		return items[i].v < items[j].v
+	})
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, fmt.Sprintf("%s=%d", item.k, item.v))
 	}
 	return strings.Join(parts, ", ")
 }
 
-func countTriangles(bySymbol map[string][]*Triangle) int {
-	seen := make(map[*Triangle]struct{})
-	for _, tris := range bySymbol {
-		for _, tri := range tris {
-			seen[tri] = struct{}{}
-		}
+func (c *Calculator) logModeString() string {
+	switch c.cfg.LogMode {
+	case LogSilent:
+		return "silent"
+	case LogDebug:
+		return "debug"
+	default:
+		return "normal"
 	}
-	return len(seen)
 }

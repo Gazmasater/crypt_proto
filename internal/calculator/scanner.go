@@ -1,13 +1,20 @@
 package calculator
 
-import "crypt_proto/internal/queue"
+import (
+	"fmt"
+	"math"
+	"time"
+
+	"crypt_proto/internal/queue"
+)
 
 type Scanner struct {
 	mem      *queue.MemoryStore
 	bySymbol map[string][]*Triangle
+	cfg      Config
 }
 
-func NewScanner(mem *queue.MemoryStore, triangles []*Triangle) *Scanner {
+func NewScanner(mem *queue.MemoryStore, triangles []*Triangle, cfg Config) *Scanner {
 	bySymbol := make(map[string][]*Triangle, 1024)
 	for _, t := range triangles {
 		for _, leg := range t.Legs {
@@ -17,122 +24,120 @@ func NewScanner(mem *queue.MemoryStore, triangles []*Triangle) *Scanner {
 			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
 		}
 	}
-	return &Scanner{mem: mem, bySymbol: bySymbol}
+	return &Scanner{mem: mem, bySymbol: bySymbol, cfg: cfg}
 }
 
-func (s *Scanner) CandidatesFor(mdSymbol string, triggeredAt int64) ([]ScanCandidate, map[string]int, int) {
+func (s *Scanner) CandidatesFor(mdSymbol string, triggeredAt int64) []ScanResult {
 	tris := s.bySymbol[mdSymbol]
 	if len(tris) == 0 {
-		return nil, nil, 0
+		return nil
 	}
 
-	rejects := make(map[string]int)
-	out := make([]ScanCandidate, 0, len(tris))
+	out := make([]ScanResult, 0, len(tris))
 	for _, tri := range tris {
-		cand, reason, ok := s.scanTriangle(tri, mdSymbol, triggeredAt)
-		if !ok {
-			rejects[reason]++
-			continue
-		}
-		out = append(out, cand)
+		out = append(out, s.scanTriangle(tri, mdSymbol, triggeredAt))
 	}
-	return out, rejects, len(tris)
+	return out
 }
 
-func (s *Scanner) scanTriangle(tri *Triangle, triggeredBy string, triggeredAt int64) (ScanCandidate, string, bool) {
+func (s *Scanner) scanTriangle(tri *Triangle, triggeredBy string, triggeredAt int64) ScanResult {
+	result := ScanResult{Candidate: ScanCandidate{Triangle: tri, TriggeredBy: triggeredBy, TriggeredAtMS: triggeredAt}}
 	var q [3]queue.Quote
+	nowMS := time.Now().UnixMilli()
+
 	for i, leg := range tri.Legs {
 		quote, ok := s.mem.Get("KuCoin", leg.Symbol)
 		if !ok {
-			return ScanCandidate{}, "no_quote_leg_" + string('1'+rune(i)), false
+			result.Reject = fmt.Sprintf("no_quote_leg_%d", i+1)
+			return result
 		}
-		if quote.Timestamp > 0 && triggeredAt > 0 && triggeredAt-quote.Timestamp > maxQuoteAgeMS {
-			return ScanCandidate{}, "stale_quote_leg_" + string('1'+rune(i)), false
+		if s.cfg.QuoteAgeMaxMS > 0 && quote.Timestamp > 0 && nowMS-quote.Timestamp > s.cfg.QuoteAgeMaxMS {
+			result.Reject = fmt.Sprintf("stale_quote_leg_%d", i+1)
+			return result
 		}
 		q[i] = quote
 	}
+	result.Candidate.Quotes = q
 
-	maxStart := maxStartUSDT(tri, q)
-	if maxStart <= 0 {
-		return ScanCandidate{}, "zero_liquidity", false
+	maxStart := maxStartUSDT(tri, q, s.cfg.SearchStepUSDT)
+	result.Candidate.MaxStartUSDT = maxStart
+	if maxStart < s.cfg.MinVolumeUSDT {
+		result.Reject = fmt.Sprintf("max_start_lt_%.2f", s.cfg.MinVolumeUSDT)
+		return result
 	}
 
-	estPct, ok := estimateProfitPct(tri, q)
+	estPct, reason, ok := estimateProfitPct(tri, q)
+	result.Candidate.EstimatedPct = estPct
 	if !ok {
-		return ScanCandidate{}, "bad_prices", false
+		result.Reject = reason
+		return result
+	}
+	if estPct < 0 {
+		result.Reject = "estimated_negative"
+		return result
 	}
 
-	return ScanCandidate{
-		Triangle:      tri,
-		Quotes:        q,
-		EstimatedPct:  estPct,
-		MaxStartUSDT:  maxStart,
-		TriggeredBy:   triggeredBy,
-		TriggeredAtMS: triggeredAt,
-	}, "", true
+	result.OK = true
+	return result
 }
 
-func estimateProfitPct(tri *Triangle, q [3]queue.Quote) (float64, bool) {
+func estimateProfitPct(tri *Triangle, q [3]queue.Quote) (float64, string, bool) {
 	amount := 1.0
 	for i := 0; i < 3; i++ {
 		leg := tri.Legs[i]
 		quote := q[i]
 		if leg.IsBuy {
-			if quote.Ask <= 0 {
-				return 0, false
+			if quote.Ask <= 0 || quote.AskSize <= 0 {
+				return 0, "zero_liquidity", false
 			}
 			amount = (amount / quote.Ask) * feeMultiplier(tri.Rules[i].Fee)
 			continue
 		}
-		if quote.Bid <= 0 {
-			return 0, false
+		if quote.Bid <= 0 || quote.BidSize <= 0 {
+			return 0, "zero_liquidity", false
 		}
 		amount = (amount * quote.Bid) * feeMultiplier(tri.Rules[i].Fee)
 	}
-	return amount - 1.0, true
+	return amount - 1.0, "", true
 }
 
-func maxStartUSDT(tri *Triangle, q [3]queue.Quote) float64 {
-	var usdtLimits [3]float64
+func maxStartUSDT(tri *Triangle, q [3]queue.Quote, searchStep float64) float64 {
+	allowedNext := math.MaxFloat64
 
-	if tri.Legs[0].IsBuy {
-		if q[0].Ask <= 0 || q[0].AskSize <= 0 {
+	for i := 2; i >= 0; i-- {
+		leg := tri.Legs[i]
+		quote := q[i]
+
+		if leg.IsBuy {
+			if quote.Ask <= 0 || quote.AskSize <= 0 {
+				return 0
+			}
+			maxIn := quote.Ask * quote.AskSize
+			if allowedNext != math.MaxFloat64 {
+				needIn := allowedNext * quote.Ask / feeMultiplier(tri.Rules[i].Fee)
+				if needIn < maxIn {
+					maxIn = needIn
+				}
+			}
+			allowedNext = maxIn
+			continue
+		}
+
+		if quote.Bid <= 0 || quote.BidSize <= 0 {
 			return 0
 		}
-		usdtLimits[0] = q[0].Ask * q[0].AskSize
-	} else {
-		if q[0].Bid <= 0 || q[0].BidSize <= 0 {
-			return 0
+		maxIn := quote.BidSize
+		if allowedNext != math.MaxFloat64 {
+			needIn := allowedNext / (quote.Bid * feeMultiplier(tri.Rules[i].Fee))
+			if needIn < maxIn {
+				maxIn = needIn
+			}
 		}
-		usdtLimits[0] = q[0].Bid * q[0].BidSize
+		allowedNext = maxIn
 	}
 
-	if tri.Legs[1].IsBuy {
-		if q[1].Ask <= 0 || q[1].AskSize <= 0 || q[2].Bid <= 0 {
-			return 0
-		}
-		usdtLimits[1] = q[1].Ask * q[1].AskSize * q[2].Bid
-	} else {
-		if q[1].Bid <= 0 || q[1].BidSize <= 0 || q[2].Bid <= 0 {
-			return 0
-		}
-		usdtLimits[1] = q[1].BidSize * q[2].Bid
-	}
-
-	if q[2].Bid <= 0 || q[2].BidSize <= 0 {
+	if allowedNext == math.MaxFloat64 || allowedNext <= 0 {
 		return 0
 	}
-	usdtLimits[2] = q[2].Bid * q[2].BidSize
-
-	maxUSDT := usdtLimits[0]
-	if usdtLimits[1] < maxUSDT {
-		maxUSDT = usdtLimits[1]
-	}
-	if usdtLimits[2] < maxUSDT {
-		maxUSDT = usdtLimits[2]
-	}
-	if maxUSDT <= 0 {
-		return 0
-	}
-	return floorToStep(maxUSDT, searchStepUSDT)
+	return floorToStep(allowedNext, searchStep)
 }

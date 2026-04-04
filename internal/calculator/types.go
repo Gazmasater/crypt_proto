@@ -9,15 +9,41 @@ import (
 )
 
 const (
-	defaultTakerFee       = 0.001
-	minVolumeUSDT         = 50.0
-	minProfitPct          = 0.001
-	searchStepUSDT        = 0.01
-	maxQuoteAgeMS   int64 = 2500
-	statsFlushEvery       = 5 // seconds
+	defaultTakerFee      = 0.001
+	defaultMinVolumeUSDT = 50.0
+	defaultMinProfitPct  = 0.001
+	defaultSearchStep    = 0.01
 )
 
 var triangleLegColumns = [3]int{3, 7, 11}
+
+type LogMode int
+
+const (
+	LogSilent LogMode = iota
+	LogNormal
+	LogDebug
+)
+
+type Config struct {
+	MinVolumeUSDT  float64
+	MinProfitPct   float64
+	SearchStepUSDT float64
+	QuoteAgeMaxMS  int64
+	StatsEverySec  int
+	LogMode        LogMode
+}
+
+func DefaultConfig() Config {
+	return Config{
+		MinVolumeUSDT:  defaultMinVolumeUSDT,
+		MinProfitPct:   defaultMinProfitPct,
+		SearchStepUSDT: defaultSearchStep,
+		QuoteAgeMaxMS:  2500,
+		StatsEverySec:  5,
+		LogMode:        LogNormal,
+	}
+}
 
 type LegIndex struct {
 	Key    string
@@ -77,20 +103,19 @@ type ExecutableOpportunity struct {
 	TriggeredAtMS int64
 }
 
-type pipelineStats struct {
-	Ticks         uint64
-	TrianglesSeen uint64
-	Candidates    uint64
-	Opportunities uint64
-	ScanRejects   map[string]uint64
-	ExecRejects   map[string]uint64
+type ScanResult struct {
+	Candidate ScanCandidate
+	Reject    string
+	OK        bool
 }
 
-func newPipelineStats() *pipelineStats {
-	return &pipelineStats{
-		ScanRejects: make(map[string]uint64),
-		ExecRejects: make(map[string]uint64),
-	}
+type Stats struct {
+	Ticks         int64
+	TrianglesSeen int64
+	Candidates    int64
+	Opportunities int64
+	ScanRejects   map[string]int64
+	ExecRejects   map[string]int64
 }
 
 func feeMultiplier(fee float64) float64 {
