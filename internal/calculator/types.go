@@ -9,10 +9,12 @@ import (
 )
 
 const (
-	defaultTakerFee = 0.001
-	minVolumeUSDT   = 50.0
-	minProfitPct    = 0.001
-	searchStepUSDT  = 0.01
+	defaultTakerFee       = 0.001
+	minVolumeUSDT         = 50.0
+	minProfitPct          = 0.001
+	searchStepUSDT        = 0.01
+	maxQuoteAgeMS   int64 = 2500
+	statsFlushEvery       = 5 // seconds
 )
 
 var triangleLegColumns = [3]int{3, 7, 11}
@@ -73,6 +75,22 @@ type ExecutableOpportunity struct {
 	ProfitPct     float64
 	TriggeredBy   string
 	TriggeredAtMS int64
+}
+
+type pipelineStats struct {
+	Ticks         uint64
+	TrianglesSeen uint64
+	Candidates    uint64
+	Opportunities uint64
+	ScanRejects   map[string]uint64
+	ExecRejects   map[string]uint64
+}
+
+func newPipelineStats() *pipelineStats {
+	return &pipelineStats{
+		ScanRejects: make(map[string]uint64),
+		ExecRejects: make(map[string]uint64),
+	}
 }
 
 func feeMultiplier(fee float64) float64 {

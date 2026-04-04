@@ -20,41 +20,46 @@ func NewScanner(mem *queue.MemoryStore, triangles []*Triangle) *Scanner {
 	return &Scanner{mem: mem, bySymbol: bySymbol}
 }
 
-func (s *Scanner) CandidatesFor(mdSymbol string, triggeredAt int64) []ScanCandidate {
+func (s *Scanner) CandidatesFor(mdSymbol string, triggeredAt int64) ([]ScanCandidate, map[string]int, int) {
 	tris := s.bySymbol[mdSymbol]
 	if len(tris) == 0 {
-		return nil
+		return nil, nil, 0
 	}
 
+	rejects := make(map[string]int)
 	out := make([]ScanCandidate, 0, len(tris))
 	for _, tri := range tris {
-		cand, ok := s.scanTriangle(tri, mdSymbol, triggeredAt)
+		cand, reason, ok := s.scanTriangle(tri, mdSymbol, triggeredAt)
 		if !ok {
+			rejects[reason]++
 			continue
 		}
 		out = append(out, cand)
 	}
-	return out
+	return out, rejects, len(tris)
 }
 
-func (s *Scanner) scanTriangle(tri *Triangle, triggeredBy string, triggeredAt int64) (ScanCandidate, bool) {
+func (s *Scanner) scanTriangle(tri *Triangle, triggeredBy string, triggeredAt int64) (ScanCandidate, string, bool) {
 	var q [3]queue.Quote
 	for i, leg := range tri.Legs {
 		quote, ok := s.mem.Get("KuCoin", leg.Symbol)
 		if !ok {
-			return ScanCandidate{}, false
+			return ScanCandidate{}, "no_quote_leg_" + string('1'+rune(i)), false
+		}
+		if quote.Timestamp > 0 && triggeredAt > 0 && triggeredAt-quote.Timestamp > maxQuoteAgeMS {
+			return ScanCandidate{}, "stale_quote_leg_" + string('1'+rune(i)), false
 		}
 		q[i] = quote
 	}
 
 	maxStart := maxStartUSDT(tri, q)
-	if maxStart < minVolumeUSDT {
-		return ScanCandidate{}, false
+	if maxStart <= 0 {
+		return ScanCandidate{}, "zero_liquidity", false
 	}
 
 	estPct, ok := estimateProfitPct(tri, q)
-	if !ok || estPct < minProfitPct {
-		return ScanCandidate{}, false
+	if !ok {
+		return ScanCandidate{}, "bad_prices", false
 	}
 
 	return ScanCandidate{
@@ -64,7 +69,7 @@ func (s *Scanner) scanTriangle(tri *Triangle, triggeredBy string, triggeredAt in
 		MaxStartUSDT:  maxStart,
 		TriggeredBy:   triggeredBy,
 		TriggeredAtMS: triggeredAt,
-	}, true
+	}, "", true
 }
 
 func estimateProfitPct(tri *Triangle, q [3]queue.Quote) (float64, bool) {

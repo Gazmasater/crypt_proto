@@ -1,6 +1,7 @@
 package calculator
 
 import (
+	"fmt"
 	"math"
 
 	"crypt_proto/internal/queue"
@@ -12,20 +13,34 @@ func NewExecutorFilter() *ExecutorFilter {
 	return &ExecutorFilter{}
 }
 
-func (f *ExecutorFilter) Evaluate(cand ScanCandidate) (ExecutableOpportunity, bool) {
+func (f *ExecutorFilter) Evaluate(cand ScanCandidate) (ExecutableOpportunity, string, bool) {
+	if cand.MaxStartUSDT < minVolumeUSDT {
+		return ExecutableOpportunity{}, fmt.Sprintf("max_start_lt_%.2f", minVolumeUSDT), false
+	}
+
+	if cand.EstimatedPct < 0 {
+		return ExecutableOpportunity{}, "estimated_negative", false
+	}
+
 	minStart, ok := findMinStartForTriangle(cand.Triangle, cand.Quotes, minVolumeUSDT, cand.MaxStartUSDT)
 	if !ok {
-		return ExecutableOpportunity{}, false
+		return ExecutableOpportunity{}, "cannot_find_valid_start", false
 	}
 
 	startUSDT := floorToStep(math.Max(minVolumeUSDT, minStart), searchStepUSDT)
-	if startUSDT < minVolumeUSDT || startUSDT > cand.MaxStartUSDT {
-		return ExecutableOpportunity{}, false
+	if startUSDT < minVolumeUSDT {
+		return ExecutableOpportunity{}, "start_lt_min_volume", false
+	}
+	if startUSDT > cand.MaxStartUSDT {
+		return ExecutableOpportunity{}, "start_gt_max_start", false
 	}
 
 	state, ok := simulateTriangle(startUSDT, cand.Triangle, cand.Quotes)
-	if !ok || state.ProfitPct < minProfitPct {
-		return ExecutableOpportunity{}, false
+	if !ok {
+		return ExecutableOpportunity{}, "simulate_failed", false
+	}
+	if state.ProfitPct < minProfitPct {
+		return ExecutableOpportunity{}, fmt.Sprintf("profit_lt_%.4f%%", minProfitPct*100), false
 	}
 
 	return ExecutableOpportunity{
@@ -39,7 +54,7 @@ func (f *ExecutorFilter) Evaluate(cand ScanCandidate) (ExecutableOpportunity, bo
 		ProfitPct:     state.ProfitPct,
 		TriggeredBy:   cand.TriggeredBy,
 		TriggeredAtMS: cand.TriggeredAtMS,
-	}, true
+	}, "", true
 }
 
 func findMinStartForTriangle(tri *Triangle, q [3]queue.Quote, lowerBound, upperBound float64) (float64, bool) {
