@@ -26,9 +26,6 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle, cfg Config) *C
 	if cfg.MinVolumeUSDT <= 0 {
 		cfg.MinVolumeUSDT = defaultMinVolumeUSDT
 	}
-	if cfg.MinProfitPct < 0 {
-		cfg.MinProfitPct = 0
-	}
 	if cfg.SearchStepUSDT <= 0 {
 		cfg.SearchStepUSDT = defaultSearchStep
 	}
@@ -210,4 +207,14 @@ func (c *Calculator) logModeString() string {
 	default:
 		return "normal"
 	}
+}
+
+func trimFloat(v float64) string {
+	s := fmt.Sprintf("%.2f", v)
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	if s == "" {
+		return "0"
+	}
+	return s
 }

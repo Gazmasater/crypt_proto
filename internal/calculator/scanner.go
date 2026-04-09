@@ -10,9 +10,10 @@ import (
 type Scanner struct {
 	mem      *queue.MemoryStore
 	bySymbol map[string][]*Triangle
+	cfg      Config
 }
 
-func NewScanner(mem *queue.MemoryStore, triangles []*Triangle) *Scanner {
+func NewScanner(mem *queue.MemoryStore, triangles []*Triangle, cfg Config) *Scanner {
 	bySymbol := make(map[string][]*Triangle, 1024)
 	for _, t := range triangles {
 		for _, leg := range t.Legs {
@@ -22,40 +23,41 @@ func NewScanner(mem *queue.MemoryStore, triangles []*Triangle) *Scanner {
 			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
 		}
 	}
-	return &Scanner{mem: mem, bySymbol: bySymbol}
+	return &Scanner{mem: mem, bySymbol: bySymbol, cfg: cfg}
 }
 
-func (s *Scanner) CandidatesFor(mdSymbol string, triggeredAt int64) []ScanCandidate {
+func (s *Scanner) CandidatesFor(mdSymbol string, triggeredAt int64) []ScanResult {
 	tris := s.bySymbol[mdSymbol]
 	if len(tris) == 0 {
 		return nil
 	}
 
-	out := make([]ScanCandidate, 0, len(tris))
+	out := make([]ScanResult, 0, len(tris))
 	for _, tri := range tris {
-		cand, ok := s.scanTriangle(tri, mdSymbol, triggeredAt)
-		if !ok {
-			continue
-		}
-		out = append(out, cand)
+		out = append(out, s.scanTriangle(tri, mdSymbol, triggeredAt))
 	}
 	return out
 }
 
-func (s *Scanner) scanTriangle(tri *Triangle, triggeredBy string, triggeredAt int64) (ScanCandidate, bool) {
-	var q [3]queue.Quote
+func (s *Scanner) scanTriangle(tri *Triangle, triggeredBy string, triggeredAt int64) ScanResult {
+	cand := ScanCandidate{
+		Triangle:      tri,
+		TriggeredBy:   triggeredBy,
+		TriggeredAtMS: triggeredAt,
+	}
 
+	var q [3]queue.Quote
 	var minTS int64
 	var maxTS int64
 
 	for i, leg := range tri.Legs {
 		quote, ok := s.mem.Get("KuCoin", leg.Symbol)
 		if !ok {
-			return ScanCandidate{}, false
+			return ScanResult{Candidate: cand, Reject: rejectNoQuote(i), OK: false}
 		}
 
 		if !quoteLooksUsable(quote) {
-			return ScanCandidate{}, false
+			return ScanResult{Candidate: cand, Reject: rejectBadQuote(i), OK: false}
 		}
 
 		q[i] = quote
@@ -70,44 +72,48 @@ func (s *Scanner) scanTriangle(tri *Triangle, triggeredBy string, triggeredAt in
 		}
 	}
 
-	// Важный фикс:
-	// раньше отбрасывание часто делалось по схеме now - quote.Timestamp для каждой ноги.
-	// Для треугольника это слишком жёстко: одна нога может не обновляться несколько секунд,
-	// но три котировки всё ещё согласованы между собой. Поэтому проверяем:
-	// 1) разброс времени между ногами,
-	// 2) очень мягкий абсолютный idle-фильтр на случай совсем мёртвого рынка.
 	if minTS > 0 && maxTS > 0 {
-		if maxTS-minTS > 2500 {
-			return ScanCandidate{}, false
+		if s.cfg.QuoteAgeMaxMS > 0 && maxTS-minTS > s.cfg.QuoteAgeMaxMS {
+			return ScanResult{Candidate: cand, Reject: "quote_skew_too_large", OK: false}
 		}
 
-		nowMS := time.Now().UnixMilli()
-		if nowMS-maxTS > 30000 {
-			return ScanCandidate{}, false
+		nowMS := triggeredAt
+		if nowMS == 0 {
+			nowMS = time.Now().UnixMilli()
+		}
+		if nowMS < maxTS {
+			nowMS = maxTS
+		}
+
+		if s.cfg.QuoteAgeMaxMS > 0 {
+			for i, quote := range q {
+				if quote.Timestamp <= 0 {
+					continue
+				}
+				if nowMS-quote.Timestamp > s.cfg.QuoteAgeMaxMS {
+					return ScanResult{Candidate: cand, Reject: rejectStaleQuote(i), OK: false}
+				}
+			}
 		}
 	}
 
-	maxStart := maxStartUSDT(tri, q)
-	if maxStart < minVolumeUSDT {
-		return ScanCandidate{}, false
+	maxStart := s.maxStartUSDT(tri, q)
+	if maxStart <= 0 {
+		return ScanResult{Candidate: cand, Reject: "max_start_zero", OK: false}
+	}
+	if maxStart+1e-12 < s.cfg.MinVolumeUSDT {
+		return ScanResult{Candidate: cand, Reject: rejectMaxStart(s.cfg.MinVolumeUSDT), OK: false}
 	}
 
-	// На scan-этапе НЕ режем кандидата по отрицательной оценке.
-	// Здесь нужен только быстрый coarse filter: котировки валидны и хватает top-of-book ликвидности.
-	// Реальные minQty/minNotional/fee/profit потом проверит ExecutorFilter.
 	estPct, ok := estimateProfitPct(tri, q)
 	if !ok {
-		return ScanCandidate{}, false
+		return ScanResult{Candidate: cand, Reject: "estimate_failed", OK: false}
 	}
 
-	return ScanCandidate{
-		Triangle:      tri,
-		Quotes:        q,
-		EstimatedPct:  estPct,
-		MaxStartUSDT:  maxStart,
-		TriggeredBy:   triggeredBy,
-		TriggeredAtMS: triggeredAt,
-	}, true
+	cand.Quotes = q
+	cand.EstimatedPct = estPct
+	cand.MaxStartUSDT = maxStart
+	return ScanResult{Candidate: cand, OK: true}
 }
 
 func quoteLooksUsable(q queue.Quote) bool {
@@ -149,12 +155,7 @@ func estimateProfitPct(tri *Triangle, q [3]queue.Quote) (float64, bool) {
 	return amount - 1.0, true
 }
 
-func maxStartUSDT(tri *Triangle, q [3]queue.Quote) float64 {
-	// Обратное распространение ограничений ликвидности от 3-й ноги к старту в USDT.
-	// Это корректнее старой приближённой оценки, где единицы измерения местами смешивались.
-
-	// 3-я нога всегда должна вернуть нас в USDT.
-	// Максимум входа в 3-ю ногу ограничен доступным объёмом на best bid/ask.
+func (s *Scanner) maxStartUSDT(tri *Triangle, q [3]queue.Quote) float64 {
 	var maxInLeg3 float64
 	if tri.Legs[2].IsBuy {
 		if q[2].Ask <= 0 || q[2].AskSize <= 0 {
@@ -178,7 +179,7 @@ func maxStartUSDT(tri *Triangle, q [3]queue.Quote) float64 {
 		return 0
 	}
 
-	return floorToStep(maxInLeg1, searchStepUSDT)
+	return floorToStep(maxInLeg1, s.cfg.SearchStepUSDT)
 }
 
 func reverseInputLimit(maxOutput float64, isBuy bool, q queue.Quote) float64 {
@@ -187,7 +188,6 @@ func reverseInputLimit(maxOutput float64, isBuy bool, q queue.Quote) float64 {
 	}
 
 	if isBuy {
-		// input = quote, output = base
 		if q.Ask <= 0 || q.AskSize <= 0 {
 			return 0
 		}
@@ -197,15 +197,48 @@ func reverseInputLimit(maxOutput float64, isBuy bool, q queue.Quote) float64 {
 		return q.Ask * maxOutput
 	}
 
-	// input = base, output = quote
-	if q.BidSize <= 0 {
+	if q.Bid <= 0 || q.BidSize <= 0 {
 		return 0
 	}
-	if maxOutput/q.Bid > q.BidSize && q.Bid > 0 {
+	if maxOutput/q.Bid > q.BidSize {
 		return q.BidSize
 	}
-	if q.Bid <= 0 {
-		return 0
-	}
 	return maxOutput / q.Bid
+}
+
+func rejectNoQuote(legIdx int) string {
+	switch legIdx {
+	case 0:
+		return "no_quote_leg_1"
+	case 1:
+		return "no_quote_leg_2"
+	default:
+		return "no_quote_leg_3"
+	}
+}
+
+func rejectBadQuote(legIdx int) string {
+	switch legIdx {
+	case 0:
+		return "bad_quote_leg_1"
+	case 1:
+		return "bad_quote_leg_2"
+	default:
+		return "bad_quote_leg_3"
+	}
+}
+
+func rejectStaleQuote(legIdx int) string {
+	switch legIdx {
+	case 0:
+		return "stale_quote_leg_1"
+	case 1:
+		return "stale_quote_leg_2"
+	default:
+		return "stale_quote_leg_3"
+	}
+}
+
+func rejectMaxStart(minVolume float64) string {
+	return "max_start_lt_" + trimFloat(minVolume)
 }
