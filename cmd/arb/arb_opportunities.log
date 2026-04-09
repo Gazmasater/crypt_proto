@@ -1,11 +1,60 @@
-2026/04/09 04:12:55 [CALC] started | triangles indexed=121 | minVolume=50.00 USDT | minProfit=0.1000% | quoteAgeMax=8000ms | logMode=normal
-2026/04/09 04:13:00 [STATS] ticks=260 triangles_seen=497 candidates=24 opportunities=0 | scan_rejects={max_start_lt_50=15, no_quote_leg_3=77, no_quote_leg_1=132, no_quote_leg_2=249} | exec_rejects={profit_below_threshold=24}
-2026/04/09 04:13:05 [STATS] ticks=977 triangles_seen=1473 candidates=182 opportunities=0 | scan_rejects={max_start_zero=2, max_start_lt_50=137, no_quote_leg_3=254, no_quote_leg_1=407, no_quote_leg_2=491} | exec_rejects={profit_below_threshold=182}
-2026/04/09 04:13:10 [STATS] ticks=2050 triangles_seen=3570 candidates=845 opportunities=0 | scan_rejects={max_start_zero=24, quote_skew_too_large=124, no_quote_leg_3=335, no_quote_leg_1=524, no_quote_leg_2=635, max_start_lt_50=1083} | exec_rejects={profit_below_threshold=845}
-2026/04/09 04:13:15 [STATS] ticks=2990 triangles_seen=5545 candidates=1351 opportunities=0 | scan_rejects={max_start_zero=45, no_quote_leg_3=360, quote_skew_too_large=515, no_quote_leg_1=529, no_quote_leg_2=668, max_start_lt_50=2077} | exec_rejects={profit_below_threshold=1351}
-2026/04/09 04:13:20 [STATS] ticks=3870 triangles_seen=7291 candidates=1775 opportunities=0 | scan_rejects={max_start_zero=59, no_quote_leg_3=370, no_quote_leg_1=532, no_quote_leg_2=699, quote_skew_too_large=993, max_start_lt_50=2863} | exec_rejects={profit_below_threshold=1775}
-2026/04/09 04:13:25 [STATS] ticks=4509 triangles_seen=8355 candidates=2068 opportunities=0 | scan_rejects={max_start_zero=62, no_quote_leg_3=370, no_quote_leg_1=533, no_quote_leg_2=710, quote_skew_too_large=1278, max_start_lt_50=3334} | exec_rejects={profit_below_threshold=2068}
-2026/04/09 04:13:30 [STATS] ticks=4980 triangles_seen=9021 candidates=2242 opportunities=0 | scan_rejects={max_start_zero=70, no_quote_leg_3=370, no_quote_leg_1=533, no_quote_leg_2=710, quote_skew_too_large=1514, max_start_lt_50=3582} | exec_rejects={profit_below_threshold=2242}
-2026/04/09 04:13:35 [STATS] ticks=5683 triangles_seen=10327 candidates=2536 opportunities=0 | scan_rejects={max_start_zero=92, no_quote_leg_3=370, no_quote_leg_1=533, no_quote_leg_2=710, quote_skew_too_large=2007, max_start_lt_50=4079} | exec_rejects={profit_below_threshold=2536}
-2026/04/09 04:13:40 [STATS] ticks=6201 triangles_seen=11342 candidates=2667 opportunities=0 | scan_rejects={max_start_zero=92, no_quote_leg_3=370, no_quote_leg_1=533, no_quote_leg_2=710, quote_skew_too_large=2570, max_start_lt_50=4400} | exec_rejects={profit_below_threshold=2667}
-2026/04/09 04:13:45 [STATS] ticks=6753 triangles_seen=12218 candidates=2751 opportunities=0 | scan_rejects={max_start_zero=92, no_quote_leg_3=370, no_quote_leg_1=533, no_quote_leg_2=710, quote_skew_too_large=3049, max_start_lt_50=4713} | exec_rejects={profit_below_threshold=2751}
+2026/04/09 04:39:32 [CALC] started | triangles indexed=121 | minVolume=20.00 USDT | minProfit=-1.0000% | quoteAgeMax=8000ms | logMode=normal
+2026/04/09 04:39:34 [ARB] USDT→BTC→HBAR | est=-0.3704% | real=-0.3743% | start=20.00 USDT | minStart=20.00 USDT | final=19.9251 USDT | profit=-0.0749 USDT | symbol=HBAR-BTC
+2026/04/09 04:39:34 [ARB] USDT→BTC→HBAR | est=-0.3478% | real=-0.3516% | start=20.00 USDT | minStart=20.00 USDT | final=19.9297 USDT | profit=-0.0703 USDT | symbol=HBAR-USDT
+2026/04/09 04:39:34 [ARB] USDT→BTC→HBAR | est=-0.3579% | real=-0.3622% | start=20.00 USDT | minStart=20.00 USDT | final=19.9276 USDT | profit=-0.0724 USDT | symbol=BTC-USDT
+2026/04/09 04:39:34 [ARB] USDT→ETC→ETH | est=-0.5341% | real=-0.5466% | start=20.00 USDT | minStart=20.00 USDT | final=19.8907 USDT | profit=-0.1093 USDT | symbol=ETC-ETH
+2026/04/09 04:39:35 [ARB] USDT→BTC→ADA | est=-0.3984% | real=-0.4035% | start=20.00 USDT | minStart=20.00 USDT | final=19.9193 USDT | profit=-0.0807 USDT | symbol=ADA-USDT
+2026/04/09 04:39:35 [ARB] USDT→BTC→NEAR | est=-0.4077% | real=-0.4135% | start=20.00 USDT | minStart=20.00 USDT | final=19.9173 USDT | profit=-0.0827 USDT | symbol=NEAR-BTC
+2026/04/09 04:39:35 [ARB] USDT→BTC→NEAR | est=-0.3852% | real=-0.3910% | start=20.00 USDT | minStart=20.00 USDT | final=19.9218 USDT | profit=-0.0782 USDT | symbol=NEAR-USDT
+2026/04/09 04:39:35 [ARB] USDT→BTC→NEAR | est=-0.4077% | real=-0.4135% | start=20.00 USDT | minStart=20.00 USDT | final=19.9173 USDT | profit=-0.0827 USDT | symbol=NEAR-USDT
+2026/04/09 04:39:35 [ARB] USDT→BTC→NEAR | est=-0.4077% | real=-0.4135% | start=20.00 USDT | minStart=20.00 USDT | final=19.9173 USDT | profit=-0.0827 USDT | symbol=NEAR-BTC
+2026/04/09 04:39:35 [ARB] USDT→BTC→HBAR | est=-0.3662% | real=-0.3693% | start=20.00 USDT | minStart=20.00 USDT | final=19.9261 USDT | profit=-0.0739 USDT | symbol=BTC-USDT
+2026/04/09 04:39:35 [ARB] USDT→BTC→ADA | est=-0.4067% | real=-0.4160% | start=20.00 USDT | minStart=20.00 USDT | final=19.9168 USDT | profit=-0.0832 USDT | symbol=BTC-USDT
+2026/04/09 04:39:35 [ARB] USDT→BTC→NEAR | est=-0.4160% | real=-0.4200% | start=20.00 USDT | minStart=20.00 USDT | final=19.9160 USDT | profit=-0.0840 USDT | symbol=BTC-USDT
+2026/04/09 04:39:35 [ARB] USDT→ETC→ETH | est=-0.5336% | real=-0.5462% | start=20.00 USDT | minStart=20.00 USDT | final=19.8908 USDT | profit=-0.1092 USDT | symbol=ETH-USDT
+2026/04/09 04:39:35 [ARB] USDT→XLM→ETH | est=-0.3721% | real=-0.3755% | start=20.00 USDT | minStart=20.00 USDT | final=19.9249 USDT | profit=-0.0751 USDT | symbol=XLM-ETH
+2026/04/09 04:39:35 [ARB] USDT→BTC→HBAR | est=-0.3549% | real=-0.3580% | start=20.00 USDT | minStart=20.00 USDT | final=19.9284 USDT | profit=-0.0716 USDT | symbol=HBAR-USDT
+2026/04/09 04:39:35 [ARB] USDT→XRP→ETH | est=-0.3263% | real=-0.3277% | start=20.00 USDT | minStart=20.00 USDT | final=19.9345 USDT | profit=-0.0655 USDT | symbol=XRP-USDT
+2026/04/09 04:39:36 [ARB] USDT→BTC→FET | est=-0.5098% | real=-0.5135% | start=20.00 USDT | minStart=20.00 USDT | final=19.8973 USDT | profit=-0.1027 USDT | symbol=FET-BTC
+2026/04/09 04:39:36 [ARB] USDT→BTC→NEAR | est=-0.4160% | real=-0.4200% | start=20.00 USDT | minStart=20.00 USDT | final=19.9160 USDT | profit=-0.0840 USDT | symbol=NEAR-BTC
+2026/04/09 04:39:36 [ARB] USDT→BTC→NEAR | est=-0.3935% | real=-0.3975% | start=20.00 USDT | minStart=20.00 USDT | final=19.9205 USDT | profit=-0.0795 USDT | symbol=NEAR-USDT
+2026/04/09 04:39:36 [ARB] USDT→BTC→NEAR | est=-0.4465% | real=-0.4510% | start=20.00 USDT | minStart=20.00 USDT | final=19.9098 USDT | profit=-0.0902 USDT | symbol=NEAR-BTC
+2026/04/09 04:39:36 [ARB] USDT→BTC→NEAR | est=-0.4465% | real=-0.4510% | start=20.00 USDT | minStart=20.00 USDT | final=19.9098 USDT | profit=-0.0902 USDT | symbol=NEAR-USDT
+2026/04/09 04:39:36 [ARB] USDT→BTC→FET | est=-0.5098% | real=-0.5135% | start=20.00 USDT | minStart=20.00 USDT | final=19.8973 USDT | profit=-0.1027 USDT | symbol=FET-BTC
+2026/04/09 04:39:36 [ARB] USDT→BTC→NEAR | est=-0.3935% | real=-0.3975% | start=20.00 USDT | minStart=20.00 USDT | final=19.9205 USDT | profit=-0.0795 USDT | symbol=NEAR-BTC
+2026/04/09 04:39:37 [STATS] ticks=187 triangles_seen=572 candidates=28 opportunities=23 | scan_rejects={max_start_lt_20=10, no_quote_leg_3=67, no_quote_leg_1=119, no_quote_leg_2=348} | exec_rejects={profit_below_threshold=5}
+2026/04/09 04:39:37 [ARB] USDT→XRP→ETH | est=-0.3188% | real=-0.3212% | start=20.00 USDT | minStart=20.00 USDT | final=19.9358 USDT | profit=-0.0642 USDT | symbol=XRP-USDT
+2026/04/09 04:39:37 [ARB] USDT→BTC→FET | est=-0.5515% | real=-0.5555% | start=20.00 USDT | minStart=20.00 USDT | final=19.8889 USDT | profit=-0.1111 USDT | symbol=FET-USDT
+2026/04/09 04:39:37 [ARB] USDT→XRP→ETH | est=-0.3351% | real=-0.3375% | start=20.00 USDT | minStart=20.00 USDT | final=19.9325 USDT | profit=-0.0675 USDT | symbol=XRP-ETH
+2026/04/09 04:39:37 [ARB] USDT→XRP→ETH | est=-0.3149% | real=-0.3168% | start=20.00 USDT | minStart=20.00 USDT | final=19.9366 USDT | profit=-0.0634 USDT | symbol=XRP-USDT
+2026/04/09 04:39:37 [ARB] USDT→XRP→ETH | est=-0.3149% | real=-0.3168% | start=20.00 USDT | minStart=20.00 USDT | final=19.9366 USDT | profit=-0.0634 USDT | symbol=XRP-ETH
+2026/04/09 04:39:37 [ARB] USDT→BTC→FET | est=-0.5098% | real=-0.5135% | start=20.00 USDT | minStart=20.00 USDT | final=19.8973 USDT | profit=-0.1027 USDT | symbol=FET-USDT
+2026/04/09 04:39:37 [ARB] USDT→XRP→ETH | est=-0.3312% | real=-0.3331% | start=20.00 USDT | minStart=20.00 USDT | final=19.9334 USDT | profit=-0.0666 USDT | symbol=XRP-ETH
+2026/04/09 04:39:37 [ARB] USDT→XRP→ETH | est=-0.3319% | real=-0.3331% | start=20.00 USDT | minStart=20.00 USDT | final=19.9334 USDT | profit=-0.0666 USDT | symbol=XRP-USDT
+2026/04/09 04:39:37 [ARB] USDT→XRP→ETH | est=-0.2993% | real=-0.3005% | start=20.00 USDT | minStart=20.00 USDT | final=19.9399 USDT | profit=-0.0601 USDT | symbol=XRP-ETH
+2026/04/09 04:39:37 [ARB] USDT→BTC→CHZ | est=-0.7728% | real=-0.7758% | start=20.00 USDT | minStart=20.00 USDT | final=19.8448 USDT | profit=-0.1552 USDT | symbol=CHZ-USDT
+2026/04/09 04:39:38 [ARB] USDT→XRP→ETH | est=-0.2993% | real=-0.3005% | start=20.00 USDT | minStart=20.00 USDT | final=19.9399 USDT | profit=-0.0601 USDT | symbol=XRP-ETH
+2026/04/09 04:39:38 [ARB] USDT→LINK→BTC | est=-0.3745% | real=-0.3834% | start=20.00 USDT | minStart=20.00 USDT | final=19.9233 USDT | profit=-0.0767 USDT | symbol=LINK-USDT
+2026/04/09 04:39:38 [ARB] USDT→XRP→ETH | est=-0.3173% | real=-0.3190% | start=20.00 USDT | minStart=20.00 USDT | final=19.9362 USDT | profit=-0.0638 USDT | symbol=XRP-USDT
+2026/04/09 04:39:38 [ARB] USDT→XRP→ETH | est=-0.3173% | real=-0.3190% | start=20.00 USDT | minStart=20.00 USDT | final=19.9362 USDT | profit=-0.0638 USDT | symbol=XRP-ETH
+2026/04/09 04:39:38 [ARB] USDT→BTC→FET | est=-0.5515% | real=-0.5555% | start=20.00 USDT | minStart=20.00 USDT | final=19.8889 USDT | profit=-0.1111 USDT | symbol=FET-USDT
+2026/04/09 04:39:38 [ARB] USDT→BTC→ICP | est=-0.7191% | real=-0.7250% | start=20.00 USDT | minStart=20.00 USDT | final=19.8550 USDT | profit=-0.1450 USDT | symbol=ICP-USDT
+2026/04/09 04:39:39 [ARB] USDT→BTC→AAVE | est=-0.3620% | real=-0.4400% | start=20.00 USDT | minStart=20.00 USDT | final=19.9120 USDT | profit=-0.0880 USDT | symbol=AAVE-USDT
+2026/04/09 04:39:39 [ARB] USDT→BTC→FET | est=-0.5098% | real=-0.5135% | start=20.00 USDT | minStart=20.00 USDT | final=19.8973 USDT | profit=-0.1027 USDT | symbol=FET-USDT
+2026/04/09 04:39:39 [ARB] USDT→XRP→ETH | est=-0.3120% | real=-0.3136% | start=20.00 USDT | minStart=20.00 USDT | final=19.9373 USDT | profit=-0.0627 USDT | symbol=XRP-USDT
+2026/04/09 04:39:39 [ARB] USDT→XRP→ETH | est=-0.3283% | real=-0.3299% | start=20.00 USDT | minStart=20.00 USDT | final=19.9340 USDT | profit=-0.0660 USDT | symbol=XRP-ETH
+2026/04/09 04:39:39 [ARB] USDT→BTC→HBAR | est=-0.3662% | real=-0.3693% | start=20.00 USDT | minStart=20.00 USDT | final=19.9261 USDT | profit=-0.0739 USDT | symbol=HBAR-USDT
+2026/04/09 04:39:39 [ARB] USDT→XRP→ETH | est=-0.3276% | real=-0.3288% | start=20.00 USDT | minStart=20.00 USDT | final=19.9342 USDT | profit=-0.0658 USDT | symbol=XRP-USDT
+2026/04/09 04:39:39 [ARB] USDT→BTC→HBAR | est=-0.3662% | real=-0.3693% | start=20.00 USDT | minStart=20.00 USDT | final=19.9261 USDT | profit=-0.0739 USDT | symbol=HBAR-USDT
+2026/04/09 04:39:39 [ARB] USDT→LINK→BTC | est=-0.3745% | real=-0.3834% | start=20.00 USDT | minStart=20.00 USDT | final=19.9233 USDT | profit=-0.0767 USDT | symbol=LINK-BTC
+2026/04/09 04:39:39 [ARB] USDT→BTC→AAVE | est=-0.3994% | real=-0.4750% | start=20.00 USDT | minStart=20.00 USDT | final=19.9050 USDT | profit=-0.0950 USDT | symbol=AAVE-USDT
+2026/04/09 04:39:39 [ARB] USDT→LINK→BTC | est=-0.3813% | real=-0.3869% | start=20.00 USDT | minStart=20.00 USDT | final=19.9226 USDT | profit=-0.0774 USDT | symbol=LINK-USDT
+2026/04/09 04:39:40 [ARB] USDT→ETH→DASH | est=-0.4040% | real=-0.4500% | start=20.00 USDT | minStart=20.00 USDT | final=19.9100 USDT | profit=-0.0900 USDT | symbol=DASH-USDT
+2026/04/09 04:39:40 [ARB] USDT→BTC→AAVE | est=-0.3983% | real=-0.4750% | start=20.00 USDT | minStart=20.00 USDT | final=19.9050 USDT | profit=-0.0950 USDT | symbol=AAVE-USDT
+2026/04/09 04:39:40 [ARB] USDT→LINK→BTC | est=-0.3651% | real=-0.3727% | start=20.00 USDT | minStart=20.00 USDT | final=19.9255 USDT | profit=-0.0745 USDT | symbol=LINK-BTC
+2026/04/09 04:39:40 [ARB] USDT→BTC→BCH | est=-0.3991% | real=-0.7500% | start=20.00 USDT | minStart=20.00 USDT | final=19.8500 USDT | profit=-0.1500 USDT | symbol=BCH-USDT
+2026/04/09 04:39:40 [ARB] USDT→BTC→AAVE | est=-0.3730% | real=-0.4500% | start=20.00 USDT | minStart=20.00 USDT | final=19.9100 USDT | profit=-0.0900 USDT | symbol=AAVE-USDT
+2026/04/09 04:39:40 [ARB] USDT→BTC→CHZ | est=-0.7728% | real=-0.7758% | start=20.00 USDT | minStart=20.00 USDT | final=19.8448 USDT | profit=-0.1552 USDT | symbol=CHZ-BTC
+2026/04/09 04:39:40 [ARB] USDT→BTC→CHZ | est=-0.7728% | real=-0.7758% | start=20.00 USDT | minStart=20.00 USDT | final=19.8448 USDT | profit=-0.1552 USDT | symbol=CHZ-USDT
+2026/04/09 04:39:40 [ARB] USDT→BTC→ETH | est=-0.3293% | real=-0.3331% | start=20.00 USDT | minStart=20.00 USDT | final=19.9334 USDT | profit=-0.0666 USDT | symbol=ETH-BTC
+2026/04/09 04:39:40 [ARB] USDT→BTC→CHZ | est=-0.8257% | real=-0.8287% | start=20.00 USDT | minStart=20.00 USDT | final=19.8343 USDT | profit=-0.1657 USDT | symbol=CHZ-USDT
