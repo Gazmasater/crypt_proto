@@ -262,3 +262,100 @@ type Stats struct {
     ExecRejects map[string]int64
 }
 
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/calc.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "c.stats.Executable undefined (type Stats has no field or method Executable)",
+	"source": "compiler",
+	"startLineNumber": 107,
+	"startColumn": 13,
+	"endLineNumber": 107,
+	"endColumn": 23,
+	"modelVersionId": 5,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/calc.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "c.stats.LoggedOpportunities undefined (type Stats has no field or method LoggedOpportunities)",
+	"source": "compiler",
+	"startLineNumber": 115,
+	"startColumn": 14,
+	"endLineNumber": 115,
+	"endColumn": 33,
+	"modelVersionId": 5,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/calc.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "c.stats.Executable undefined (type Stats has no field or method Executable)",
+	"source": "compiler",
+	"startLineNumber": 190,
+	"startColumn": 11,
+	"endLineNumber": 190,
+	"endColumn": 21,
+	"modelVersionId": 5,
+	"origin": "extHost1"
+}]
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/calc.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "MissingFieldOrMethod",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "MissingFieldOrMethod"
+		}
+	},
+	"severity": 8,
+	"message": "c.stats.LoggedOpportunities undefined (type Stats has no field or method LoggedOpportunities)",
+	"source": "compiler",
+	"startLineNumber": 193,
+	"startColumn": 11,
+	"endLineNumber": 193,
+	"endColumn": 30,
+	"modelVersionId": 5,
+	"origin": "extHost1"
+}]
