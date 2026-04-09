@@ -7,20 +7,30 @@ import (
 	"crypt_proto/pkg/models"
 )
 
+const defaultHistoryTTL = 3 * time.Second
+
 type Quote struct {
 	Bid, Ask         float64
 	BidSize, AskSize float64
 	Timestamp        int64
 }
 
+type symbolBuffer struct {
+	items []Quote
+}
+
 type MemoryStore struct {
-	mu   sync.RWMutex
-	data map[string]Quote
+	mu      sync.RWMutex
+	latest  map[string]Quote
+	history map[string]*symbolBuffer
+	ttlMS   int64
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		data: make(map[string]Quote),
+		latest:  make(map[string]Quote),
+		history: make(map[string]*symbolBuffer),
+		ttlMS:   defaultHistoryTTL.Milliseconds(),
 	}
 }
 
@@ -34,15 +44,46 @@ func (s *MemoryStore) Push(md *models.MarketData) {
 	s.apply(md)
 }
 
-// Get snapshot lock-safe
+// Get возвращает последнюю известную котировку по символу.
 func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
 	s.mu.RLock()
-	q, ok := s.data[exchange+"|"+symbol]
+	q, ok := s.latest[exchange+"|"+symbol]
 	s.mu.RUnlock()
 	return q, ok
 }
 
-// apply обновляет тикер на месте без копирования всей карты
+// GetLatestBefore возвращает самую свежую котировку не позже ts и не старше maxAgeMS.
+func (s *MemoryStore) GetLatestBefore(exchange, symbol string, ts int64, maxAgeMS int64) (Quote, bool) {
+	if ts == 0 {
+		ts = time.Now().UnixMilli()
+	}
+
+	key := exchange + "|" + symbol
+	cutoff := ts - maxAgeMS
+
+	s.mu.RLock()
+	buf, ok := s.history[key]
+	if !ok || len(buf.items) == 0 {
+		s.mu.RUnlock()
+		return Quote{}, false
+	}
+
+	for i := len(buf.items) - 1; i >= 0; i-- {
+		q := buf.items[i]
+		if q.Timestamp > ts {
+			continue
+		}
+		if maxAgeMS > 0 && q.Timestamp < cutoff {
+			break
+		}
+		s.mu.RUnlock()
+		return q, true
+	}
+	s.mu.RUnlock()
+	return Quote{}, false
+}
+
+// apply обновляет тикер и добавляет его в короткую историю по символу.
 func (s *MemoryStore) apply(md *models.MarketData) {
 	key := md.Exchange + "|" + md.Symbol
 	timestamp := md.Timestamp
@@ -58,6 +99,24 @@ func (s *MemoryStore) apply(md *models.MarketData) {
 	}
 
 	s.mu.Lock()
-	s.data[key] = quote
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+
+	s.latest[key] = quote
+
+	buf, ok := s.history[key]
+	if !ok {
+		buf = &symbolBuffer{}
+		s.history[key] = buf
+	}
+	buf.items = append(buf.items, quote)
+
+	cutoff := timestamp - s.ttlMS
+	n := 0
+	for _, item := range buf.items {
+		if item.Timestamp >= cutoff {
+			buf.items[n] = item
+			n++
+		}
+	}
+	buf.items = buf.items[:n]
 }

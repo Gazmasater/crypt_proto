@@ -31,6 +31,9 @@ func (s *Scanner) CandidatesFor(mdSymbol string, triggeredAt int64) []ScanResult
 	if len(tris) == 0 {
 		return nil
 	}
+	if triggeredAt == 0 {
+		triggeredAt = time.Now().UnixMilli()
+	}
 
 	out := make([]ScanResult, 0, len(tris))
 	for _, tri := range tris {
@@ -51,7 +54,7 @@ func (s *Scanner) scanTriangle(tri *Triangle, triggeredBy string, triggeredAt in
 	var maxTS int64
 
 	for i, leg := range tri.Legs {
-		quote, ok := s.mem.Get("KuCoin", leg.Symbol)
+		quote, ok := s.mem.GetLatestBefore("KuCoin", leg.Symbol, triggeredAt, s.cfg.QuoteAgeMaxMS)
 		if !ok {
 			return ScanResult{Candidate: cand, Reject: rejectNoQuote(i), OK: false}
 		}
@@ -61,38 +64,25 @@ func (s *Scanner) scanTriangle(tri *Triangle, triggeredBy string, triggeredAt in
 		}
 
 		q[i] = quote
-
-		if quote.Timestamp > 0 {
-			if minTS == 0 || quote.Timestamp < minTS {
-				minTS = quote.Timestamp
-			}
-			if quote.Timestamp > maxTS {
-				maxTS = quote.Timestamp
-			}
+		if quote.Timestamp <= 0 {
+			continue
+		}
+		if minTS == 0 || quote.Timestamp < minTS {
+			minTS = quote.Timestamp
+		}
+		if quote.Timestamp > maxTS {
+			maxTS = quote.Timestamp
 		}
 	}
 
-	if minTS > 0 && maxTS > 0 {
-		if s.cfg.QuoteAgeMaxMS > 0 && maxTS-minTS > s.cfg.QuoteAgeMaxMS {
+	if minTS > 0 && maxTS > 0 && s.cfg.QuoteAgeMaxMS > 0 {
+		if maxTS-minTS > s.cfg.QuoteAgeMaxMS {
 			return ScanResult{Candidate: cand, Reject: "quote_skew_too_large", OK: false}
 		}
 
-		nowMS := triggeredAt
-		if nowMS == 0 {
-			nowMS = time.Now().UnixMilli()
-		}
-		if nowMS < maxTS {
-			nowMS = maxTS
-		}
-
-		if s.cfg.QuoteAgeMaxMS > 0 {
-			for i, quote := range q {
-				if quote.Timestamp <= 0 {
-					continue
-				}
-				if nowMS-quote.Timestamp > s.cfg.QuoteAgeMaxMS {
-					return ScanResult{Candidate: cand, Reject: rejectStaleQuote(i), OK: false}
-				}
+		for i, quote := range q {
+			if triggeredAt-quote.Timestamp > s.cfg.QuoteAgeMaxMS {
+				return ScanResult{Candidate: cand, Reject: rejectStaleQuote(i), OK: false}
 			}
 		}
 	}
