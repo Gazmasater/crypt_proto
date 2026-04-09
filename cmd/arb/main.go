@@ -39,9 +39,9 @@ func main() {
 
 	cfg := calculator.DefaultConfig()
 	cfg.LogMode = calculator.LogNormal
-	cfg.MinVolumeUSDT = 50
+	cfg.MinVolumeUSDT = 10
 	cfg.MinProfitPct = 0.001
-	cfg.QuoteAgeMaxMS = 200
+	cfg.QuoteAgeMaxMS = 400
 	cfg.StatsEverySec = 5
 
 	calc := calculator.NewCalculator(mem, triangles, cfg)
