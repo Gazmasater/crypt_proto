@@ -1,5 +1,3 @@
-calc.go
-
 package calculator
 
 import (
@@ -41,6 +39,7 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle, cfg Config) *C
 	}
 
 	mw := io.MultiWriter(os.Stdout, f)
+
 	c := &Calculator{
 		mem:     mem,
 		scanner: NewScanner(mem, triangles, cfg),
@@ -94,30 +93,33 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 
 			for _, res := range results {
 				c.stats.TrianglesSeen++
+
 				if !res.OK {
 					c.addScanReject(res.Reject, res.Candidate.Triangle)
 					continue
 				}
 
 				c.stats.Candidates++
+
 				opp, reason, ok := c.filter.Evaluate(res.Candidate)
 				if !ok {
 					c.addExecReject(reason, res.Candidate.Triangle)
 					continue
 				}
 
-				c.stats.Executable++
+				c.stats.Opportunities++
+
 				if opp.ProfitPct > 0 {
 					c.stats.Positive++
+					if c.cfg.LogMode != LogSilent {
+						c.logOpportunity(opp)
+						c.stats.Logged++
+					}
 				} else {
 					c.stats.Negative++
 				}
-
-				if c.shouldLogOpportunity(opp) {
-					c.stats.LoggedOpportunities++
-					c.logOpportunity(opp)
-				}
 			}
+
 		case <-ticker.C:
 			if c.cfg.LogMode != LogSilent {
 				c.logStats()
@@ -140,17 +142,6 @@ func (c *Calculator) addExecReject(reason string, tri *Triangle) {
 	}
 	c.stats.ExecRejects[reason]++
 	c.logReject("exec", reason, tri, c.stats.ExecRejects[reason])
-}
-
-func (c *Calculator) shouldLogOpportunity(opp ExecutableOpportunity) bool {
-	switch c.cfg.LogMode {
-	case LogSilent:
-		return false
-	case LogDebug:
-		return true
-	default:
-		return opp.ProfitPct > 0
-	}
 }
 
 func (c *Calculator) logOpportunity(opp ExecutableOpportunity) {
@@ -180,19 +171,27 @@ func (c *Calculator) logReject(stage, reason string, tri *Triangle, count int64)
 		c.log.Printf("[REJECT] stage=%s reason=%s count=%d", stage, reason, count)
 		return
 	}
-	c.log.Printf("[REJECT] stage=%s reason=%s count=%d tri=%s->%s->%s", stage, reason, count, tri.A, tri.B, tri.C)
+	c.log.Printf(
+		"[REJECT] stage=%s reason=%s count=%d tri=%s->%s->%s",
+		stage,
+		reason,
+		count,
+		tri.A,
+		tri.B,
+		tri.C,
+	)
 }
 
 func (c *Calculator) logStats() {
 	c.log.Printf(
-		"[STATS] ticks=%d triangles=%d cand=%d exec=%d pos=%d neg=%d logged=%d | scan_rejects={%s} | exec_rejects={%s}",
+		"[STATS] ticks=%d triangles_seen=%d cand=%d exec=%d pos=%d neg=%d logged=%d | scan_rejects={%s} | exec_rejects={%s}",
 		c.stats.Ticks,
 		c.stats.TrianglesSeen,
 		c.stats.Candidates,
-		c.stats.Executable,
+		c.stats.Opportunities,
 		c.stats.Positive,
 		c.stats.Negative,
-		c.stats.LoggedOpportunities,
+		c.stats.Logged,
 		formatCounts(c.stats.ScanRejects),
 		formatCounts(c.stats.ExecRejects),
 	)
@@ -202,24 +201,29 @@ func formatCounts(m map[string]int64) string {
 	if len(m) == 0 {
 		return "none"
 	}
+
 	type kv struct {
 		k string
 		v int64
 	}
+
 	items := make([]kv, 0, len(m))
 	for k, v := range m {
 		items = append(items, kv{k: k, v: v})
 	}
+
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].v == items[j].v {
 			return items[i].k < items[j].k
 		}
 		return items[i].v < items[j].v
 	})
+
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
 		parts = append(parts, fmt.Sprintf("%s=%d", item.k, item.v))
 	}
+
 	return strings.Join(parts, ", ")
 }
 
@@ -234,128 +238,21 @@ func (c *Calculator) logModeString() string {
 	}
 }
 
-func trimFloat(v float64) string {
-	s := fmt.Sprintf("%.2f", v)
-	s = strings.TrimRight(s, "0")
-	s = strings.TrimRight(s, ".")
-	if s == "" {
-		return "0"
-	}
-	return s
-}
 
-
-
-types.go
 
 type Stats struct {
-    Ticks           int64
-    TrianglesSeen   int64
-    Candidates      int64
-    Opportunities   int64
+	Ticks         int64
+	TrianglesSeen int64
+	Candidates    int64
+	Opportunities int64
 
-    Positive        int64
-    Negative        int64
-    Logged          int64
+	Positive int64
+	Negative int64
+	Logged   int64
 
-    ScanRejects map[string]int64
-    ExecRejects map[string]int64
+	ScanRejects map[string]int64
+	ExecRejects map[string]int64
 }
 
 
 
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/calc.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "c.stats.Executable undefined (type Stats has no field or method Executable)",
-	"source": "compiler",
-	"startLineNumber": 107,
-	"startColumn": 13,
-	"endLineNumber": 107,
-	"endColumn": 23,
-	"modelVersionId": 5,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/calc.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "c.stats.LoggedOpportunities undefined (type Stats has no field or method LoggedOpportunities)",
-	"source": "compiler",
-	"startLineNumber": 115,
-	"startColumn": 14,
-	"endLineNumber": 115,
-	"endColumn": 33,
-	"modelVersionId": 5,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/calc.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "c.stats.Executable undefined (type Stats has no field or method Executable)",
-	"source": "compiler",
-	"startLineNumber": 190,
-	"startColumn": 11,
-	"endLineNumber": 190,
-	"endColumn": 21,
-	"modelVersionId": 5,
-	"origin": "extHost1"
-}]
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/calc.go",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "c.stats.LoggedOpportunities undefined (type Stats has no field or method LoggedOpportunities)",
-	"source": "compiler",
-	"startLineNumber": 193,
-	"startColumn": 11,
-	"endLineNumber": 193,
-	"endColumn": 30,
-	"modelVersionId": 5,
-	"origin": "extHost1"
-}]
