@@ -40,7 +40,7 @@ func main() {
 	cfg := calculator.DefaultConfig()
 	cfg.LogMode = calculator.LogNormal
 	cfg.MinVolumeUSDT = 50
-	cfg.MinProfitPct = 0.001
+	cfg.MinProfitPct = -0.001
 	cfg.QuoteAgeMaxMS = 300
 	cfg.StatsEverySec = 5
 
