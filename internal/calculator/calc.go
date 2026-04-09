@@ -39,6 +39,7 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle, cfg Config) *C
 	}
 
 	mw := io.MultiWriter(os.Stdout, f)
+
 	c := &Calculator{
 		mem:     mem,
 		scanner: NewScanner(mem, triangles, cfg),
@@ -92,12 +93,14 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 
 			for _, res := range results {
 				c.stats.TrianglesSeen++
+
 				if !res.OK {
 					c.addScanReject(res.Reject, res.Candidate.Triangle)
 					continue
 				}
 
 				c.stats.Candidates++
+
 				opp, reason, ok := c.filter.Evaluate(res.Candidate)
 				if !ok {
 					c.addExecReject(reason, res.Candidate.Triangle)
@@ -105,8 +108,18 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 				}
 
 				c.stats.Opportunities++
-				c.logOpportunity(opp)
+
+				if opp.ProfitPct > 0 {
+					c.stats.Positive++
+					if c.cfg.LogMode != LogSilent {
+						c.logOpportunity(opp)
+						c.stats.Logged++
+					}
+				} else {
+					c.stats.Negative++
+				}
 			}
+
 		case <-ticker.C:
 			if c.cfg.LogMode != LogSilent {
 				c.logStats()
@@ -158,16 +171,27 @@ func (c *Calculator) logReject(stage, reason string, tri *Triangle, count int64)
 		c.log.Printf("[REJECT] stage=%s reason=%s count=%d", stage, reason, count)
 		return
 	}
-	c.log.Printf("[REJECT] stage=%s reason=%s count=%d tri=%s->%s->%s", stage, reason, count, tri.A, tri.B, tri.C)
+	c.log.Printf(
+		"[REJECT] stage=%s reason=%s count=%d tri=%s->%s->%s",
+		stage,
+		reason,
+		count,
+		tri.A,
+		tri.B,
+		tri.C,
+	)
 }
 
 func (c *Calculator) logStats() {
 	c.log.Printf(
-		"[STATS] ticks=%d triangles_seen=%d candidates=%d opportunities=%d | scan_rejects={%s} | exec_rejects={%s}",
+		"[STATS] ticks=%d triangles_seen=%d cand=%d exec=%d pos=%d neg=%d logged=%d | scan_rejects={%s} | exec_rejects={%s}",
 		c.stats.Ticks,
 		c.stats.TrianglesSeen,
 		c.stats.Candidates,
 		c.stats.Opportunities,
+		c.stats.Positive,
+		c.stats.Negative,
+		c.stats.Logged,
 		formatCounts(c.stats.ScanRejects),
 		formatCounts(c.stats.ExecRejects),
 	)
@@ -177,24 +201,29 @@ func formatCounts(m map[string]int64) string {
 	if len(m) == 0 {
 		return "none"
 	}
+
 	type kv struct {
 		k string
 		v int64
 	}
+
 	items := make([]kv, 0, len(m))
 	for k, v := range m {
 		items = append(items, kv{k: k, v: v})
 	}
+
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].v == items[j].v {
 			return items[i].k < items[j].k
 		}
 		return items[i].v < items[j].v
 	})
+
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
 		parts = append(parts, fmt.Sprintf("%s=%d", item.k, item.v))
 	}
+
 	return strings.Join(parts, ", ")
 }
 

@@ -114,8 +114,13 @@ type Stats struct {
 	TrianglesSeen int64
 	Candidates    int64
 	Opportunities int64
-	ScanRejects   map[string]int64
-	ExecRejects   map[string]int64
+
+	Positive int64
+	Negative int64
+	Logged   int64
+
+	ScanRejects map[string]int64
+	ExecRejects map[string]int64
 }
 
 func feeMultiplier(fee float64) float64 {
