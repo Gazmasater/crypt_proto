@@ -18,9 +18,10 @@ import (
 )
 
 const (
-	maxSubsPerWS = 126
-	subRate      = 120 * time.Millisecond
-	pingInterval = 20 * time.Second
+	maxSubsPerWS   = 126
+	subRate        = 120 * time.Millisecond
+	pingInterval   = 20 * time.Second
+	reconnectDelay = 3 * time.Second
 )
 
 type KuCoinCollector struct {
@@ -31,8 +32,10 @@ type KuCoinCollector struct {
 }
 
 type Last struct {
-	Bid float64
-	Ask float64
+	Bid     float64
+	Ask     float64
+	BidSize float64
+	AskSize float64
 }
 
 type kucoinWS struct {
@@ -82,12 +85,7 @@ func (c *KuCoinCollector) Name() string { return "KuCoin" }
 func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
 	c.out = out
 	for _, ws := range c.wsList {
-		if err := ws.connect(); err != nil {
-			return err
-		}
-		go ws.readLoop(c)
-		go ws.subscribeLoop()
-		go ws.pingLoop()
+		go ws.run(c) // запускаем WS с авто-перезапуском
 	}
 	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
 	return nil
@@ -101,6 +99,45 @@ func (c *KuCoinCollector) Stop() error {
 		}
 	}
 	return nil
+}
+
+func (ws *kucoinWS) run(c *KuCoinCollector) {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+
+		// подключаемся
+		if err := ws.connect(); err != nil {
+			log.Printf("[KuCoin WS %d] connect error: %v, retry in %v\n", ws.id, err, reconnectDelay)
+			time.Sleep(reconnectDelay)
+			continue
+		}
+
+		// запускаем подписки и пинг
+		done := make(chan struct{})
+		go func() {
+			ws.subscribeLoop()
+			close(done)
+		}()
+		go ws.pingLoop()
+
+		// читаем данные
+		if err := ws.readLoop(c); err != nil {
+			log.Printf("[KuCoin WS %d] readLoop ended: %v\n", ws.id, err)
+		}
+
+		// закрываем соединение и перезапускаем
+		if ws.conn != nil {
+			_ = ws.conn.Close()
+			ws.conn = nil
+		}
+
+		log.Printf("[KuCoin WS %d] reconnecting in %v...\n", ws.id, reconnectDelay)
+		time.Sleep(reconnectDelay)
+	}
 }
 
 func (ws *kucoinWS) connect() error {
@@ -159,16 +196,20 @@ func (ws *kucoinWS) pingLoop() {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
 	for range t.C {
-		_ = ws.conn.WriteJSON(map[string]any{"id": time.Now().UnixNano(), "type": "ping"})
+		if ws.conn != nil {
+			_ = ws.conn.WriteJSON(map[string]any{"id": time.Now().UnixNano(), "type": "ping"})
+		}
 	}
 }
 
-func (ws *kucoinWS) readLoop(c *KuCoinCollector) {
+func (ws *kucoinWS) readLoop(c *KuCoinCollector) error {
 	for {
+		if ws.conn == nil {
+			return fmt.Errorf("connection closed")
+		}
 		_, msg, err := ws.conn.ReadMessage()
 		if err != nil {
-			log.Printf("[KuCoin WS %d] read error: %v\n", ws.id, err)
-			return
+			return err
 		}
 		ws.handle(c, msg)
 	}
@@ -188,13 +229,10 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	// проверяем префикс без создания строки
-	// raw[1:] — пропускаем первую кавычку
-	if raw[1:1+prefixLen] != prefix {
+	if raw[1:1+prefixLen] != prefix { // пропускаем первую кавычку
 		return
 	}
 
-	// извлекаем symbol (без кавычек)
 	symbol := raw[1+prefixLen : len(raw)-1]
 
 	data := gjson.GetBytes(msg, "data")
@@ -204,19 +242,25 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		return
 	}
 
-	if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask {
+	bidSize := data.Get("bestBidSize").Float()
+	askSize := data.Get("bestAskSize").Float()
+	if bidSize == 0 || askSize == 0 {
 		return
 	}
 
-	ws.last[symbol] = Last{Bid: bid, Ask: ask}
+	if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+		return
+	}
+
+	ws.last[symbol] = Last{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
 
 	c.out <- &models.MarketData{
 		Exchange: "KuCoin",
 		Symbol:   symbol,
 		Bid:      bid,
 		Ask:      ask,
-		BidSize:  data.Get("bestBidSize").Float(),
-		AskSize:  data.Get("bestAskSize").Float(),
+		BidSize:  bidSize,
+		AskSize:  askSize,
 	}
 }
 
@@ -231,13 +275,9 @@ func readPairsFromCSV(path string) ([]string, error) {
 		return nil, err
 	}
 	set := make(map[string]struct{})
-	legColumns := []int{3, 7, 11}
 	for _, row := range rows[1:] {
-		for _, col := range legColumns {
-			if col >= len(row) {
-				continue
-			}
-			if p := parseLeg(row[col]); p != "" {
+		for i := 3; i <= 5 && i < len(row); i++ {
+			if p := parseLeg(row[i]); p != "" {
 				set[p] = struct{}{}
 			}
 		}
