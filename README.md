@@ -1,331 +1,164 @@
-package collector
+package builder
 
 import (
-	"context"
-	"encoding/csv"
-	"encoding/json"
-	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"strings"
-	"time"
+	"sort"
 
-	"crypt_proto/pkg/models"
-
-	"github.com/gorilla/websocket"
-	"github.com/tidwall/gjson"
+	"crypt_proto/cmd/exchange/common"
 )
 
-const (
-	maxSubsPerWS   = 126
-	subRate        = 120 * time.Millisecond
-	pingInterval   = 20 * time.Second
-	reconnectDelay = 3 * time.Second
-)
-
-type KuCoinCollector struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	wsList []*kucoinWS
-	out    chan<- *models.MarketData
-}
-
-type Last struct {
-	Bid     float64
-	Ask     float64
-	BidSize float64
-	AskSize float64
-}
-
-type kucoinWS struct {
-	id      int
-	conn    *websocket.Conn
-	symbols []string
-
-	last map[string]Last
-}
-
-func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) {
-	symbols, err := readPairsFromCSV(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(symbols) == 0 {
-		return nil, nil, fmt.Errorf("no symbols")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	var wsList []*kucoinWS
-	for i := 0; i < len(symbols); i += maxSubsPerWS {
-		end := i + maxSubsPerWS
-		if end > len(symbols) {
-			end = len(symbols)
+// BuildTriangles строит anchored-треугольники от anchor по расширенной логике:
+// anchor -> B -> C -> anchor.
+//
+// В отличие от предыдущей версии, здесь сохраняются ОБЕ валидные ориентации
+// для одной и той же пары активов B/C, если они реально дают разные маршруты:
+//   USDT -> BTC -> ALT -> USDT
+//   USDT -> ALT -> BTC -> USDT
+//
+// Это делает новый генератор ближе к фактическому покрытию старого генератора,
+// который из-за недетерминированного обхода map мог сохранять то одну, то другую
+// ориентацию. Теперь мы не теряем маршруты вроде USDT->ALGO->BTC->USDT.
+func BuildTriangles(markets map[string]common.Market, anchor string) []common.Triangle {
+	neighbors := make(map[string]map[string]struct{}, 512)
+	for _, m := range markets {
+		if !m.EnableTrading || m.Base == "" || m.Quote == "" {
+			continue
 		}
-
-		wsList = append(wsList, &kucoinWS{
-			id:      len(wsList),
-			symbols: symbols[i:end],
-			last:    make(map[string]Last),
-		})
-	}
-
-	c := &KuCoinCollector{
-		ctx:    ctx,
-		cancel: cancel,
-		wsList: wsList,
-	}
-
-	return c, symbols, nil
-}
-
-func (c *KuCoinCollector) Name() string { return "KuCoin" }
-
-func (c *KuCoinCollector) Start(out chan<- *models.MarketData) error {
-	c.out = out
-	for _, ws := range c.wsList {
-		go ws.run(c) // запускаем WS с авто-перезапуском
-	}
-	log.Printf("[KuCoin] started with %d WS\n", len(c.wsList))
-	return nil
-}
-
-func (c *KuCoinCollector) Stop() error {
-	c.cancel()
-	for _, ws := range c.wsList {
-		if ws.conn != nil {
-			_ = ws.conn.Close()
+		if neighbors[m.Base] == nil {
+			neighbors[m.Base] = make(map[string]struct{}, 8)
 		}
-	}
-	return nil
-}
-
-func (ws *kucoinWS) run(c *KuCoinCollector) {
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
+		if neighbors[m.Quote] == nil {
+			neighbors[m.Quote] = make(map[string]struct{}, 8)
 		}
+		neighbors[m.Base][m.Quote] = struct{}{}
+		neighbors[m.Quote][m.Base] = struct{}{}
+	}
 
-		// подключаемся
-		if err := ws.connect(); err != nil {
-			log.Printf("[KuCoin WS %d] connect error: %v, retry in %v\n", ws.id, err, reconnectDelay)
-			time.Sleep(reconnectDelay)
+	firstHop := sortedKeys(neighbors[anchor])
+	result := make([]common.Triangle, 0, 2048)
+	seen := make(map[string]bool, 2048)
+
+	for _, b := range firstHop {
+		if b == anchor || common.StableCoins[b] {
 			continue
 		}
 
-		// запускаем подписки и пинг
-		done := make(chan struct{})
-		go func() {
-			ws.subscribeLoop()
-			close(done)
-		}()
-		go ws.pingLoop()
-
-		// читаем данные
-		if err := ws.readLoop(c); err != nil {
-			log.Printf("[KuCoin WS %d] readLoop ended: %v\n", ws.id, err)
-		}
-
-		// закрываем соединение и перезапускаем
-		if ws.conn != nil {
-			_ = ws.conn.Close()
-			ws.conn = nil
-		}
-
-		log.Printf("[KuCoin WS %d] reconnecting in %v...\n", ws.id, reconnectDelay)
-		time.Sleep(reconnectDelay)
-	}
-}
-
-func (ws *kucoinWS) connect() error {
-	req, _ := http.NewRequest("POST", "https://api.kucoin.com/api/v1/bullet-public", nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var r struct {
-		Data struct {
-			Token           string `json:"token"`
-			InstanceServers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"instanceServers"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return err
-	}
-
-	url := fmt.Sprintf(
-		"%s?token=%s&connectId=%d",
-		r.Data.InstanceServers[0].Endpoint,
-		r.Data.Token,
-		time.Now().UnixNano(),
-	)
-
-	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-		return err
-	}
-
-	ws.conn = conn
-	log.Printf("[KuCoin WS %d] connected\n", ws.id)
-	return nil
-}
-
-func (ws *kucoinWS) subscribeLoop() {
-	t := time.NewTicker(subRate)
-	defer t.Stop()
-	for _, s := range ws.symbols {
-		<-t.C
-		_ = ws.conn.WriteJSON(map[string]any{
-			"id":       time.Now().UnixNano(),
-			"type":     "subscribe",
-			"topic":    "/market/ticker:" + s,
-			"response": true,
-		})
-	}
-}
-
-func (ws *kucoinWS) pingLoop() {
-	t := time.NewTicker(pingInterval)
-	defer t.Stop()
-	for range t.C {
-		if ws.conn != nil {
-			_ = ws.conn.WriteJSON(map[string]any{"id": time.Now().UnixNano(), "type": "ping"})
-		}
-	}
-}
-
-func (ws *kucoinWS) readLoop(c *KuCoinCollector) error {
-	for {
-		if ws.conn == nil {
-			return fmt.Errorf("connection closed")
-		}
-		_, msg, err := ws.conn.ReadMessage()
-		if err != nil {
-			return err
-		}
-		ws.handle(c, msg)
-	}
-}
-
-func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	const prefix = "/market/ticker:"
-	const prefixLen = len(prefix)
-
-	topicRes := gjson.GetBytes(msg, "topic")
-	if !topicRes.Exists() {
-		return
-	}
-
-	raw := topicRes.Raw // строка JSON: "/market/ticker:BTC-USDT"
-	if len(raw) <= prefixLen+2 {
-		return
-	}
-
-	if raw[1:1+prefixLen] != prefix { // пропускаем первую кавычку
-		return
-	}
-
-	symbol := raw[1+prefixLen : len(raw)-1]
-
-	data := gjson.GetBytes(msg, "data")
-	bid := data.Get("bestBid").Float()
-	ask := data.Get("bestAsk").Float()
-	if bid == 0 || ask == 0 {
-		return
-	}
-
-	bidSize := data.Get("bestBidSize").Float()
-	askSize := data.Get("bestAskSize").Float()
-	if bidSize == 0 || askSize == 0 {
-		return
-	}
-
-	if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
-		return
-	}
-
-	ws.last[symbol] = Last{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
-
-	c.out <- &models.MarketData{
-		Exchange: "KuCoin",
-		Symbol:   symbol,
-		Bid:      bid,
-		Ask:      ask,
-		BidSize:  bidSize,
-		AskSize:  askSize,
-	}
-}
-
-func readPairsFromCSV(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	rows, err := csv.NewReader(f).ReadAll()
-	if err != nil {
-		return nil, err
-	}
-	if len(rows) < 2 {
-		return nil, nil
-	}
-
-	header := make(map[string]int, len(rows[0]))
-	for i, col := range rows[0] {
-		header[strings.TrimSpace(col)] = i
-	}
-
-	set := make(map[string]struct{})
-	for _, row := range rows[1:] {
-		if len(strings.TrimSpace(strings.Join(row, ""))) == 0 {
-			continue
-		}
-
-		for _, key := range []string{"Leg1Symbol", "Leg2Symbol", "Leg3Symbol"} {
-			if idx, ok := header[key]; ok && idx < len(row) {
-				symbol := strings.ToUpper(strings.TrimSpace(row[idx]))
-				if symbol != "" {
-					set[symbol] = struct{}{}
-				}
+		secondHop := sortedKeys(neighbors[b])
+		for _, c := range secondHop {
+			if c == "" || c == anchor || c == b || common.StableCoins[c] {
+				continue
 			}
-		}
 
-		if len(set) == 0 {
-			for _, key := range []string{"Leg1", "Leg2", "Leg3"} {
-				if idx, ok := header[key]; ok && idx < len(row) {
-					if p := parseLeg(row[idx]); p != "" {
-						set[p] = struct{}{}
-					}
+			// Должно быть реальное замыкание обратно в anchor.
+			if _, ok := common.FindLeg(c, anchor, markets); !ok {
+				continue
+			}
+
+			if t, ok := buildTriangle(anchor, b, c, markets); ok {
+				key := triangleRouteKey(t)
+				if !seen[key] {
+					seen[key] = true
+					result = append(result, t)
 				}
 			}
 		}
 	}
 
-	res := make([]string, 0, len(set))
-	for k := range set {
-		res = append(res, k)
-	}
-	return res, nil
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].A != result[j].A {
+			return result[i].A < result[j].A
+		}
+		if result[i].B != result[j].B {
+			return result[i].B < result[j].B
+		}
+		return result[i].C < result[j].C
+	})
+
+	return result
 }
 
-func parseLeg(s string) string {
-	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
-	if len(parts) < 2 {
-		return ""
+func buildTriangle(anchor, b, c string, markets map[string]common.Market) (common.Triangle, bool) {
+	l1, ok1 := common.FindLeg(anchor, b, markets)
+	l2, ok2 := common.FindLeg(b, c, markets)
+	l3, ok3 := common.FindLeg(c, anchor, markets)
+	if !ok1 || !ok2 || !ok3 {
+		return common.Triangle{}, false
 	}
-	p := strings.Split(parts[1], "/")
-	if len(p) != 2 {
-		return ""
+
+	side1 := common.ResolveSide(anchor, b, l1)
+	side2 := common.ResolveSide(b, c, l2)
+	side3 := common.ResolveSide(c, anchor, l3)
+	if side1 == "" || side2 == "" || side3 == "" {
+		return common.Triangle{}, false
 	}
-	return p[0] + "-" + p[1]
+
+	return common.Triangle{
+		A: anchor,
+		B: b,
+		C: c,
+
+		Leg1: side1 + " " + l1.Base + "/" + l1.Quote,
+		Leg2: side2 + " " + l2.Base + "/" + l2.Quote,
+		Leg3: side3 + " " + l3.Base + "/" + l3.Quote,
+
+		Step1:        l1.BaseIncrement,
+		MinQty1:      l1.BaseMinSize,
+		MinNotional1: l1.MinNotional,
+		Step2:        l2.BaseIncrement,
+		MinQty2:      l2.BaseMinSize,
+		MinNotional2: l2.MinNotional,
+		Step3:        l3.BaseIncrement,
+		MinQty3:      l3.BaseMinSize,
+		MinNotional3: l3.MinNotional,
+
+		Leg1Symbol:      l1.Symbol,
+		Leg1Side:        side1,
+		Leg1Base:        l1.Base,
+		Leg1Quote:       l1.Quote,
+		Leg1QtyStep:     l1.BaseIncrement,
+		Leg1QuoteStep:   l1.QuoteIncrement,
+		Leg1PriceStep:   l1.PriceIncrement,
+		Leg1MinQty:      l1.BaseMinSize,
+		Leg1MinQuote:    l1.QuoteMinSize,
+		Leg1MinNotional: l1.MinNotional,
+
+		Leg2Symbol:      l2.Symbol,
+		Leg2Side:        side2,
+		Leg2Base:        l2.Base,
+		Leg2Quote:       l2.Quote,
+		Leg2QtyStep:     l2.BaseIncrement,
+		Leg2QuoteStep:   l2.QuoteIncrement,
+		Leg2PriceStep:   l2.PriceIncrement,
+		Leg2MinQty:      l2.BaseMinSize,
+		Leg2MinQuote:    l2.QuoteMinSize,
+		Leg2MinNotional: l2.MinNotional,
+
+		Leg3Symbol:      l3.Symbol,
+		Leg3Side:        side3,
+		Leg3Base:        l3.Base,
+		Leg3Quote:       l3.Quote,
+		Leg3QtyStep:     l3.BaseIncrement,
+		Leg3QuoteStep:   l3.QuoteIncrement,
+		Leg3PriceStep:   l3.PriceIncrement,
+		Leg3MinQty:      l3.BaseMinSize,
+		Leg3MinQuote:    l3.QuoteMinSize,
+		Leg3MinNotional: l3.MinNotional,
+	}, true
 }
+
+func sortedKeys(m map[string]struct{}) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func triangleRouteKey(t common.Triangle) string {
+	return t.A + "|" + t.B + "|" + t.C + "|" + t.Leg1Symbol + "|" + t.Leg2Symbol + "|" + t.Leg3Symbol + "|" + t.Leg1Side + "|" + t.Leg2Side + "|" + t.Leg3Side
+}
+
 
