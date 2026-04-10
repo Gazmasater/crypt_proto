@@ -1,103 +1,10 @@
-main.go
-
-package main
-
-import (
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	_ "net/http/pprof"
-	"os"
-	"os/signal"
-	"path/filepath"
-	"syscall"
-	"time"
-
-	"crypt_proto/internal/calculator"
-	"crypt_proto/internal/collector"
-	"crypt_proto/internal/queue"
-	"crypt_proto/pkg/models"
-)
-
-func main() {
-	logFile, cleanup, err := setupLogging()
-	if err != nil {
-		log.Fatalf("setup logging: %v", err)
-	}
-	defer cleanup()
-	log.Printf("[Main] log file: %s", logFile)
-
-	go func() {
-		log.Println("pprof on http://localhost:6060/debug/pprof/")
-		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
-			log.Printf("pprof server error: %v", err)
-		}
-	}()
-
-	out := make(chan *models.MarketData, 100_000)
-	mem := queue.NewMemoryStore()
-
-	kc, _, err := collector.NewKuCoinCollectorFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
-	if err != nil {
-		log.Fatal(err)
-	}
-	if err := kc.Start(out); err != nil {
-		log.Fatal(err)
-	}
-	log.Println("[Main] KuCoinCollector started")
-
-	triangles, err := calculator.ParseTrianglesFromCSV("../exchange/data/kucoin_triangles_usdt.csv")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	cfg := calculator.DefaultConfig()
-	cfg.LogMode = calculator.LogDebug
-	cfg.MinVolumeUSDT = 10
-	cfg.MinProfitPct = 0
-	cfg.QuoteAgeMaxMS = 400
-	cfg.StatsEverySec = 5
-
-	calc := calculator.NewCalculator(mem, triangles, cfg)
-	go calc.Run(out)
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-
-	log.Println("[Main] shutting down...")
-	kc.Stop()
-	close(out)
-	log.Println("[Main] exited")
-}
-
-func setupLogging() (string, func(), error) {
-	logDir := "logs"
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		return "", func() {}, err
-	}
-	filename := filepath.Join(logDir, fmt.Sprintf("arb_%s.log", time.Now().Format("20060110_150405")))
-	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return "", func() {}, err
-	}
-	mw := io.MultiWriter(os.Stdout, f)
-	log.SetOutput(mw)
-	log.SetFlags(log.LstdFlags)
-	cleanup := func() {
-		_ = f.Close()
-	}
-	return filename, cleanup, nil
-}
-
-
-calc.go
+cal.go
 
 package calculator
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sort"
@@ -128,17 +35,21 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle, cfg Config) *C
 		cfg.StatsEverySec = 5
 	}
 
-	writer := log.Writer()
+	f, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Fatalf("failed to open log: %v", err)
+	}
+
+	mw := io.MultiWriter(os.Stdout, f)
 	c := &Calculator{
 		mem:     mem,
 		scanner: NewScanner(mem, triangles, cfg),
 		filter:  NewExecutorFilter(cfg),
-		log:     log.New(writer, "", log.LstdFlags),
+		log:     log.New(mw, "", log.LstdFlags),
 		cfg:     cfg,
 		stats: Stats{
-			ScanRejects:     make(map[string]int64),
-			ExecRejects:     make(map[string]int64),
-			TriangleMetrics: make(map[string]*TriangleMetrics),
+			ScanRejects: make(map[string]int64),
+			ExecRejects: make(map[string]int64),
 		},
 	}
 
@@ -190,65 +101,19 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 
 				c.stats.Candidates++
 				opp, reason, ok := c.filter.Evaluate(res.Candidate)
-				c.recordTriangleMetrics(res.Candidate, opp)
 				if !ok {
 					c.addExecReject(reason, res.Candidate.Triangle)
 					continue
 				}
 
 				c.stats.Opportunities++
-				if opp.ProfitPct > 0 {
-					c.stats.Positive++
-					c.logOpportunity(opp)
-					c.stats.Logged++
-				} else {
-					c.stats.Negative++
-				}
+				c.logOpportunity(opp)
 			}
 		case <-ticker.C:
 			if c.cfg.LogMode != LogSilent {
 				c.logStats()
 			}
 		}
-	}
-}
-
-func (c *Calculator) recordTriangleMetrics(cand ScanCandidate, opp ExecutableOpportunity) {
-	if cand.Triangle == nil {
-		return
-	}
-	key := cand.Triangle.Key()
-	m := c.stats.TriangleMetrics[key]
-	if m == nil {
-		m = &TriangleMetrics{
-			Key:              key,
-			BestEstimatedPct: -1e9,
-			BestIdealPct:     -1e9,
-			BestRoundedPct:   -1e9,
-			BestFinalPct:     -1e9,
-			WorstFinalPct:    1e9,
-		}
-		c.stats.TriangleMetrics[key] = m
-	}
-	m.Seen++
-	m.LastEstimatedPct = cand.EstimatedPct
-	m.LastIdealPct = opp.IdealProfitPct
-	m.LastRoundedPct = opp.RoundedProfitPct
-	m.LastFinalPct = opp.ProfitPct
-	if cand.EstimatedPct > m.BestEstimatedPct {
-		m.BestEstimatedPct = cand.EstimatedPct
-	}
-	if opp.IdealProfitPct > m.BestIdealPct {
-		m.BestIdealPct = opp.IdealProfitPct
-	}
-	if opp.RoundedProfitPct > m.BestRoundedPct {
-		m.BestRoundedPct = opp.RoundedProfitPct
-	}
-	if opp.ProfitPct > m.BestFinalPct {
-		m.BestFinalPct = opp.ProfitPct
-	}
-	if opp.ProfitPct < m.WorstFinalPct {
-		m.WorstFinalPct = opp.ProfitPct
 	}
 }
 
@@ -270,19 +135,23 @@ func (c *Calculator) addExecReject(reason string, tri *Triangle) {
 
 func (c *Calculator) logOpportunity(opp ExecutableOpportunity) {
 	c.log.Printf(
-		"[ARB] %s→%s→%s | est=%.4f%% | ideal=%.4f%% | rounded=%.4f%% | real=%.4f%% | start=%.2f USDT | minStart=%.2f USDT | final=%.4f USDT | profit=%.4f USDT | symbol=%s",
+		"[ARB] %s→%s→%s | est=%.4f%% | ideal=%.4f%% | rounded=%.4f%% | strict=%.4f%% | tails=%.4f%% | start=%.2f USDT | minStart=%.2f USDT | strict_final=%.8f USDT | total=%.8f USDT | tail_usdt=%.8f | profit=%.8f USDT | symbol=%s | tails_map={%s}",
 		opp.Triangle.A,
 		opp.Triangle.B,
 		opp.Triangle.C,
 		opp.EstimatedPct*100,
 		opp.IdealProfitPct*100,
 		opp.RoundedProfitPct*100,
+		opp.StrictProfitPct*100,
 		opp.ProfitPct*100,
 		opp.StartUSDT,
 		opp.MinStartUSDT,
 		opp.FinalUSDT,
+		opp.TotalUSDT,
+		opp.TailValueUSDT,
 		opp.ProfitUSDT,
 		opp.TriggeredBy,
+		formatFloatMap(opp.TailUSDTBreakdown),
 	)
 }
 
@@ -302,53 +171,14 @@ func (c *Calculator) logReject(stage, reason string, tri *Triangle, count int64)
 
 func (c *Calculator) logStats() {
 	c.log.Printf(
-		"[STATS] ticks=%d triangles_seen=%d cand=%d exec=%d pos=%d neg=%d logged=%d | scan_rejects={%s} | exec_rejects={%s}",
+		"[STATS] ticks=%d triangles_seen=%d cand=%d exec=%d | scan_rejects={%s} | exec_rejects={%s}",
 		c.stats.Ticks,
 		c.stats.TrianglesSeen,
 		c.stats.Candidates,
 		c.stats.Opportunities,
-		c.stats.Positive,
-		c.stats.Negative,
-		c.stats.Logged,
 		formatCounts(c.stats.ScanRejects),
 		formatCounts(c.stats.ExecRejects),
 	)
-	c.logTopTriangleMetrics(5)
-}
-
-func (c *Calculator) logTopTriangleMetrics(n int) {
-	if len(c.stats.TriangleMetrics) == 0 {
-		return
-	}
-	items := make([]*TriangleMetrics, 0, len(c.stats.TriangleMetrics))
-	for _, m := range c.stats.TriangleMetrics {
-		items = append(items, m)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].BestIdealPct == items[j].BestIdealPct {
-			return items[i].Seen > items[j].Seen
-		}
-		return items[i].BestIdealPct > items[j].BestIdealPct
-	})
-	if n > len(items) {
-		n = len(items)
-	}
-	parts := make([]string, 0, n)
-	for _, m := range items[:n] {
-		parts = append(parts, fmt.Sprintf(
-			"%s seen=%d best(est=%.4f%% ideal=%.4f%% rounded=%.4f%% final=%.4f%%) last(ideal=%.4f%% rounded=%.4f%% final=%.4f%%)",
-			m.Key,
-			m.Seen,
-			m.BestEstimatedPct*100,
-			m.BestIdealPct*100,
-			m.BestRoundedPct*100,
-			m.BestFinalPct*100,
-			m.LastIdealPct*100,
-			m.LastRoundedPct*100,
-			m.LastFinalPct*100,
-		))
-	}
-	c.log.Printf("[TOP] %s", strings.Join(parts, " | "))
 }
 
 func formatCounts(m map[string]int64) string {
@@ -387,22 +217,6 @@ func (c *Calculator) logModeString() string {
 	}
 }
 
-func trimFloat(v float64) string {
-	s := fmt.Sprintf("%.2f", v)
-	s = strings.TrimRight(s, "0")
-	s = strings.TrimRight(s, ".")
-	if s == "" {
-		return "0"
-	}
-	return s
-}
-
-func ensureDir(path string) {
-	if path == "" {
-		return
-	}
-	_ = os.MkdirAll(path, 0o755)
-}
 
 
 filter.go
@@ -435,48 +249,51 @@ func (f *ExecutorFilter) Evaluate(cand ScanCandidate) (ExecutableOpportunity, st
 		return ExecutableOpportunity{}, "max_start_lt_min_volume", false
 	}
 
-	idealState, okIdeal := simulateTriangleMode(startUSDT, cand.Triangle, cand.Quotes, true, true)
-	roundedState, okRounded := simulateTriangleMode(startUSDT, cand.Triangle, cand.Quotes, false, true)
-	finalState, okFinal := simulateTriangleMode(startUSDT, cand.Triangle, cand.Quotes, false, false)
-	if !okIdeal || !okRounded || !okFinal {
+	state, ok := simulateTriangle(startUSDT, cand.Triangle, cand.Quotes)
+	if !ok {
 		return ExecutableOpportunity{}, "simulate_failed", false
-	}
-
-	opp := ExecutableOpportunity{
-		Triangle:         cand.Triangle,
-		Quotes:           cand.Quotes,
-		EstimatedPct:     cand.EstimatedPct,
-		StartUSDT:        finalState.StartUSDT,
-		MinStartUSDT:     minStart,
-		FinalUSDT:        finalState.FinalUSDT,
-		ProfitUSDT:       finalState.ProfitUSDT,
-		ProfitPct:        finalState.ProfitPct,
-		TriggeredBy:      cand.TriggeredBy,
-		TriggeredAtMS:    cand.TriggeredAtMS,
-		IdealFinalUSDT:   idealState.FinalUSDT,
-		IdealProfitPct:   idealState.ProfitPct,
-		RoundedFinalUSDT: roundedState.FinalUSDT,
-		RoundedProfitPct: roundedState.ProfitPct,
 	}
 
 	if f.cfg.LogMode == LogDebug {
 		log.Printf(
-			"[EXEC CMP] %s→%s→%s | est=%.4f%% | ideal=%.4f%% | rounded=%.4f%% | final=%.4f%%",
+			"[EXEC CMP] %s→%s→%s | est=%.4f%% | ideal=%.4f%% | rounded=%.4f%% | strict=%.4f%% | tails=%.4f%% | tail_usdt=%.8f | tails_map={%s}",
 			cand.Triangle.A,
 			cand.Triangle.B,
 			cand.Triangle.C,
 			cand.EstimatedPct*100,
-			opp.IdealProfitPct*100,
-			opp.RoundedProfitPct*100,
-			opp.ProfitPct*100,
+			state.IdealProfitPct*100,
+			state.RoundedProfitPct*100,
+			state.FinalStrictPct*100,
+			state.ProfitPct*100,
+			state.TailValueUSDT,
+			formatFloatMap(state.TailUSDTBreakdown),
 		)
 	}
 
-	if opp.ProfitPct < f.cfg.MinProfitPct {
-		return opp, "profit_below_threshold", false
+	if state.ProfitPct < f.cfg.MinProfitPct {
+		return ExecutableOpportunity{}, "profit_below_threshold", false
 	}
 
-	return opp, "", true
+	return ExecutableOpportunity{
+		Triangle:          cand.Triangle,
+		Quotes:            cand.Quotes,
+		EstimatedPct:      cand.EstimatedPct,
+		StartUSDT:         state.StartUSDT,
+		MinStartUSDT:      minStart,
+		FinalUSDT:         state.FinalUSDT,
+		TailValueUSDT:     state.TailValueUSDT,
+		TotalUSDT:         state.TotalUSDT,
+		ProfitUSDT:        state.ProfitUSDT,
+		ProfitPct:         state.ProfitPct,
+		StrictProfitUSDT:  state.FinalStrictProfit,
+		StrictProfitPct:   state.FinalStrictPct,
+		IdealProfitPct:    state.IdealProfitPct,
+		RoundedProfitPct:  state.RoundedProfitPct,
+		TriggeredBy:       cand.TriggeredBy,
+		TriggeredAtMS:     cand.TriggeredAtMS,
+		TailAssets:        state.TailAssets,
+		TailUSDTBreakdown: state.TailUSDTBreakdown,
+	}, "", true
 }
 
 func findMinStartForTriangle(tri *Triangle, q [3]queue.Quote, lowerBound, upperBound, searchStep float64) (float64, bool) {
@@ -532,53 +349,123 @@ func findMinStartForTriangle(tri *Triangle, q [3]queue.Quote, lowerBound, upperB
 }
 
 func simulateTriangle(startUSDT float64, tri *Triangle, q [3]queue.Quote) (ExecutionResult, bool) {
-	return simulateTriangleMode(startUSDT, tri, q, false, false)
-}
-
-func simulateTriangleMode(startUSDT float64, tri *Triangle, q [3]queue.Quote, ignoreFees bool, ignoreRounding bool) (ExecutionResult, bool) {
-	state := ExecutionResult{StartUSDT: startUSDT}
-	amount := startUSDT
-
-	for i := 0; i < 3; i++ {
-		nextAmount, notional, ok := simulateLegMode(amount, tri.Legs[i], tri.Rules[i], q[i], ignoreFees, ignoreRounding)
-		if !ok {
-			return ExecutionResult{}, false
-		}
-		state.LegNotional[i] = notional
-		state.LegAmount[i] = nextAmount
-		amount = nextAmount
+	state := ExecutionResult{
+		StartUSDT:         startUSDT,
+		TailAssets:        make(map[string]float64),
+		TailUSDTBreakdown: make(map[string]float64),
 	}
 
-	state.FinalUSDT = amount
-	state.ProfitUSDT = state.FinalUSDT - state.StartUSDT
-	if state.StartUSDT <= 0 {
+	idealFinal, ok := simulateMode(startUSDT, tri, q, true, true, false)
+	if !ok {
 		return ExecutionResult{}, false
 	}
-	state.ProfitPct = state.ProfitUSDT / state.StartUSDT
+	state.IdealFinalUSDT = idealFinal.TotalUSDT
+	state.IdealProfitPct = pctChange(startUSDT, idealFinal.TotalUSDT)
+
+	roundedFinal, ok := simulateMode(startUSDT, tri, q, false, true, false)
+	if !ok {
+		return ExecutionResult{}, false
+	}
+	state.RoundedFinalUSDT = roundedFinal.TotalUSDT
+	state.RoundedProfitPct = pctChange(startUSDT, roundedFinal.TotalUSDT)
+
+	finalStrict, ok := simulateMode(startUSDT, tri, q, false, false, false)
+	if !ok {
+		return ExecutionResult{}, false
+	}
+	state.FinalUSDT = finalStrict.FinalUSDT
+	state.FinalStrictUSDT = finalStrict.FinalUSDT
+	state.FinalStrictProfit = finalStrict.FinalUSDT - startUSDT
+	state.FinalStrictPct = pctChange(startUSDT, finalStrict.FinalUSDT)
+	state.LegNotional = finalStrict.LegNotional
+	state.LegAmount = finalStrict.LegAmount
+
+	finalWithTails, ok := simulateMode(startUSDT, tri, q, false, false, true)
+	if !ok {
+		return ExecutionResult{}, false
+	}
+	state.FinalUSDT = finalWithTails.FinalUSDT
+	state.TailValueUSDT = finalWithTails.TailValueUSDT
+	state.TotalUSDT = finalWithTails.TotalUSDT
+	state.ProfitUSDT = finalWithTails.TotalUSDT - startUSDT
+	state.ProfitPct = pctChange(startUSDT, finalWithTails.TotalUSDT)
+	state.TailAssets = finalWithTails.TailAssets
+	state.TailUSDTBreakdown = finalWithTails.TailUSDTBreakdown
+	state.LegNotional = finalWithTails.LegNotional
+	state.LegAmount = finalWithTails.LegAmount
+
 	return state, true
 }
 
-func simulateLeg(inputAmount float64, leg LegIndex, rules LegRules, quote queue.Quote) (float64, float64, bool) {
-	return simulateLegMode(inputAmount, leg, rules, quote, false, false)
+type simulationModeResult struct {
+	FinalUSDT         float64
+	TailValueUSDT     float64
+	TotalUSDT         float64
+	LegNotional       [3]float64
+	LegAmount         [3]float64
+	TailAssets        map[string]float64
+	TailUSDTBreakdown map[string]float64
 }
 
-func simulateLegMode(inputAmount float64, leg LegIndex, rules LegRules, quote queue.Quote, ignoreFees bool, ignoreRounding bool) (float64, float64, bool) {
-	mul := feeMultiplier(rules.Fee)
-	if ignoreFees {
-		mul = 1
+func simulateMode(startUSDT float64, tri *Triangle, q [3]queue.Quote, ignoreRounding, ignoreFees, includeTails bool) (simulationModeResult, bool) {
+	amount := startUSDT
+	tails := make(map[string]float64)
+	result := simulationModeResult{TailAssets: tails, TailUSDTBreakdown: make(map[string]float64)}
+
+	for i := 0; i < 3; i++ {
+		nextAmount, notional, legTails, ok := simulateLegDetailed(amount, tri.Legs[i], tri.Rules[i], q[i], ignoreRounding, ignoreFees)
+		if !ok {
+			return simulationModeResult{}, false
+		}
+		result.LegNotional[i] = notional
+		result.LegAmount[i] = nextAmount
+		for asset, tailAmt := range legTails {
+			if tailAmt > 0 {
+				tails[asset] += tailAmt
+			}
+		}
+		amount = nextAmount
+	}
+
+	result.FinalUSDT = amount
+	result.TotalUSDT = amount
+	if includeTails {
+		tailValue := 0.0
+		for asset, tailAmt := range tails {
+			value, ok := valueAssetInUSDT(asset, tailAmt, tri, q)
+			if !ok {
+				continue
+			}
+			if value > 0 {
+				result.TailUSDTBreakdown[asset] = value
+				tailValue += value
+			}
+		}
+		result.TailValueUSDT = tailValue
+		result.TotalUSDT += tailValue
+	}
+	return result, true
+}
+
+func simulateLegDetailed(inputAmount float64, leg LegIndex, rules LegRules, quote queue.Quote, ignoreRounding, ignoreFees bool) (float64, float64, map[string]float64, bool) {
+	tails := make(map[string]float64)
+	mul := 1.0
+	if !ignoreFees {
+		mul = feeMultiplier(rules.Fee)
 	}
 
 	if leg.IsBuy {
 		if quote.Ask <= 0 || quote.AskSize <= 0 || inputAmount <= 0 {
-			return 0, 0, false
+			return 0, 0, nil, false
 		}
 
-		qty := inputAmount / quote.Ask
+		rawQty := inputAmount / quote.Ask
+		qty := rawQty
 		if !ignoreRounding {
-			qty = applyFloorStep(qty, rules.QtyStep)
+			qty = applyFloorStep(rawQty, rules.QtyStep)
 		}
 		if qty <= 0 {
-			return 0, 0, false
+			return 0, 0, nil, false
 		}
 		if qty > quote.AskSize {
 			qty = quote.AskSize
@@ -587,37 +474,50 @@ func simulateLegMode(inputAmount float64, leg LegIndex, rules LegRules, quote qu
 			}
 		}
 		if qty <= 0 {
-			return 0, 0, false
+			return 0, 0, nil, false
 		}
 
 		notional := qty * quote.Ask
 		if !ignoreRounding {
 			notional = applyFloorStep(notional, rules.QuoteStep)
-			if !passesMinChecks(qty, notional, rules) {
-				return 0, 0, false
-			}
+		}
+		if notional <= 0 {
+			return 0, 0, nil, false
+		}
+		if !ignoreRounding && !passesMinChecks(qty, notional, rules) {
+			return 0, 0, nil, false
 		}
 
-		outQty := qty * mul
+		leftoverQuote := inputAmount - notional
+		if leftoverQuote > 1e-12 {
+			tails[rules.Quote] += leftoverQuote
+		}
+
+		grossOut := qty * mul
+		tradableOut := grossOut
 		if !ignoreRounding {
-			outQty = applyFloorStep(outQty, rules.QtyStep)
+			tradableOut = applyFloorStep(grossOut, rules.QtyStep)
 		}
-		if outQty <= 0 {
-			return 0, 0, false
+		if tradableOut <= 0 {
+			return 0, 0, nil, false
 		}
-		return outQty, notional, true
+		if !ignoreRounding && grossOut-tradableOut > 1e-12 {
+			tails[rules.Base] += grossOut - tradableOut
+		}
+		return tradableOut, notional, tails, true
 	}
 
 	if quote.Bid <= 0 || quote.BidSize <= 0 || inputAmount <= 0 {
-		return 0, 0, false
+		return 0, 0, nil, false
 	}
 
-	qty := inputAmount
+	rawQty := inputAmount
+	qty := rawQty
 	if !ignoreRounding {
-		qty = applyFloorStep(qty, rules.QtyStep)
+		qty = applyFloorStep(rawQty, rules.QtyStep)
 	}
 	if qty <= 0 {
-		return 0, 0, false
+		return 0, 0, nil, false
 	}
 	if qty > quote.BidSize {
 		qty = quote.BidSize
@@ -626,26 +526,88 @@ func simulateLegMode(inputAmount float64, leg LegIndex, rules LegRules, quote qu
 		}
 	}
 	if qty <= 0 {
-		return 0, 0, false
+		return 0, 0, nil, false
+	}
+
+	if !ignoreRounding && rawQty-qty > 1e-12 {
+		tails[rules.Base] += rawQty - qty
 	}
 
 	notional := qty * quote.Bid
 	if !ignoreRounding {
 		notional = applyFloorStep(notional, rules.QuoteStep)
-		if !passesMinChecks(qty, notional, rules) {
-			return 0, 0, false
-		}
+	}
+	if notional <= 0 {
+		return 0, 0, nil, false
+	}
+	if !ignoreRounding && !passesMinChecks(qty, notional, rules) {
+		return 0, 0, nil, false
 	}
 
-	outQuote := notional * mul
+	grossOut := notional * mul
+	tradableOut := grossOut
 	if !ignoreRounding {
-		outQuote = applyFloorStep(outQuote, rules.QuoteStep)
+		tradableOut = applyFloorStep(grossOut, rules.QuoteStep)
 	}
-	if outQuote <= 0 {
-		return 0, 0, false
+	if tradableOut <= 0 {
+		return 0, 0, nil, false
 	}
-	return outQuote, notional, true
+	if !ignoreRounding && grossOut-tradableOut > 1e-12 {
+		tails[rules.Quote] += grossOut - tradableOut
+	}
+
+	return tradableOut, notional, tails, true
 }
+
+func valueAssetInUSDT(asset string, amount float64, tri *Triangle, q [3]queue.Quote) (float64, bool) {
+	if amount <= 0 {
+		return 0, false
+	}
+	if asset == tri.A || asset == "USDT" {
+		return amount, true
+	}
+
+	for i, rules := range tri.Rules {
+		quote := q[i]
+		if rules.Base == asset && rules.Quote == tri.A {
+			if quote.Bid <= 0 {
+				return 0, false
+			}
+			qty := applyFloorStep(amount, rules.QtyStep)
+			if qty <= 0 {
+				return 0, false
+			}
+			notional := applyFloorStep(qty*quote.Bid, rules.QuoteStep)
+			if notional <= 0 || !passesMinChecks(qty, notional, rules) {
+				return 0, false
+			}
+			return applyFloorStep(notional*feeMultiplier(rules.Fee), rules.QuoteStep), true
+		}
+		if rules.Base == tri.A && rules.Quote == asset {
+			if quote.Ask <= 0 {
+				return 0, false
+			}
+			qtyUSDT := applyFloorStep(amount/quote.Ask, rules.QtyStep)
+			if qtyUSDT <= 0 {
+				return 0, false
+			}
+			notional := applyFloorStep(qtyUSDT*quote.Ask, rules.QuoteStep)
+			if notional <= 0 || notional > amount+1e-12 || !passesMinChecks(qtyUSDT, notional, rules) {
+				return 0, false
+			}
+			return applyFloorStep(qtyUSDT*feeMultiplier(rules.Fee), rules.QtyStep), true
+		}
+	}
+	return 0, false
+}
+
+func pctChange(start, end float64) float64 {
+	if start <= 0 {
+		return 0
+	}
+	return (end / start) - 1.0
+}
+
 
 
 types.go
@@ -655,6 +617,7 @@ package calculator
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 
 	"crypt_proto/internal/queue"
@@ -723,13 +686,6 @@ type Triangle struct {
 	Rules   [3]LegRules
 }
 
-func (t *Triangle) Key() string {
-	if t == nil {
-		return "<nil>"
-	}
-	return t.A + "->" + t.B + "->" + t.C
-}
-
 type ScanCandidate struct {
 	Triangle      *Triangle
 	Quotes        [3]queue.Quote
@@ -740,45 +696,47 @@ type ScanCandidate struct {
 }
 
 type ExecutionResult struct {
-	StartUSDT   float64
-	MinStart    float64
-	FinalUSDT   float64
-	ProfitUSDT  float64
-	ProfitPct   float64
-	LegNotional [3]float64
-	LegAmount   [3]float64
+	StartUSDT          float64
+	MinStart           float64
+	FinalUSDT          float64
+	TailValueUSDT      float64
+	TotalUSDT          float64
+	ProfitUSDT         float64
+	ProfitPct          float64
+	StrictProfitUSDT   float64
+	StrictProfitPct    float64
+	IdealFinalUSDT     float64
+	IdealProfitPct     float64
+	RoundedFinalUSDT   float64
+	RoundedProfitPct   float64
+	FinalStrictUSDT    float64
+	FinalStrictProfit  float64
+	FinalStrictPct     float64
+	LegNotional        [3]float64
+	LegAmount          [3]float64
+	TailAssets         map[string]float64
+	TailUSDTBreakdown  map[string]float64
 }
 
 type ExecutableOpportunity struct {
-	Triangle      *Triangle
-	Quotes        [3]queue.Quote
-	EstimatedPct  float64
-	StartUSDT     float64
-	MinStartUSDT  float64
-	FinalUSDT     float64
-	ProfitUSDT    float64
-	ProfitPct     float64
-	TriggeredBy   string
-	TriggeredAtMS int64
-
-	IdealFinalUSDT   float64
-	IdealProfitPct   float64
-	RoundedFinalUSDT float64
-	RoundedProfitPct float64
-}
-
-type TriangleMetrics struct {
-	Key              string
-	Seen             int64
-	BestEstimatedPct float64
-	BestIdealPct     float64
-	BestRoundedPct   float64
-	BestFinalPct     float64
-	WorstFinalPct    float64
-	LastEstimatedPct float64
-	LastIdealPct     float64
-	LastRoundedPct   float64
-	LastFinalPct     float64
+	Triangle          *Triangle
+	Quotes            [3]queue.Quote
+	EstimatedPct      float64
+	StartUSDT         float64
+	MinStartUSDT      float64
+	FinalUSDT         float64
+	TailValueUSDT     float64
+	TotalUSDT         float64
+	ProfitUSDT        float64
+	ProfitPct         float64
+	StrictProfitUSDT  float64
+	StrictProfitPct   float64
+	IdealProfitPct    float64
+	RoundedProfitPct  float64
+	TriggeredBy       string
+	TriggeredAtMS     int64
+	TailAssets        map[string]float64
+	TailUSDTBreakdown map[string]float64
 }
 
 type ScanResult struct {
@@ -788,16 +746,12 @@ type ScanResult struct {
 }
 
 type Stats struct {
-	Ticks           int64
-	TrianglesSeen   int64
-	Candidates      int64
-	Opportunities   int64
-	Positive        int64
-	Negative        int64
-	Logged          int64
-	ScanRejects     map[string]int64
-	ExecRejects     map[string]int64
-	TriangleMetrics map[string]*TriangleMetrics
+	Ticks         int64
+	TrianglesSeen int64
+	Candidates    int64
+	Opportunities int64
+	ScanRejects   map[string]int64
+	ExecRejects   map[string]int64
 }
 
 func feeMultiplier(fee float64) float64 {
@@ -856,4 +810,28 @@ func passesMinChecks(qty, notional float64, rules LegRules) bool {
 	return true
 }
 
+func formatFloatMap(m map[string]float64) string {
+	if len(m) == 0 {
+		return "none"
+	}
+	type kv struct {
+		k string
+		v float64
+	}
+	items := make([]kv, 0, len(m))
+	for k, v := range m {
+		items = append(items, kv{k: k, v: v})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].v == items[j].v {
+			return items[i].k < items[j].k
+		}
+		return items[i].v > items[j].v
+	})
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, fmt.Sprintf("%s=%.8f", item.k, item.v))
+	}
+	return strings.Join(parts, ", ")
+}
 
