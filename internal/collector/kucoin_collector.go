@@ -270,18 +270,46 @@ func readPairsFromCSV(path string) ([]string, error) {
 		return nil, err
 	}
 	defer f.Close()
+
 	rows, err := csv.NewReader(f).ReadAll()
 	if err != nil {
 		return nil, err
 	}
+	if len(rows) < 2 {
+		return nil, nil
+	}
+
+	header := make(map[string]int, len(rows[0]))
+	for i, col := range rows[0] {
+		header[strings.TrimSpace(col)] = i
+	}
+
 	set := make(map[string]struct{})
 	for _, row := range rows[1:] {
-		for i := 3; i <= 5 && i < len(row); i++ {
-			if p := parseLeg(row[i]); p != "" {
-				set[p] = struct{}{}
+		if len(strings.TrimSpace(strings.Join(row, ""))) == 0 {
+			continue
+		}
+
+		for _, key := range []string{"Leg1Symbol", "Leg2Symbol", "Leg3Symbol"} {
+			if idx, ok := header[key]; ok && idx < len(row) {
+				symbol := strings.ToUpper(strings.TrimSpace(row[idx]))
+				if symbol != "" {
+					set[symbol] = struct{}{}
+				}
+			}
+		}
+
+		if len(set) == 0 {
+			for _, key := range []string{"Leg1", "Leg2", "Leg3"} {
+				if idx, ok := header[key]; ok && idx < len(row) {
+					if p := parseLeg(row[idx]); p != "" {
+						set[p] = struct{}{}
+					}
+				}
 			}
 		}
 	}
+
 	res := make([]string, 0, len(set))
 	for k := range set {
 		res = append(res, k)
