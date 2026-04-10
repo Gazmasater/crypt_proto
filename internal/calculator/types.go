@@ -91,16 +91,20 @@ type ExecutionResult struct {
 }
 
 type ExecutableOpportunity struct {
-	Triangle      *Triangle
-	Quotes        [3]queue.Quote
-	EstimatedPct  float64
-	StartUSDT     float64
-	MinStartUSDT  float64
-	FinalUSDT     float64
-	ProfitUSDT    float64
-	ProfitPct     float64
-	TriggeredBy   string
-	TriggeredAtMS int64
+	Triangle         *Triangle
+	Quotes           [3]queue.Quote
+	EstimatedPct     float64
+	StartUSDT        float64
+	MinStartUSDT     float64
+	FinalUSDT        float64
+	ProfitUSDT       float64
+	ProfitPct        float64
+	IdealFinalUSDT   float64
+	IdealProfitPct   float64
+	RoundedFinalUSDT float64
+	RoundedProfitPct float64
+	TriggeredBy      string
+	TriggeredAtMS    int64
 }
 
 type ScanResult struct {

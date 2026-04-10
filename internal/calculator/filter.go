@@ -1,6 +1,7 @@
 package calculator
 
 import (
+	"log"
 	"math"
 
 	"crypt_proto/internal/queue"
@@ -25,36 +26,56 @@ func (f *ExecutorFilter) Evaluate(cand ScanCandidate) (ExecutableOpportunity, st
 		return ExecutableOpportunity{}, "max_start_lt_min_volume", false
 	}
 
+	idealFinalUSDT, ok := simulateTriangleMode(startUSDT, cand.Triangle, cand.Quotes, true, true, false)
+	if !ok {
+		return ExecutableOpportunity{}, "simulate_ideal_failed", false
+	}
+
+	roundedFinalUSDT, ok := simulateTriangleMode(startUSDT, cand.Triangle, cand.Quotes, true, false, false)
+	if !ok {
+		return ExecutableOpportunity{}, "simulate_rounded_failed", false
+	}
+
 	state, ok := simulateTriangle(startUSDT, cand.Triangle, cand.Quotes)
 	if !ok {
 		return ExecutableOpportunity{}, "simulate_failed", false
 	}
 
-	//if state.ProfitPct < f.cfg.MinProfitPct {
-	//	return ExecutableOpportunity{},
-	//		fmt.Sprintf(
-	//			"profit_below_threshold(real=%.4f%%, min=%.4f%%)",
-	//			state.ProfitPct*100,
-	//			f.cfg.MinProfitPct*100,
-	//		),
-	//		false
-	//}
+	idealProfitPct := (idealFinalUSDT / startUSDT) - 1.0
+	roundedProfitPct := (roundedFinalUSDT / startUSDT) - 1.0
+
+	if f.cfg.LogMode == LogDebug {
+		log.Printf(
+			"[EXEC CMP] %s→%s→%s | est=%.4f%% | ideal=%.4f%% | rounded=%.4f%% | final=%.4f%%",
+			cand.Triangle.A,
+			cand.Triangle.B,
+			cand.Triangle.C,
+			cand.EstimatedPct*100,
+			idealProfitPct*100,
+			roundedProfitPct*100,
+			state.ProfitPct*100,
+		)
+	}
 
 	if state.ProfitPct < f.cfg.MinProfitPct {
 		return ExecutableOpportunity{}, "profit_below_threshold", false
 	}
 
 	return ExecutableOpportunity{
-		Triangle:      cand.Triangle,
-		Quotes:        cand.Quotes,
-		EstimatedPct:  cand.EstimatedPct,
-		StartUSDT:     state.StartUSDT,
-		MinStartUSDT:  minStart,
-		FinalUSDT:     state.FinalUSDT,
-		ProfitUSDT:    state.ProfitUSDT,
-		ProfitPct:     state.ProfitPct,
-		TriggeredBy:   cand.TriggeredBy,
-		TriggeredAtMS: cand.TriggeredAtMS,
+		Triangle:         cand.Triangle,
+		Quotes:           cand.Quotes,
+		EstimatedPct:     cand.EstimatedPct,
+		StartUSDT:        state.StartUSDT,
+		MinStartUSDT:     minStart,
+		FinalUSDT:        state.FinalUSDT,
+		ProfitUSDT:       state.ProfitUSDT,
+		ProfitPct:        state.ProfitPct,
+		IdealFinalUSDT:   idealFinalUSDT,
+		IdealProfitPct:   idealProfitPct,
+		RoundedFinalUSDT: roundedFinalUSDT,
+		RoundedProfitPct: roundedProfitPct,
+		TriggeredBy:      cand.TriggeredBy,
+		TriggeredAtMS:    cand.TriggeredAtMS,
 	}, "", true
 }
 
@@ -133,31 +154,57 @@ func simulateTriangle(startUSDT float64, tri *Triangle, q [3]queue.Quote) (Execu
 	return state, true
 }
 
+func simulateTriangleMode(startUSDT float64, tri *Triangle, q [3]queue.Quote, ignoreFees, ignoreRounding, ignoreMinChecks bool) (float64, bool) {
+	amount := startUSDT
+	for i := 0; i < 3; i++ {
+		nextAmount, _, ok := simulateLegMode(amount, tri.Legs[i], tri.Rules[i], q[i], ignoreFees, ignoreRounding, ignoreMinChecks)
+		if !ok {
+			return 0, false
+		}
+		amount = nextAmount
+	}
+	return amount, true
+}
+
 func simulateLeg(inputAmount float64, leg LegIndex, rules LegRules, quote queue.Quote) (float64, float64, bool) {
+	return simulateLegMode(inputAmount, leg, rules, quote, false, false, false)
+}
+
+func simulateLegMode(inputAmount float64, leg LegIndex, rules LegRules, quote queue.Quote, ignoreFees, ignoreRounding, ignoreMinChecks bool) (float64, float64, bool) {
 	mul := feeMultiplier(rules.Fee)
+	if ignoreFees {
+		mul = 1
+	}
+
+	qtyStep := rules.QtyStep
+	quoteStep := rules.QuoteStep
+	if ignoreRounding {
+		qtyStep = 0
+		quoteStep = 0
+	}
 
 	if leg.IsBuy {
 		if quote.Ask <= 0 || quote.AskSize <= 0 || inputAmount <= 0 {
 			return 0, 0, false
 		}
 
-		qty := applyFloorStep(inputAmount/quote.Ask, rules.QtyStep)
+		qty := applyFloorStep(inputAmount/quote.Ask, qtyStep)
 		if qty <= 0 {
 			return 0, 0, false
 		}
 		if qty > quote.AskSize {
-			qty = applyFloorStep(quote.AskSize, rules.QtyStep)
+			qty = applyFloorStep(quote.AskSize, qtyStep)
 		}
 		if qty <= 0 {
 			return 0, 0, false
 		}
 
-		notional := applyFloorStep(qty*quote.Ask, rules.QuoteStep)
-		if !passesMinChecks(qty, notional, rules) {
+		notional := applyFloorStep(qty*quote.Ask, quoteStep)
+		if !ignoreMinChecks && !passesMinChecks(qty, notional, rules) {
 			return 0, 0, false
 		}
 
-		outQty := applyFloorStep(qty*mul, rules.QtyStep)
+		outQty := applyFloorStep(qty*mul, qtyStep)
 		if outQty <= 0 {
 			return 0, 0, false
 		}
@@ -168,23 +215,23 @@ func simulateLeg(inputAmount float64, leg LegIndex, rules LegRules, quote queue.
 		return 0, 0, false
 	}
 
-	qty := applyFloorStep(inputAmount, rules.QtyStep)
+	qty := applyFloorStep(inputAmount, qtyStep)
 	if qty <= 0 {
 		return 0, 0, false
 	}
 	if qty > quote.BidSize {
-		qty = applyFloorStep(quote.BidSize, rules.QtyStep)
+		qty = applyFloorStep(quote.BidSize, qtyStep)
 	}
 	if qty <= 0 {
 		return 0, 0, false
 	}
 
-	notional := applyFloorStep(qty*quote.Bid, rules.QuoteStep)
-	if !passesMinChecks(qty, notional, rules) {
+	notional := applyFloorStep(qty*quote.Bid, quoteStep)
+	if !ignoreMinChecks && !passesMinChecks(qty, notional, rules) {
 		return 0, 0, false
 	}
 
-	outQuote := applyFloorStep(notional*mul, rules.QuoteStep)
+	outQuote := applyFloorStep(notional*mul, quoteStep)
 	if outQuote <= 0 {
 		return 0, 0, false
 	}
