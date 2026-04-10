@@ -71,6 +71,13 @@ type Triangle struct {
 	Rules   [3]LegRules
 }
 
+func (t *Triangle) Key() string {
+	if t == nil {
+		return "<nil>"
+	}
+	return t.A + "->" + t.B + "->" + t.C
+}
+
 type ScanCandidate struct {
 	Triangle      *Triangle
 	Quotes        [3]queue.Quote
@@ -91,20 +98,35 @@ type ExecutionResult struct {
 }
 
 type ExecutableOpportunity struct {
-	Triangle         *Triangle
-	Quotes           [3]queue.Quote
-	EstimatedPct     float64
-	StartUSDT        float64
-	MinStartUSDT     float64
-	FinalUSDT        float64
-	ProfitUSDT       float64
-	ProfitPct        float64
+	Triangle      *Triangle
+	Quotes        [3]queue.Quote
+	EstimatedPct  float64
+	StartUSDT     float64
+	MinStartUSDT  float64
+	FinalUSDT     float64
+	ProfitUSDT    float64
+	ProfitPct     float64
+	TriggeredBy   string
+	TriggeredAtMS int64
+
 	IdealFinalUSDT   float64
 	IdealProfitPct   float64
 	RoundedFinalUSDT float64
 	RoundedProfitPct float64
-	TriggeredBy      string
-	TriggeredAtMS    int64
+}
+
+type TriangleMetrics struct {
+	Key              string
+	Seen             int64
+	BestEstimatedPct float64
+	BestIdealPct     float64
+	BestRoundedPct   float64
+	BestFinalPct     float64
+	WorstFinalPct    float64
+	LastEstimatedPct float64
+	LastIdealPct     float64
+	LastRoundedPct   float64
+	LastFinalPct     float64
 }
 
 type ScanResult struct {
@@ -114,21 +136,20 @@ type ScanResult struct {
 }
 
 type Stats struct {
-	Ticks         int64
-	TrianglesSeen int64
-	Candidates    int64
-	Opportunities int64
-
-	Positive int64
-	Negative int64
-	Logged   int64
-
-	ScanRejects map[string]int64
-	ExecRejects map[string]int64
+	Ticks           int64
+	TrianglesSeen   int64
+	Candidates      int64
+	Opportunities   int64
+	Positive        int64
+	Negative        int64
+	Logged          int64
+	ScanRejects     map[string]int64
+	ExecRejects     map[string]int64
+	TriangleMetrics map[string]*TriangleMetrics
 }
 
 func feeMultiplier(fee float64) float64 {
-	if fee > 0 && fee < 1 {
+	if fee >= 0 && fee < 1 {
 		return 1 - fee
 	}
 	return 1 - defaultTakerFee
