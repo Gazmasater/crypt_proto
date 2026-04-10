@@ -113,8 +113,8 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 
 	profitUSDT := finalAmount - maxStart
 	profitPct := profitUSDT / maxStart
-
-	if profitPct > 0.001 && maxStart > 50 {
+	//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1
+	if profitPct > 0.00 && maxStart > 50 {
 		msg := fmt.Sprintf(
 			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.6f USDT | l1=%.8f l2=%.8f l3=%.8f",
 			tri.A, tri.B, tri.C,
@@ -124,6 +124,7 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 		log.Println(msg)
 		c.fileLog.Println(msg)
 	}
+	// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1
 }
 
 type legExecution struct {
