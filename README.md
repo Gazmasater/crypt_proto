@@ -27,6 +27,7 @@ git push origin new_arh --force
 collector.go
 
 
+
 package collector
 
 import (
@@ -55,6 +56,9 @@ const (
 	pingInterval   = 20 * time.Second
 	reconnectDelay = 3 * time.Second
 	readTimeout    = 45 * time.Second
+
+	snapshotTimeout = 10 * time.Second
+	httpTimeout     = 10 * time.Second
 )
 
 type KuCoinCollector struct {
@@ -71,11 +75,40 @@ type Last struct {
 	AskSize float64
 }
 
+type bookDelta struct {
+	SequenceStart int64
+	SequenceEnd   int64
+	Bids          []priceLevel
+	Asks          []priceLevel
+	TimestampMS   int64
+}
+
+type priceLevel struct {
+	Price float64
+	Size  float64
+}
+
+type bookState struct {
+	mu sync.Mutex
+
+	bids map[float64]float64
+	asks map[float64]float64
+
+	sequence int64
+	last     Last
+
+	ready       bool
+	needResync  bool
+	buffering   bool
+	buffered    []bookDelta
+	lastEventTS int64
+}
+
 type kucoinWS struct {
 	id      int
 	conn    *websocket.Conn
 	symbols []string
-	last    map[string]Last
+	books   map[string]*bookState
 	writeMu sync.Mutex
 }
 
@@ -97,14 +130,28 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) 
 			end = len(symbols)
 		}
 
-		wsList = append(wsList, &kucoinWS{
+		ws := &kucoinWS{
 			id:      len(wsList),
 			symbols: symbols[i:end],
-			last:    make(map[string]Last),
-		})
+			books:   make(map[string]*bookState, end-i),
+		}
+		for _, symbol := range symbols[i:end] {
+			ws.books[symbol] = &bookState{
+				bids:      make(map[float64]float64),
+				asks:      make(map[float64]float64),
+				buffering: true,
+				buffered:  make([]bookDelta, 0, 64),
+			}
+		}
+
+		wsList = append(wsList, ws)
 	}
 
-	c := &KuCoinCollector{ctx: ctx, cancel: cancel, wsList: wsList}
+	c := &KuCoinCollector{
+		ctx:    ctx,
+		cancel: cancel,
+		wsList: wsList,
+	}
 	return c, symbols, nil
 }
 
@@ -141,16 +188,40 @@ func (ws *kucoinWS) run(c *KuCoinCollector) {
 			continue
 		}
 
+		ws.resetBooksForReconnect()
+
 		connDone := make(chan struct{})
-		go ws.subscribeLoop(c.ctx, connDone)
+
 		go ws.pingLoop(c.ctx, connDone)
 
-		if err := ws.readLoop(c); err != nil {
-			log.Printf("[KuCoin WS %d] readLoop ended: %v\n", ws.id, err)
+		readErrCh := make(chan error, 1)
+		go func() {
+			readErrCh <- ws.readLoop(c)
+		}()
+
+		if err := ws.subscribeAll(c.ctx, connDone); err != nil {
+			close(connDone)
+			ws.closeConn()
+			log.Printf("[KuCoin WS %d] subscribe error: %v\n", ws.id, err)
+			time.Sleep(reconnectDelay)
+			continue
 		}
 
+		if err := ws.bootstrapAllBooks(c.ctx); err != nil {
+			close(connDone)
+			ws.closeConn()
+			log.Printf("[KuCoin WS %d] bootstrap error: %v\n", ws.id, err)
+			time.Sleep(reconnectDelay)
+			continue
+		}
+
+		err := <-readErrCh
 		close(connDone)
 		ws.closeConn()
+
+		if err != nil {
+			log.Printf("[KuCoin WS %d] readLoop ended: %v\n", ws.id, err)
+		}
 		log.Printf("[KuCoin WS %d] reconnecting in %v...\n", ws.id, reconnectDelay)
 		time.Sleep(reconnectDelay)
 	}
@@ -196,31 +267,35 @@ func (ws *kucoinWS) connect() error {
 	return nil
 }
 
-func (ws *kucoinWS) subscribeLoop(ctx context.Context, connDone <-chan struct{}) {
+func (ws *kucoinWS) subscribeAll(ctx context.Context, connDone <-chan struct{}) error {
 	t := time.NewTicker(subRate)
 	defer t.Stop()
+
 	for _, s := range ws.symbols {
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		case <-connDone:
-			return
+			return fmt.Errorf("connection closed")
 		case <-t.C:
 			if err := ws.writeJSON(map[string]any{
 				"id":       time.Now().UnixNano(),
 				"type":     "subscribe",
-				"topic":    "/market/ticker:" + s,
+				"topic":    "/market/level2:" + s,
 				"response": true,
 			}); err != nil {
-				return
+				return err
 			}
 		}
 	}
+
+	return nil
 }
 
 func (ws *kucoinWS) pingLoop(ctx context.Context, connDone <-chan struct{}) {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -228,7 +303,10 @@ func (ws *kucoinWS) pingLoop(ctx context.Context, connDone <-chan struct{}) {
 		case <-connDone:
 			return
 		case <-t.C:
-			if err := ws.writeJSON(map[string]any{"id": time.Now().UnixNano(), "type": "ping"}); err != nil {
+			if err := ws.writeJSON(map[string]any{
+				"id":   time.Now().UnixNano(),
+				"type": "ping",
+			}); err != nil {
 				return
 			}
 		}
@@ -240,18 +318,25 @@ func (ws *kucoinWS) readLoop(c *KuCoinCollector) error {
 		if ws.conn == nil {
 			return fmt.Errorf("connection closed")
 		}
+
 		_, msg, err := ws.conn.ReadMessage()
 		if err != nil {
 			return err
 		}
+
 		_ = ws.conn.SetReadDeadline(time.Now().Add(readTimeout))
 		ws.handle(c, msg)
 	}
 }
 
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	const prefix = "/market/ticker:"
+	const prefix = "/market/level2:"
 	const prefixLen = len(prefix)
+
+	msgType := gjson.GetBytes(msg, "type").String()
+	if msgType != "message" {
+		return
+	}
 
 	topicRes := gjson.GetBytes(msg, "topic")
 	if !topicRes.Exists() {
@@ -267,37 +352,384 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 
 	symbol := raw[1+prefixLen : len(raw)-1]
+	book := ws.books[symbol]
+	if book == nil {
+		return
+	}
+
 	data := gjson.GetBytes(msg, "data")
-	bid := data.Get("bestBid").Float()
-	ask := data.Get("bestAsk").Float()
-	if bid == 0 || ask == 0 {
-		return
-	}
-	bidSize := data.Get("bestBidSize").Float()
-	askSize := data.Get("bestAskSize").Float()
-	if bidSize == 0 || askSize == 0 {
+	if !data.Exists() {
 		return
 	}
 
-	if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+	seqStart := data.Get("sequenceStart").Int()
+	seqEnd := data.Get("sequenceEnd").Int()
+	if seqStart == 0 || seqEnd == 0 {
 		return
 	}
-	ws.last[symbol] = Last{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
 
-	recvTS := time.Now().UnixMilli()
-	md := &models.MarketData{
-		Exchange:  "KuCoin",
-		Symbol:    symbol,
-		Bid:       bid,
-		Ask:       ask,
-		BidSize:   bidSize,
-		AskSize:   askSize,
-		Timestamp: extractKuCoinTimestampMS(msg, recvTS),
+	delta := bookDelta{
+		SequenceStart: seqStart,
+		SequenceEnd:   seqEnd,
+		Bids:          parseLevels(data.Get("changes.bids")),
+		Asks:          parseLevels(data.Get("changes.asks")),
+		TimestampMS:   extractKuCoinTimestampMS(msg, time.Now().UnixMilli()),
 	}
 
-	select {
-	case c.out <- md:
-	case <-c.ctx.Done():
+	var emit *models.MarketData
+	var needAsyncResync bool
+
+	book.mu.Lock()
+
+	book.lastEventTS = delta.TimestampMS
+
+	if book.buffering {
+		book.buffered = append(book.buffered, delta)
+		book.mu.Unlock()
+		return
+	}
+
+	if book.needResync || !book.ready {
+		book.mu.Unlock()
+		return
+	}
+
+	if delta.SequenceEnd <= book.sequence {
+		book.mu.Unlock()
+		return
+	}
+
+	if delta.SequenceStart > book.sequence+1 {
+		book.ready = false
+		book.needResync = true
+		needAsyncResync = true
+		log.Printf("[KuCoin WS %d] gap detected symbol=%s localSeq=%d seqStart=%d seqEnd=%d\n",
+			ws.id, symbol, book.sequence, delta.SequenceStart, delta.SequenceEnd)
+		book.mu.Unlock()
+
+		if needAsyncResync {
+			go ws.resyncBook(c.ctx, symbol)
+		}
+		return
+	}
+
+	applyDelta(book, delta)
+	top := computeTop(book.bids, book.asks)
+	if top.Bid > 0 && top.Ask > 0 && top.BidSize > 0 && top.AskSize > 0 && top != book.last {
+		book.last = top
+		emit = &models.MarketData{
+			Exchange:  "KuCoin",
+			Symbol:    symbol,
+			Bid:       top.Bid,
+			Ask:       top.Ask,
+			BidSize:   top.BidSize,
+			AskSize:   top.AskSize,
+			Timestamp: delta.TimestampMS,
+		}
+	}
+
+	book.mu.Unlock()
+
+	if emit != nil {
+		select {
+		case c.out <- emit:
+		case <-c.ctx.Done():
+		}
+	}
+}
+
+func (ws *kucoinWS) bootstrapAllBooks(ctx context.Context) error {
+	client := &http.Client{Timeout: httpTimeout}
+
+	for _, symbol := range ws.symbols {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if err := ws.bootstrapBook(ctx, client, symbol); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (ws *kucoinWS) bootstrapBook(ctx context.Context, client *http.Client, symbol string) error {
+	book := ws.books[symbol]
+	if book == nil {
+		return fmt.Errorf("book not found for symbol=%s", symbol)
+	}
+
+	snapshot, err := fetchSnapshot(ctx, client, symbol)
+	if err != nil {
+		return err
+	}
+
+	book.mu.Lock()
+	defer book.mu.Unlock()
+
+	book.bids = make(map[float64]float64, len(snapshot.Bids))
+	book.asks = make(map[float64]float64, len(snapshot.Asks))
+
+	for _, lvl := range snapshot.Bids {
+		if lvl.Size > 0 {
+			book.bids[lvl.Price] = lvl.Size
+		}
+	}
+	for _, lvl := range snapshot.Asks {
+		if lvl.Size > 0 {
+			book.asks[lvl.Price] = lvl.Size
+		}
+	}
+
+	book.sequence = snapshot.Sequence
+
+	replayed := make([]bookDelta, 0, len(book.buffered))
+	for _, d := range book.buffered {
+		if d.SequenceEnd <= snapshot.Sequence {
+			continue
+		}
+		replayed = append(replayed, d)
+	}
+
+	sort.Slice(replayed, func(i, j int) bool {
+		if replayed[i].SequenceStart == replayed[j].SequenceStart {
+			return replayed[i].SequenceEnd < replayed[j].SequenceEnd
+		}
+		return replayed[i].SequenceStart < replayed[j].SequenceStart
+	})
+
+	for _, d := range replayed {
+		if d.SequenceEnd <= book.sequence {
+			continue
+		}
+		if d.SequenceStart > book.sequence+1 {
+			return fmt.Errorf("bootstrap replay gap symbol=%s localSeq=%d seqStart=%d seqEnd=%d",
+				symbol, book.sequence, d.SequenceStart, d.SequenceEnd)
+		}
+		applyDelta(book, d)
+	}
+
+	book.last = computeTop(book.bids, book.asks)
+	book.ready = book.last.Bid > 0 && book.last.Ask > 0 && book.last.BidSize > 0 && book.last.AskSize > 0
+	book.needResync = false
+	book.buffering = false
+	book.buffered = nil
+
+	log.Printf("[KuCoin WS %d] bootstrap complete symbol=%s seq=%d bid=%.10f ask=%.10f\n",
+		ws.id, symbol, book.sequence, book.last.Bid, book.last.Ask)
+
+	return nil
+}
+
+func (ws *kucoinWS) resyncBook(ctx context.Context, symbol string) {
+	client := &http.Client{Timeout: httpTimeout}
+
+	book := ws.books[symbol]
+	if book == nil {
+		return
+	}
+
+	book.mu.Lock()
+	if book.buffering {
+		book.mu.Unlock()
+		return
+	}
+	book.buffering = true
+	book.buffered = book.buffered[:0]
+	book.mu.Unlock()
+
+	resyncCtx, cancel := context.WithTimeout(ctx, snapshotTimeout)
+	defer cancel()
+
+	if err := ws.bootstrapBook(resyncCtx, client, symbol); err != nil {
+		log.Printf("[KuCoin WS %d] resync failed symbol=%s: %v\n", ws.id, symbol, err)
+
+		book.mu.Lock()
+		book.ready = false
+		book.needResync = true
+		book.buffering = false
+		book.mu.Unlock()
+		return
+	}
+
+	log.Printf("[KuCoin WS %d] resync complete symbol=%s\n", ws.id, symbol)
+}
+
+type snapshotBook struct {
+	Sequence int64
+	Bids     []priceLevel
+	Asks     []priceLevel
+}
+
+func fetchSnapshot(ctx context.Context, client *http.Client, symbol string) (*snapshotBook, error) {
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"https://api.kucoin.com/api/v1/market/orderbook/level2_100?symbol="+symbol,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot request symbol=%s: %w", symbol, err)
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Code string `json:"code"`
+		Data struct {
+			Sequence string     `json:"sequence"`
+			Bids     [][]string `json:"bids"`
+			Asks     [][]string `json:"asks"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, fmt.Errorf("decode snapshot symbol=%s: %w", symbol, err)
+	}
+	if r.Code != "" && r.Code != "200000" {
+		return nil, fmt.Errorf("snapshot bad code symbol=%s code=%s", symbol, r.Code)
+	}
+
+	seq, err := strconv.ParseInt(r.Data.Sequence, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse snapshot sequence symbol=%s: %w", symbol, err)
+	}
+
+	out := &snapshotBook{
+		Sequence: seq,
+		Bids:     make([]priceLevel, 0, len(r.Data.Bids)),
+		Asks:     make([]priceLevel, 0, len(r.Data.Asks)),
+	}
+
+	for _, row := range r.Data.Bids {
+		if len(row) < 2 {
+			continue
+		}
+		price, err1 := strconv.ParseFloat(row[0], 64)
+		size, err2 := strconv.ParseFloat(row[1], 64)
+		if err1 != nil || err2 != nil || price <= 0 || size <= 0 {
+			continue
+		}
+		out.Bids = append(out.Bids, priceLevel{Price: price, Size: size})
+	}
+
+	for _, row := range r.Data.Asks {
+		if len(row) < 2 {
+			continue
+		}
+		price, err1 := strconv.ParseFloat(row[0], 64)
+		size, err2 := strconv.ParseFloat(row[1], 64)
+		if err1 != nil || err2 != nil || price <= 0 || size <= 0 {
+			continue
+		}
+		out.Asks = append(out.Asks, priceLevel{Price: price, Size: size})
+	}
+
+	return out, nil
+}
+
+func parseLevels(arr gjson.Result) []priceLevel {
+	if !arr.Exists() || !arr.IsArray() {
+		return nil
+	}
+
+	raw := arr.Array()
+	out := make([]priceLevel, 0, len(raw))
+
+	for _, lvl := range raw {
+		parts := lvl.Array()
+		if len(parts) < 2 {
+			continue
+		}
+
+		price, err1 := strconv.ParseFloat(parts[0].String(), 64)
+		size, err2 := strconv.ParseFloat(parts[1].String(), 64)
+		if err1 != nil || err2 != nil || price <= 0 {
+			continue
+		}
+
+		out = append(out, priceLevel{
+			Price: price,
+			Size:  size,
+		})
+	}
+
+	return out
+}
+
+func applyDelta(book *bookState, delta bookDelta) {
+	for _, lvl := range delta.Bids {
+		if lvl.Size == 0 {
+			delete(book.bids, lvl.Price)
+		} else {
+			book.bids[lvl.Price] = lvl.Size
+		}
+	}
+	for _, lvl := range delta.Asks {
+		if lvl.Size == 0 {
+			delete(book.asks, lvl.Price)
+		} else {
+			book.asks[lvl.Price] = lvl.Size
+		}
+	}
+	book.sequence = delta.SequenceEnd
+}
+
+func computeTop(bids, asks map[float64]float64) Last {
+	var out Last
+
+	bestBid := 0.0
+	for price, size := range bids {
+		if size <= 0 {
+			continue
+		}
+		if price > bestBid {
+			bestBid = price
+			out.Bid = price
+			out.BidSize = size
+		}
+	}
+
+	bestAsk := 0.0
+	for price, size := range asks {
+		if size <= 0 {
+			continue
+		}
+		if bestAsk == 0 || price < bestAsk {
+			bestAsk = price
+			out.Ask = price
+			out.AskSize = size
+		}
+	}
+
+	return out
+}
+
+func (ws *kucoinWS) resetBooksForReconnect() {
+	for _, symbol := range ws.symbols {
+		book := ws.books[symbol]
+		if book == nil {
+			continue
+		}
+
+		book.mu.Lock()
+		book.bids = make(map[float64]float64)
+		book.asks = make(map[float64]float64)
+		book.sequence = 0
+		book.last = Last{}
+		book.ready = false
+		book.needResync = false
+		book.buffering = true
+		book.buffered = book.buffered[:0]
+		book.lastEventTS = 0
+		book.mu.Unlock()
 	}
 }
 
@@ -362,6 +794,7 @@ func normalizeMillis(ts int64) int64 {
 func (ws *kucoinWS) writeJSON(v any) error {
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
+
 	if ws.conn == nil {
 		return fmt.Errorf("connection closed")
 	}
@@ -371,6 +804,7 @@ func (ws *kucoinWS) writeJSON(v any) error {
 func (ws *kucoinWS) closeConn() {
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
+
 	if ws.conn != nil {
 		_ = ws.conn.Close()
 		ws.conn = nil
@@ -448,738 +882,5 @@ func parseLeg(raw string) string {
 	}
 	return strings.TrimSpace(pair[0]) + "-" + strings.TrimSpace(pair[1])
 }
-
-
-
-
-Memory
-
-
-package queue
-
-import (
-	"sync"
-	"time"
-
-	"crypt_proto/pkg/models"
-)
-
-const defaultHistoryTTL = 3 * time.Second
-
-type Quote struct {
-	Bid, Ask         float64
-	BidSize, AskSize float64
-	Timestamp        int64
-}
-
-type symbolBuffer struct {
-	items []Quote
-}
-
-type MemoryStore struct {
-	mu      sync.RWMutex
-	latest  map[string]Quote
-	history map[string]*symbolBuffer
-	ttlMS   int64
-}
-
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{
-		latest:  make(map[string]Quote),
-		history: make(map[string]*symbolBuffer),
-		ttlMS:   defaultHistoryTTL.Milliseconds(),
-	}
-}
-
-// Run оставлен для совместимости со старым кодом.
-func (s *MemoryStore) Run() {}
-
-func (s *MemoryStore) Push(md *models.MarketData) {
-	if md == nil {
-		return
-	}
-	s.apply(md)
-}
-
-// Get возвращает последнюю известную котировку по символу.
-func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
-	s.mu.RLock()
-	q, ok := s.latest[exchange+"|"+symbol]
-	s.mu.RUnlock()
-	return q, ok
-}
-
-// GetLatestBefore возвращает самую свежую котировку не позже ts и не старше maxAgeMS.
-func (s *MemoryStore) GetLatestBefore(exchange, symbol string, ts int64, maxAgeMS int64) (Quote, bool) {
-	if ts <= 0 {
-		ts = time.Now().UnixMilli()
-	}
-
-	key := exchange + "|" + symbol
-	cutoff := int64(0)
-	if maxAgeMS > 0 {
-		cutoff = ts - maxAgeMS
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	buf, ok := s.history[key]
-	if !ok || len(buf.items) == 0 {
-		return Quote{}, false
-	}
-
-	for i := len(buf.items) - 1; i >= 0; i-- {
-		q := buf.items[i]
-		if q.Timestamp > ts {
-			continue
-		}
-		if maxAgeMS > 0 && q.Timestamp < cutoff {
-			break
-		}
-		return q, true
-	}
-
-	return Quote{}, false
-}
-
-// apply обновляет тикер и добавляет его в короткую историю по символу.
-func (s *MemoryStore) apply(md *models.MarketData) {
-	key := md.Exchange + "|" + md.Symbol
-	timestamp := md.Timestamp
-	if timestamp <= 0 {
-		timestamp = time.Now().UnixMilli()
-	}
-
-	quote := Quote{
-		Bid:       md.Bid,
-		Ask:       md.Ask,
-		BidSize:   md.BidSize,
-		AskSize:   md.AskSize,
-		Timestamp: timestamp,
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if prev, ok := s.latest[key]; !ok || quote.Timestamp >= prev.Timestamp {
-		s.latest[key] = quote
-	}
-
-	buf, ok := s.history[key]
-	if !ok {
-		buf = &symbolBuffer{}
-		s.history[key] = buf
-	}
-	buf.items = append(buf.items, quote)
-
-	cutoff := timestamp - s.ttlMS
-	n := 0
-	for _, item := range buf.items {
-		if item.Timestamp >= cutoff {
-			buf.items[n] = item
-			n++
-		}
-	}
-	buf.items = buf.items[:n]
-}
-
-
-
-arb.go
-
-
-package calculator
-
-import (
-	"encoding/csv"
-	"fmt"
-	"log"
-	"math"
-	"os"
-	"strconv"
-	"strings"
-	"sync"
-
-	"crypt_proto/internal/queue"
-	"crypt_proto/pkg/models"
-)
-
-const (
-	feeM                 = 0.9992
-	defaultMaxQuoteAgeMS = int64(400)
-)
-
-type LegRule struct {
-	Index int
-
-	RawLeg      string
-	Step        float64
-	MinQty      float64
-	MinNotional float64
-
-	Symbol      string
-	Side        string
-	Base        string
-	Quote       string
-	QtyStep     float64
-	QuoteStep   float64
-	PriceStep   float64
-	LegMinQty   float64
-	LegMinQuote float64
-	LegMinNotnl float64
-
-	Key string
-}
-
-type Triangle struct {
-	A, B, C string
-	Legs    [3]LegRule
-}
-
-type metricsWriter struct {
-	mu      sync.Mutex
-	file    *os.File
-	csv     *csv.Writer
-	enabled bool
-}
-
-func newMetricsWriter(path string) (*metricsWriter, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return nil, err
-	}
-
-	mw := &metricsWriter{
-		file:    f,
-		csv:     csv.NewWriter(f),
-		enabled: true,
-	}
-
-	stat, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	if stat.Size() == 0 {
-		header := []string{
-			"ts_unix_ms", "tri", "A", "B", "C",
-			"profit_pct", "profit_usdt", "volume_usdt", "final_usdt",
-			"opportunity_strength", "age_min_ms", "age_max_ms", "age_spread_ms",
-			"leg1_symbol", "leg1_side", "leg1_bid", "leg1_ask", "leg1_bid_size", "leg1_ask_size", "leg1_age_ms", "leg1_in", "leg1_out", "leg1_trade_qty", "leg1_trade_notional", "leg1_book_limit_in",
-			"leg2_symbol", "leg2_side", "leg2_bid", "leg2_ask", "leg2_bid_size", "leg2_ask_size", "leg2_age_ms", "leg2_in", "leg2_out", "leg2_trade_qty", "leg2_trade_notional", "leg2_book_limit_in",
-			"leg3_symbol", "leg3_side", "leg3_bid", "leg3_ask", "leg3_bid_size", "leg3_ask_size", "leg3_age_ms", "leg3_in", "leg3_out", "leg3_trade_qty", "leg3_trade_notional", "leg3_book_limit_in",
-		}
-		if err := mw.csv.Write(header); err != nil {
-			_ = f.Close()
-			return nil, err
-		}
-		mw.csv.Flush()
-		if err := mw.csv.Error(); err != nil {
-			_ = f.Close()
-			return nil, err
-		}
-	}
-	return mw, nil
-}
-
-func (mw *metricsWriter) Close() error {
-	if mw == nil || !mw.enabled {
-		return nil
-	}
-	mw.mu.Lock()
-	defer mw.mu.Unlock()
-	mw.csv.Flush()
-	if err := mw.csv.Error(); err != nil {
-		_ = mw.file.Close()
-		return err
-	}
-	return mw.file.Close()
-}
-
-func (mw *metricsWriter) Write(record []string) error {
-	if mw == nil || !mw.enabled {
-		return nil
-	}
-	mw.mu.Lock()
-	defer mw.mu.Unlock()
-	if err := mw.csv.Write(record); err != nil {
-		return err
-	}
-	mw.csv.Flush()
-	return mw.csv.Error()
-}
-
-type Calculator struct {
-	mem           *queue.MemoryStore
-	bySymbol      map[string][]*Triangle
-	fileLog       *log.Logger
-	metrics       *metricsWriter
-	maxQuoteAgeMS int64
-}
-
-func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
-	f, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Fatalf("failed to open log: %v", err)
-	}
-
-	metrics, err := newMetricsWriter("arb_metrics.csv")
-	if err != nil {
-		log.Fatalf("failed to open metrics file: %v", err)
-	}
-
-	bySymbol := make(map[string][]*Triangle, 1024)
-	for _, t := range triangles {
-		for _, leg := range t.Legs {
-			if leg.Symbol == "" {
-				continue
-			}
-			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
-		}
-	}
-
-	log.Printf("[Calculator] indexed %d symbols\n", len(bySymbol))
-
-	return &Calculator{
-		mem:           mem,
-		bySymbol:      bySymbol,
-		fileLog:       log.New(f, "", log.LstdFlags),
-		metrics:       metrics,
-		maxQuoteAgeMS: defaultMaxQuoteAgeMS,
-	}
-}
-
-func (c *Calculator) Run(in <-chan *models.MarketData) {
-	defer func() {
-		if c.metrics != nil {
-			_ = c.metrics.Close()
-		}
-	}()
-
-	for md := range in {
-		if md == nil {
-			continue
-		}
-		c.mem.Push(md)
-
-		tris := c.bySymbol[md.Symbol]
-		if len(tris) == 0 {
-			continue
-		}
-
-		for _, tri := range tris {
-			c.calcTriangle(md, tri)
-		}
-	}
-}
-
-func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
-	anchorTS := md.Timestamp
-	if anchorTS <= 0 {
-		return
-	}
-
-	var q [3]queue.Quote
-	for i, leg := range tri.Legs {
-		quote, ok := c.mem.GetLatestBefore(md.Exchange, leg.Symbol, anchorTS, c.maxQuoteAgeMS)
-		if !ok {
-			return
-		}
-		if quote.Bid <= 0 || quote.Ask <= 0 || quote.BidSize <= 0 || quote.AskSize <= 0 {
-			return
-		}
-		q[i] = quote
-	}
-
-	ages := [3]int64{
-		quoteLagMS(anchorTS, q[0]),
-		quoteLagMS(anchorTS, q[1]),
-		quoteLagMS(anchorTS, q[2]),
-	}
-	minAge, maxAge, spreadAge := minMaxSpread(ages)
-
-	maxStart, ok := computeMaxStartTopOfBook(tri, q)
-	if !ok || maxStart <= 0 {
-		return
-	}
-
-	finalAmount, diag, ok := simulateTriangle(maxStart, tri, q)
-	if !ok || finalAmount <= 0 {
-		return
-	}
-
-	profitUSDT := finalAmount - maxStart
-	profitPct := profitUSDT / maxStart
-	strength := computeOpportunityStrength(profitPct, maxStart, spreadAge, maxAge)
-
-	record := []string{
-		strconv.FormatInt(anchorTS, 10),
-		fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C),
-		tri.A, tri.B, tri.C,
-		fmtFloat(profitPct), fmtFloat(profitUSDT), fmtFloat(maxStart), fmtFloat(finalAmount),
-		fmtFloat(strength), strconv.FormatInt(minAge, 10), strconv.FormatInt(maxAge, 10), strconv.FormatInt(spreadAge, 10),
-		tri.Legs[0].Symbol, tri.Legs[0].Side, fmtFloat(q[0].Bid), fmtFloat(q[0].Ask), fmtFloat(q[0].BidSize), fmtFloat(q[0].AskSize), strconv.FormatInt(ages[0], 10), fmtFloat(diag[0].In), fmtFloat(diag[0].Out), fmtFloat(diag[0].TradeQty), fmtFloat(diag[0].TradeNotional), fmtFloat(diag[0].BookLimitIn),
-		tri.Legs[1].Symbol, tri.Legs[1].Side, fmtFloat(q[1].Bid), fmtFloat(q[1].Ask), fmtFloat(q[1].BidSize), fmtFloat(q[1].AskSize), strconv.FormatInt(ages[1], 10), fmtFloat(diag[1].In), fmtFloat(diag[1].Out), fmtFloat(diag[1].TradeQty), fmtFloat(diag[1].TradeNotional), fmtFloat(diag[1].BookLimitIn),
-		tri.Legs[2].Symbol, tri.Legs[2].Side, fmtFloat(q[2].Bid), fmtFloat(q[2].Ask), fmtFloat(q[2].BidSize), fmtFloat(q[2].AskSize), strconv.FormatInt(ages[2], 10), fmtFloat(diag[2].In), fmtFloat(diag[2].Out), fmtFloat(diag[2].TradeQty), fmtFloat(diag[2].TradeNotional), fmtFloat(diag[2].BookLimitIn),
-	}
-	if err := c.metrics.Write(record); err != nil {
-		log.Printf("[Calculator] metrics write error: %v", err)
-	}
-
-	if profitPct > 0.0 && maxStart > 50 {
-		msg := fmt.Sprintf(
-			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.6f USDT | "+
-				"anchor=%d | l1=%s %s out=%.8f age=%dms | "+
-				"l2=%s %s out=%.8f age=%dms | "+
-				"l3=%s %s out=%.8f age=%dms",
-			tri.A, tri.B, tri.C,
-			profitPct*100, maxStart, profitUSDT,
-			anchorTS,
-			tri.Legs[0].Symbol, tri.Legs[0].Side, diag[0].Out, ages[0],
-			tri.Legs[1].Symbol, tri.Legs[1].Side, diag[1].Out, ages[1],
-			tri.Legs[2].Symbol, tri.Legs[2].Side, diag[2].Out, ages[2],
-		)
-		log.Println(msg)
-		c.fileLog.Println(msg)
-	}
-}
-
-type legExecution struct {
-	In            float64
-	Out           float64
-	Price         float64
-	BookLimitIn   float64
-	TradeQty      float64
-	TradeNotional float64
-}
-
-func simulateTriangle(startUSDT float64, tri *Triangle, q [3]queue.Quote) (float64, [3]legExecution, bool) {
-	var diag [3]legExecution
-	amount := startUSDT
-	for i := 0; i < 3; i++ {
-		out, d, ok := executeLeg(amount, tri.Legs[i], q[i])
-		if !ok {
-			return 0, diag, false
-		}
-		diag[i] = d
-		amount = out
-	}
-	return amount, diag, true
-}
-
-func executeLeg(in float64, leg LegRule, q queue.Quote) (float64, legExecution, bool) {
-	side := strings.ToUpper(strings.TrimSpace(leg.Side))
-	if side == "" {
-		side = detectSideFromRawLeg(leg.RawLeg)
-	}
-	if side != "BUY" && side != "SELL" {
-		return 0, legExecution{}, false
-	}
-	if in <= 0 {
-		return 0, legExecution{}, false
-	}
-
-	qtyStep := firstPositive(leg.QtyStep, leg.Step)
-	minQty := firstPositive(leg.LegMinQty, leg.MinQty)
-	minQuote := leg.LegMinQuote
-	minNotional := firstPositive(leg.LegMinNotnl, leg.MinNotional)
-
-	switch side {
-	case "BUY":
-		if q.Ask <= 0 || q.AskSize <= 0 {
-			return 0, legExecution{}, false
-		}
-		bookLimitIn := q.Ask * q.AskSize
-		spendQuote := math.Min(in, bookLimitIn)
-		if spendQuote <= 0 {
-			return 0, legExecution{}, false
-		}
-
-		rawQty := spendQuote / q.Ask
-		tradeQty := floorToStep(rawQty, qtyStep)
-		if tradeQty <= 0 {
-			return 0, legExecution{}, false
-		}
-
-		tradeNotional := tradeQty * q.Ask
-		if tradeNotional <= 0 || tradeNotional > spendQuote+eps() {
-			return 0, legExecution{}, false
-		}
-		if minQty > 0 && tradeQty+eps() < minQty {
-			return 0, legExecution{}, false
-		}
-		if minQuote > 0 && tradeNotional+eps() < minQuote {
-			return 0, legExecution{}, false
-		}
-		if minNotional > 0 && tradeNotional+eps() < minNotional {
-			return 0, legExecution{}, false
-		}
-
-		outBase := tradeQty * feeM
-		if outBase <= 0 {
-			return 0, legExecution{}, false
-		}
-
-		return outBase, legExecution{In: in, Out: outBase, Price: q.Ask, BookLimitIn: bookLimitIn, TradeQty: tradeQty, TradeNotional: tradeNotional}, true
-
-	case "SELL":
-		if q.Bid <= 0 || q.BidSize <= 0 {
-			return 0, legExecution{}, false
-		}
-		bookLimitIn := q.BidSize
-		sellBase := math.Min(in, bookLimitIn)
-		tradeQty := floorToStep(sellBase, qtyStep)
-		if tradeQty <= 0 {
-			return 0, legExecution{}, false
-		}
-
-		tradeNotional := tradeQty * q.Bid
-		if tradeNotional <= 0 {
-			return 0, legExecution{}, false
-		}
-		if minQty > 0 && tradeQty+eps() < minQty {
-			return 0, legExecution{}, false
-		}
-		if minQuote > 0 && tradeNotional+eps() < minQuote {
-			return 0, legExecution{}, false
-		}
-		if minNotional > 0 && tradeNotional+eps() < minNotional {
-			return 0, legExecution{}, false
-		}
-
-		outQuote := tradeNotional * feeM
-		if outQuote <= 0 {
-			return 0, legExecution{}, false
-		}
-		return outQuote, legExecution{In: in, Out: outQuote, Price: q.Bid, BookLimitIn: bookLimitIn, TradeQty: tradeQty, TradeNotional: tradeNotional}, true
-	}
-
-	return 0, legExecution{}, false
-}
-
-func computeMaxStartTopOfBook(tri *Triangle, q [3]queue.Quote) (float64, bool) {
-	kIn := 1.0
-	maxStart := math.MaxFloat64
-
-	for i := 0; i < 3; i++ {
-		leg := tri.Legs[i]
-		side := strings.ToUpper(strings.TrimSpace(leg.Side))
-		if side == "" {
-			side = detectSideFromRawLeg(leg.RawLeg)
-		}
-		if side != "BUY" && side != "SELL" {
-			return 0, false
-		}
-
-		var limitIn float64
-		switch side {
-		case "BUY":
-			if q[i].Ask <= 0 || q[i].AskSize <= 0 {
-				return 0, false
-			}
-			limitIn = q[i].Ask * q[i].AskSize
-			maxByThis := limitIn / kIn
-			if maxByThis < maxStart {
-				maxStart = maxByThis
-			}
-			kIn *= (1.0 / q[i].Ask) * feeM
-		case "SELL":
-			if q[i].Bid <= 0 || q[i].BidSize <= 0 {
-				return 0, false
-			}
-			limitIn = q[i].BidSize
-			maxByThis := limitIn / kIn
-			if maxByThis < maxStart {
-				maxStart = maxByThis
-			}
-			kIn *= q[i].Bid * feeM
-		}
-
-		if kIn <= 0 {
-			return 0, false
-		}
-	}
-
-	if maxStart <= 0 || !isFinite(maxStart) {
-		return 0, false
-	}
-	return maxStart, true
-}
-
-func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	rows, err := csv.NewReader(f).ReadAll()
-	if err != nil {
-		return nil, err
-	}
-	if len(rows) < 2 {
-		return nil, nil
-	}
-
-	header := make(map[string]int, len(rows[0]))
-	for i, col := range rows[0] {
-		header[strings.TrimSpace(col)] = i
-	}
-
-	var res []*Triangle
-	for _, row := range rows[1:] {
-		if len(strings.TrimSpace(strings.Join(row, ""))) == 0 {
-			continue
-		}
-
-		t := &Triangle{A: getString(row, header, "A"), B: getString(row, header, "B"), C: getString(row, header, "C")}
-		for i := 1; i <= 3; i++ {
-			idx := i - 1
-			leg := LegRule{
-				Index:       idx,
-				RawLeg:      getString(row, header, fmt.Sprintf("Leg%d", i)),
-				Step:        getFloat(row, header, fmt.Sprintf("Step%d", i)),
-				MinQty:      getFloat(row, header, fmt.Sprintf("MinQty%d", i)),
-				MinNotional: getFloat(row, header, fmt.Sprintf("MinNotional%d", i)),
-				Symbol:      getString(row, header, fmt.Sprintf("Leg%dSymbol", i)),
-				Side:        strings.ToUpper(getString(row, header, fmt.Sprintf("Leg%dSide", i))),
-				Base:        getString(row, header, fmt.Sprintf("Leg%dBase", i)),
-				Quote:       getString(row, header, fmt.Sprintf("Leg%dQuote", i)),
-				QtyStep:     getFloat(row, header, fmt.Sprintf("Leg%dQtyStep", i)),
-				QuoteStep:   getFloat(row, header, fmt.Sprintf("Leg%dQuoteStep", i)),
-				PriceStep:   getFloat(row, header, fmt.Sprintf("Leg%dPriceStep", i)),
-				LegMinQty:   getFloat(row, header, fmt.Sprintf("Leg%dMinQty", i)),
-				LegMinQuote: getFloat(row, header, fmt.Sprintf("Leg%dMinQuote", i)),
-				LegMinNotnl: getFloat(row, header, fmt.Sprintf("Leg%dMinNotional", i)),
-			}
-			if leg.Symbol == "" {
-				leg.Symbol = symbolFromRawLeg(leg.RawLeg)
-			}
-			if leg.Side == "" {
-				leg.Side = detectSideFromRawLeg(leg.RawLeg)
-			}
-			if leg.Symbol == "" || leg.Side == "" {
-				continue
-			}
-			leg.Key = "KuCoin|" + leg.Symbol
-			t.Legs[idx] = leg
-		}
-		if t.Legs[0].Symbol == "" || t.Legs[1].Symbol == "" || t.Legs[2].Symbol == "" {
-			continue
-		}
-		res = append(res, t)
-	}
-	return res, nil
-}
-
-func symbolFromRawLeg(raw string) string {
-	raw = strings.ToUpper(strings.TrimSpace(raw))
-	if raw == "" {
-		return ""
-	}
-	parts := strings.Fields(raw)
-	if len(parts) != 2 {
-		return ""
-	}
-	pair := strings.Split(parts[1], "/")
-	if len(pair) != 2 {
-		return ""
-	}
-	return strings.TrimSpace(pair[0]) + "-" + strings.TrimSpace(pair[1])
-}
-
-func detectSideFromRawLeg(raw string) string {
-	raw = strings.ToUpper(strings.TrimSpace(raw))
-	if strings.HasPrefix(raw, "BUY ") {
-		return "BUY"
-	}
-	if strings.HasPrefix(raw, "SELL ") {
-		return "SELL"
-	}
-	return ""
-}
-
-func getString(row []string, header map[string]int, key string) string {
-	idx, ok := header[key]
-	if !ok || idx < 0 || idx >= len(row) {
-		return ""
-	}
-	return strings.TrimSpace(row[idx])
-}
-
-func getFloat(row []string, header map[string]int, key string) float64 {
-	s := getString(row, header, key)
-	if s == "" {
-		return 0
-	}
-	v, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", "."), 64)
-	if err != nil {
-		return 0
-	}
-	return v
-}
-
-func floorToStep(v, step float64) float64 {
-	if v <= 0 {
-		return 0
-	}
-	if step <= 0 {
-		return v
-	}
-	n := math.Floor((v + eps()) / step)
-	if n <= 0 {
-		return 0
-	}
-	return n * step
-}
-
-func firstPositive(vals ...float64) float64 {
-	for _, v := range vals {
-		if v > 0 {
-			return v
-		}
-	}
-	return 0
-}
-
-func quoteLagMS(anchorTS int64, q queue.Quote) int64 {
-	if q.Timestamp <= 0 || anchorTS <= 0 {
-		return -1
-	}
-	if q.Timestamp > anchorTS {
-		return 0
-	}
-	return anchorTS - q.Timestamp
-}
-
-func minMaxSpread(ages [3]int64) (int64, int64, int64) {
-	minAge := ages[0]
-	maxAge := ages[0]
-	for _, age := range ages[1:] {
-		if age < minAge {
-			minAge = age
-		}
-		if age > maxAge {
-			maxAge = age
-		}
-	}
-	return minAge, maxAge, maxAge - minAge
-}
-
-func computeOpportunityStrength(profitPct, volumeUSDT float64, ageSpreadMS, maxAgeMS int64) float64 {
-	base := profitPct * math.Log1p(math.Max(volumeUSDT, 0))
-	freshPenalty := 1.0 / (1.0 + math.Max(float64(maxAgeMS), 0)/180.0)
-	spreadPenalty := 1.0 / (1.0 + math.Max(float64(ageSpreadMS), 0)/180.0)
-	return base * freshPenalty * spreadPenalty
-}
-
-func fmtFloat(v float64) string {
-	return strconv.FormatFloat(v, 'f', 12, 64)
-}
-
-func isFinite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
-func eps() float64            { return 1e-12 }
-
 
 
