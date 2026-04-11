@@ -1,207 +1,860 @@
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto/cmd/arb/metrics$ go run .
-=== BASIC ===
-rows: 953413
-duration_sec: 1555.35
-events_per_min: 36779.39
-unique_triangles: 302
+package main
 
-=== PROFIT ===
+import (
+	"encoding/csv"
+	"fmt"
+	"log"
+	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+)
 
-profit_pct:
-count=953413 min=-0.727733 max=0.000280 mean=-0.010907 p50=-0.006813 p90=-0.003158 p95=-0.002925 p99=-0.002526
+const (
+	maxAgeMs     = 360.0
+	maxSpreadMs  = 180.0
+	minVolumeUSDT = 50.0
+)
 
-profit_usdt:
-count=953413 min=-680.458682 max=0.021974 mean=-0.982330 p50=-0.295460 p90=-0.000018 p95=-0.000004 p99=-0.000001
+type Event struct {
+	TSUnixMs            int64
+	A                   string
+	B                   string
+	C                   string
+	Triangle            string
+	ProfitPct           float64
+	ProfitUSDT          float64
+	VolumeUSDT          float64
+	FinalUSDT           float64
+	OpportunityStrength float64
+	AgeMinMs            float64
+	AgeMaxMs            float64
+	AgeSpreadMs         float64
 
-volume_usdt:
-count=953413 min=0.000010 max=12355.685002 mean=162.214420 p50=46.569367 p90=296.471233 p95=702.027507 p99=2030.729820
+	Leg1Symbol string
+	Leg1Side   string
+	Leg1AgeMs  float64
 
-opportunity_strength:
-count=953413 min=-0.872632 max=0.000579 mean=-0.001097 p50=-0.000006 p90=-0.000000 p95=-0.000000 p99=-0.000000
+	Leg2Symbol string
+	Leg2Side   string
+	Leg2AgeMs  float64
 
-share(profit_pct > 0): 0.0000
-share(profit_pct > 0.001): 0.0000
-share(profit_pct > 0.002): 0.0000
+	Leg3Symbol string
+	Leg3Side   string
+	Leg3AgeMs  float64
+}
 
-=== AGE ===
+type Stats struct {
+	Count int
+	Min   float64
+	Max   float64
+	Mean  float64
+	P50   float64
+	P90   float64
+	P95   float64
+	P99   float64
+}
 
-age_min_ms:
-count=953413 min=0.000000 max=44.000000 mean=0.855303 p50=0.000000 p90=2.000000 p95=3.000000 p99=6.000000
+type RejectStats struct {
+	Total            int
+	RejectAgeMax     int
+	RejectAgeSpread  int
+	RejectVolume     int
+	RejectProfit     int
+	Usable           int
+}
 
-age_max_ms:
-count=953413 min=1.000000 max=1550628.000000 mean=48657.798824 p50=6659.000000 p90=99356.000000 p95=193251.000000 p99=946748.640000
+type TriangleAgg struct {
+	Triangle        string
+	Count           int
+	MeanProfitPct   float64
+	MedianProfitPct float64
+	MaxProfitPct    float64
+	MeanVolumeUSDT  float64
+	MeanAgeMaxMs    float64
+	MeanAgeSpreadMs float64
+}
 
-age_spread_ms:
-count=953413 min=0.000000 max=1550627.000000 mean=48656.943521 p50=6658.000000 p90=99353.800000 p95=193248.400000 p99=946747.640000
+type SymbolQuality struct {
+	Symbol       string
+	Count        int
+	MeanAgeMs    float64
+	P50AgeMs     float64
+	P95AgeMs     float64
+	MaxAgeMs     float64
+}
 
-share(age_max_ms <= 180): 0.0530
-share(age_max_ms <= 360): 0.0962
-share(age_max_ms > 360): 0.9038
+func main() {
+	input := "arb_metrics.csv"
+	if len(os.Args) > 1 {
+		input = os.Args[1]
+	}
 
-share(age_spread_ms <= 50): 0.0083
-share(age_spread_ms <= 180): 0.0532
-share(age_spread_ms > 180): 0.9468
+	events, err := loadEvents(input)
+	if err != nil {
+		log.Fatalf("load events: %v", err)
+	}
+	if len(events) == 0 {
+		log.Fatalf("no events in %s", input)
+	}
 
-=== TOP TRIANGLES BY COUNT ===
- 1. BTC->ETH->EUR                    19647
- 2. BTC->EUR->ETH                    19647
- 3. USDT->ETH->EUR                   12648
- 4. USDT->EUR->ETH                   12642
- 5. USDT->BTC->EUR                   10762
- 6. USDT->EUR->BTC                   10762
- 7. USDT->BTC->TEL                   9813
- 8. USDT->TEL->BTC                   9813
- 9. USDT->ETH->TEL                   9450
-10. USDT->TEL->ETH                   9447
-11. USDT->XMR->BTC                   7637
-12. USDT->BTC->XMR                   7625
-13. USDT->XMR->ETH                   7234
-14. USDT->ETH->XMR                   7200
-15. BTC->TEL->ETH                    7105
-16. BTC->ETH->TEL                    7103
-17. USDT->BTC->ZEC                   6869
-18. USDT->ZEC->BTC                   6745
-19. USDT->BTC->DASH                  6685
-20. USDT->AAVE->BTC                  6402
+	printBasic(events)
+	printProfitStats(events)
+	printAgeStats(events)
 
-=== TOP TRIANGLES BY MEAN PROFIT ===
- 1. USDT->VSYS->BTC                  count=10 mean_profit_pct=-0.002045 median=-0.002047 max=-0.002043 mean_vol=2.20 mean_age_max=1590.50 mean_age_spread=1590.50
- 2. USDT->BTC->ERG                   count=668 mean_profit_pct=-0.002469 median=-0.002330 max=-0.001497 mean_vol=1.66 mean_age_max=130746.73 mean_age_spread=130745.98
- 3. USDT->ETH->BTC                   count=4912 mean_profit_pct=-0.002501 median=-0.002502 max=-0.002170 mean_vol=1172.86 mean_age_max=7202.24 mean_age_spread=7200.78
- 4. USDT->BTC->ETH                   count=4906 mean_profit_pct=-0.002637 median=-0.002631 max=-0.002211 mean_vol=1178.74 mean_age_max=7209.32 mean_age_spread=7208.66
- 5. USDT->ETH->XRP                   count=4597 mean_profit_pct=-0.002723 median=-0.002723 max=-0.002424 mean_vol=86.98 mean_age_max=9551.41 mean_age_spread=9550.87
- 6. USDT->XRP->ETH                   count=4590 mean_profit_pct=-0.002738 median=-0.002746 max=-0.002301 mean_vol=119.16 mean_age_max=9566.05 mean_age_spread=9565.26
- 7. USDT->DOGE->BTC                  count=4031 mean_profit_pct=-0.002763 median=-0.002788 max=-0.001849 mean_vol=104.51 mean_age_max=9562.02 mean_age_spread=9560.54
- 8. USDT->XRP->BTC                   count=5095 mean_profit_pct=-0.002834 median=-0.002858 max=-0.002349 mean_vol=1177.16 mean_age_max=13409.29 mean_age_spread=13407.51
- 9. USDT->BTC->XRP                   count=5095 mean_profit_pct=-0.002904 median=-0.002908 max=-0.002263 mean_vol=320.72 mean_age_max=13408.57 mean_age_spread=13407.51
-10. USDT->BTC->KCS                   count=2843 mean_profit_pct=-0.002949 median=-0.002885 max=-0.002265 mean_vol=52.52 mean_age_max=35315.18 mean_age_spread=35314.03
-11. USDT->KCS->DOGE                  count=1560 mean_profit_pct=-0.002985 median=-0.002977 max=-0.002328 mean_vol=35.18 mean_age_max=19281.54 mean_age_spread=19281.22
-12. USDT->TRX->ETH                   count=9 mean_profit_pct=-0.002986 median=-0.002986 max=-0.002986 mean_vol=44.99 mean_age_max=5187.78 mean_age_spread=5187.11
-13. USDT->DOGE->KCS                  count=1413 mean_profit_pct=-0.002987 median=-0.002963 max=-0.002406 mean_vol=29.80 mean_age_max=18709.12 mean_age_spread=18708.88
-14. USDT->TRX->BTC                   count=3789 mean_profit_pct=-0.003023 median=-0.003016 max=-0.002494 mean_vol=104.95 mean_age_max=9928.33 mean_age_spread=9926.48
-15. USDT->BTC->TRX                   count=4305 mean_profit_pct=-0.003065 median=-0.003081 max=-0.002646 mean_vol=83.95 mean_age_max=10411.20 mean_age_spread=10410.12
-16. USDT->LINK->BTC                  count=4535 mean_profit_pct=-0.003073 median=-0.003075 max=-0.002568 mean_vol=229.95 mean_age_max=4303.44 mean_age_spread=4301.87
-17. USDT->BTC->LINK                  count=4537 mean_profit_pct=-0.003075 median=-0.003073 max=-0.002465 mean_vol=282.53 mean_age_max=4301.01 mean_age_spread=4300.18
-18. USDT->WAVES->BTC                 count=2712 mean_profit_pct=-0.003098 median=-0.003203 max=-0.002415 mean_vol=3.46 mean_age_max=279588.20 mean_age_spread=279585.22
-19. USDT->DOT->BTC                   count=4673 mean_profit_pct=-0.003133 median=-0.003099 max=-0.002231 mean_vol=136.50 mean_age_max=3665.23 mean_age_spread=3663.94
-20. USDT->KCS->BTC                   count=2843 mean_profit_pct=-0.003153 median=-0.003205 max=-0.002651 mean_vol=72.85 mean_age_max=35316.38 mean_age_spread=35314.03
+	rejects, usable := classify(events)
+	printRejects(rejects)
 
-=== TOP ASSETS ===
+	printTopTrianglesByCount(events, 20)
+	printTopTrianglesByMeanProfit(events, 20)
+	printSymbolQuality(events, usable, 20)
 
-B:
- 1. BTC                  263980
- 2. ETH                  190557
- 3. EUR                  43051
- 4. KCS                  31583
- 5. TEL                  26365
- 6. XMR                  17791
- 7. DASH                 15455
- 8. XRP                  14494
- 9. LTC                  12242
-10. ONT                  11230
-11. TRAC                 10279
-12. TRX                  9669
-13. XLM                  9318
-14. ATOM                 9175
-15. ETC                  9094
-16. FET                  8320
-17. DOGE                 8193
-18. DOT                  8109
-19. BNB                  7577
-20. ADA                  7233
+	if err := exportReports("arb_reports", events, usable, rejects); err != nil {
+		log.Fatalf("export reports: %v", err)
+	}
 
-C:
- 1. BTC                  263592
- 2. ETH                  179816
- 3. EUR                  43057
- 4. KCS                  28669
- 5. TEL                  26366
- 6. XMR                  17739
- 7. DASH                 16065
- 8. TRX                  14757
- 9. XRP                  14501
-10. LTC                  13529
-11. ONT                  10774
-12. TRAC                 10278
-13. XLM                  9356
-14. ATOM                 9291
-15. ETC                  9101
-16. DOGE                 8328
-17. DOT                  8117
-18. BNB                  7937
-19. XDC                  7845
-20. A                    7409
+	fmt.Println("\nreports saved to ./arb_reports")
+}
 
-leg1_symbol:
- 1. BTC-USDT             263980
- 2. ETH-USDT             129124
- 3. ETH-BTC              61433
- 4. KCS-USDT             25723
- 5. USDT-EUR             23404
- 6. BTC-EUR              19647
- 7. TEL-USDT             19260
- 8. XMR-USDT             14871
- 9. XRP-USDT             12375
-10. DASH-USDT            11515
-11. LTC-USDT             10854
-12. ONT-USDT             9189
-13. TRX-USDT             8997
-14. TRAC-USDT            8460
-15. ATOM-USDT            7657
-16. XLM-USDT             7656
-17. DOGE-USDT            7598
-18. ETC-USDT             7178
-19. TEL-BTC              7105
-20. FET-USDT             7098
+func loadEvents(path string) ([]Event, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
 
-leg2_symbol:
- 1. ETH-EUR              64584
- 2. TEL-ETH              33105
- 3. BTC-EUR              21524
- 4. XMR-ETH              20268
- 5. TEL-BTC              19626
- 6. DASH-ETH             19267
- 7. XMR-BTC              15262
- 8. ZEC-BTC              13614
- 9. ONT-ETH              13521
-10. AAVE-BTC             12798
-11. DASH-BTC             12253
-12. XRP-ETH              12189
-13. TRAC-ETH             11515
-14. LTC-ETH              11154
-15. LYX-ETH              11101
-16. CRO-BTC              10634
-17. ETC-ETH              10419
-18. DAG-ETH              10377
-19. XLM-ETH              10286
-20. XRP-BTC              10190
+	r := csv.NewReader(f)
+	r.FieldsPerRecord = -1
 
-leg3_symbol:
- 1. BTC-USDT             263592
- 2. ETH-USDT             121082
- 3. ETH-BTC              58734
- 4. USDT-EUR             23410
- 5. KCS-USDT             23108
- 6. BTC-EUR              19647
- 7. TEL-USDT             19263
- 8. XMR-USDT             14825
- 9. TRX-USDT             12704
-10. DASH-USDT            12675
-11. XRP-USDT             12382
-12. LTC-USDT             11975
-13. TRAC-USDT            8462
-14. ONT-USDT             8065
-15. DOGE-USDT            7733
-16. ATOM-USDT            7662
-17. XLM-USDT             7662
-18. ETC-USDT             7187
-19. TEL-BTC              7103
-20. ZEC-USDT             6869
+	rows, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) < 2 {
+		return nil, nil
+	}
 
-=== CLEAN SUBSET ===
-clean_rows: 1
-clean_ratio: 0.0000
+	header := map[string]int{}
+	for i, col := range rows[0] {
+		header[strings.TrimSpace(col)] = i
+	}
 
-reports saved to ./arb_reports
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_pr
+	events := make([]Event, 0, len(rows)-1)
+	for _, row := range rows[1:] {
+		if isRowEmpty(row) {
+			continue
+		}
+
+		e := Event{
+			TSUnixMs:            getInt64(row, header, "ts_unix_ms"),
+			A:                   getString(row, header, "A"),
+			B:                   getString(row, header, "B"),
+			C:                   getString(row, header, "C"),
+			ProfitPct:           getFloat(row, header, "profit_pct"),
+			ProfitUSDT:          getFloat(row, header, "profit_usdt"),
+			VolumeUSDT:          getFloat(row, header, "volume_usdt"),
+			FinalUSDT:           getFloat(row, header, "final_usdt"),
+			OpportunityStrength: getFloat(row, header, "opportunity_strength"),
+			AgeMinMs:            getFloat(row, header, "age_min_ms"),
+			AgeMaxMs:            getFloat(row, header, "age_max_ms"),
+			AgeSpreadMs:         getFloat(row, header, "age_spread_ms"),
+
+			Leg1Symbol: getString(row, header, "leg1_symbol"),
+			Leg1Side:   getString(row, header, "leg1_side"),
+			Leg1AgeMs:  getFloat(row, header, "leg1_age_ms"),
+
+			Leg2Symbol: getString(row, header, "leg2_symbol"),
+			Leg2Side:   getString(row, header, "leg2_side"),
+			Leg2AgeMs:  getFloat(row, header, "leg2_age_ms"),
+
+			Leg3Symbol: getString(row, header, "leg3_symbol"),
+			Leg3Side:   getString(row, header, "leg3_side"),
+			Leg3AgeMs:  getFloat(row, header, "leg3_age_ms"),
+		}
+		e.Triangle = e.A + "->" + e.B + "->" + e.C
+		events = append(events, e)
+	}
+
+	return events, nil
+}
+
+func classify(events []Event) (RejectStats, []Event) {
+	var rs RejectStats
+	usable := make([]Event, 0, len(events))
+
+	for _, e := range events {
+		rs.Total++
+
+		rejected := false
+
+		if e.A != "USDT" {
+			// если пользователь уже уберёт BTC anchor из CSV, это почти всегда не сработает,
+			// но оставим защиту на всякий случай
+			rejected = true
+		}
+
+		if e.AgeMaxMs > maxAgeMs {
+			rs.RejectAgeMax++
+			rejected = true
+		}
+		if e.AgeSpreadMs > maxSpreadMs {
+			rs.RejectAgeSpread++
+			rejected = true
+		}
+		if e.VolumeUSDT < minVolumeUSDT {
+			rs.RejectVolume++
+			rejected = true
+		}
+		if e.ProfitPct <= 0 {
+			rs.RejectProfit++
+			rejected = true
+		}
+
+		if !rejected {
+			rs.Usable++
+			usable = append(usable, e)
+		}
+	}
+
+	return rs, usable
+}
+
+func printBasic(events []Event) {
+	fmt.Println("=== BASIC ===")
+	fmt.Printf("rows: %d\n", len(events))
+
+	minTS := events[0].TSUnixMs
+	maxTS := events[0].TSUnixMs
+	triSet := map[string]struct{}{}
+
+	for _, e := range events {
+		if e.TSUnixMs > 0 {
+			if e.TSUnixMs < minTS {
+				minTS = e.TSUnixMs
+			}
+			if e.TSUnixMs > maxTS {
+				maxTS = e.TSUnixMs
+			}
+		}
+		triSet[e.Triangle] = struct{}{}
+	}
+
+	if maxTS > minTS {
+		durationSec := float64(maxTS-minTS) / 1000.0
+		eventsPerMin := float64(len(events)) / durationSec * 60.0
+		fmt.Printf("duration_sec: %.2f\n", durationSec)
+		fmt.Printf("events_per_min: %.2f\n", eventsPerMin)
+	}
+	fmt.Printf("unique_triangles: %d\n", len(triSet))
+}
+
+func printProfitStats(events []Event) {
+	fmt.Println("\n=== PROFIT ===")
+	printOneStats("profit_pct", collect(events, func(e Event) float64 { return e.ProfitPct }))
+	printOneStats("profit_usdt", collect(events, func(e Event) float64 { return e.ProfitUSDT }))
+	printOneStats("volume_usdt", collect(events, func(e Event) float64 { return e.VolumeUSDT }))
+	printOneStats("opportunity_strength", collect(events, func(e Event) float64 { return e.OpportunityStrength } }))
+
+	total := float64(len(events))
+	var gt0, gt01, gt02 int
+	for _, e := range events {
+		if e.ProfitPct > 0 {
+			gt0++
+		}
+		if e.ProfitPct > 0.001 {
+			gt01++
+		}
+		if e.ProfitPct > 0.002 {
+			gt02++
+		}
+	}
+	fmt.Printf("\nshare(profit_pct > 0): %.6f\n", float64(gt0)/total)
+	fmt.Printf("share(profit_pct > 0.001): %.6f\n", float64(gt01)/total)
+	fmt.Printf("share(profit_pct > 0.002): %.6f\n", float64(gt02)/total)
+}
+
+func printAgeStats(events []Event) {
+	fmt.Println("\n=== AGE ===")
+	printOneStats("age_min_ms", collect(events, func(e Event) float64 { return e.AgeMinMs }))
+	printOneStats("age_max_ms", collect(events, func(e Event) float64 { return e.AgeMaxMs }))
+	printOneStats("age_spread_ms", collect(events, func(e Event) float64 { return e.AgeSpreadMs }))
+
+	total := float64(len(events))
+	var max180, max360, maxOver360 int
+	var spread50, spread180, spreadOver180 int
+
+	for _, e := range events {
+		if e.AgeMaxMs <= 180 {
+			max180++
+		}
+		if e.AgeMaxMs <= 360 {
+			max360++
+		}
+		if e.AgeMaxMs > 360 {
+			maxOver360++
+		}
+
+		if e.AgeSpreadMs <= 50 {
+			spread50++
+		}
+		if e.AgeSpreadMs <= 180 {
+			spread180++
+		}
+		if e.AgeSpreadMs > 180 {
+			spreadOver180++
+		}
+	}
+
+	fmt.Printf("\nshare(age_max_ms <= 180): %.6f\n", float64(max180)/total)
+	fmt.Printf("share(age_max_ms <= 360): %.6f\n", float64(max360)/total)
+	fmt.Printf("share(age_max_ms > 360): %.6f\n", float64(maxOver360)/total)
+
+	fmt.Printf("\nshare(age_spread_ms <= 50): %.6f\n", float64(spread50)/total)
+	fmt.Printf("share(age_spread_ms <= 180): %.6f\n", float64(spread180)/total)
+	fmt.Printf("share(age_spread_ms > 180): %.6f\n", float64(spreadOver180)/total)
+}
+
+func printRejects(rs RejectStats) {
+	fmt.Println("\n=== REJECTS ===")
+	fmt.Printf("total: %d\n", rs.Total)
+	fmt.Printf("reject_age_max: %d\n", rs.RejectAgeMax)
+	fmt.Printf("reject_age_spread: %d\n", rs.RejectAgeSpread)
+	fmt.Printf("reject_volume: %d\n", rs.RejectVolume)
+	fmt.Printf("reject_profit: %d\n", rs.RejectProfit)
+	fmt.Printf("usable: %d\n", rs.Usable)
+	if rs.Total > 0 {
+		fmt.Printf("usable_ratio: %.6f\n", float64(rs.Usable)/float64(rs.Total))
+	}
+}
+
+func printTopTrianglesByCount(events []Event, topN int) {
+	fmt.Println("\n=== TOP TRIANGLES BY COUNT ===")
+	cnt := map[string]int{}
+	for _, e := range events {
+		if e.A != "USDT" {
+			continue
+		}
+		cnt[e.Triangle]++
+	}
+
+	type kv struct {
+		Key   string
+		Value int
+	}
+	arr := make([]kv, 0, len(cnt))
+	for k, v := range cnt {
+		arr = append(arr, kv{k, v})
+	}
+	sort.Slice(arr, func(i, j int) bool {
+		if arr[i].Value == arr[j].Value {
+			return arr[i].Key < arr[j].Key
+		}
+		return arr[i].Value > arr[j].Value
+	})
+
+	limit := min(topN, len(arr))
+	for i := 0; i < limit; i++ {
+		fmt.Printf("%2d. %-32s %d\n", i+1, arr[i].Key, arr[i].Value)
+	}
+}
+
+func printTopTrianglesByMeanProfit(events []Event, topN int) {
+	fmt.Println("\n=== TOP TRIANGLES BY MEAN PROFIT ===")
+	group := map[string][]Event{}
+	for _, e := range events {
+		if e.A != "USDT" {
+			continue
+		}
+		group[e.Triangle] = append(group[e.Triangle], e)
+	}
+
+	aggs := make([]TriangleAgg, 0, len(group))
+	for tri, rows := range group {
+		profits := make([]float64, 0, len(rows))
+		var sumProfit, sumVolume, sumAgeMax, sumAgeSpread float64
+		maxProfit := -math.MaxFloat64
+
+		for _, e := range rows {
+			profits = append(profits, e.ProfitPct)
+			sumProfit += e.ProfitPct
+			sumVolume += e.VolumeUSDT
+			sumAgeMax += e.AgeMaxMs
+			sumAgeSpread += e.AgeSpreadMs
+			if e.ProfitPct > maxProfit {
+				maxProfit = e.ProfitPct
+			}
+		}
+
+		sort.Float64s(profits)
+		aggs = append(aggs, TriangleAgg{
+			Triangle:        tri,
+			Count:           len(rows),
+			MeanProfitPct:   sumProfit / float64(len(rows)),
+			MedianProfitPct: percentileSorted(profits, 0.50),
+			MaxProfitPct:    maxProfit,
+			MeanVolumeUSDT:  sumVolume / float64(len(rows)),
+			MeanAgeMaxMs:    sumAgeMax / float64(len(rows)),
+			MeanAgeSpreadMs: sumAgeSpread / float64(len(rows)),
+		})
+	}
+
+	sort.Slice(aggs, func(i, j int) bool {
+		if aggs[i].MeanProfitPct == aggs[j].MeanProfitPct {
+			return aggs[i].Count > aggs[j].Count
+		}
+		return aggs[i].MeanProfitPct > aggs[j].MeanProfitPct
+	})
+
+	limit := min(topN, len(aggs))
+	for i := 0; i < limit; i++ {
+		a := aggs[i]
+		fmt.Printf(
+			"%2d. %-32s count=%d mean_profit_pct=%.6f median=%.6f max=%.6f mean_vol=%.2f mean_age_max=%.2f mean_age_spread=%.2f\n",
+			i+1, a.Triangle, a.Count, a.MeanProfitPct, a.MedianProfitPct, a.MaxProfitPct,
+			a.MeanVolumeUSDT, a.MeanAgeMaxMs, a.MeanAgeSpreadMs,
+		)
+	}
+}
+
+func printSymbolQuality(events, usable []Event, topN int) {
+	fmt.Println("\n=== SYMBOL QUALITY (ALL EVENTS) ===")
+	printOneSymbolQuality("leg1_symbol", collectSymbolQuality(events, func(e Event) (string, float64) { return e.Leg1Symbol, e.Leg1AgeMs }), topN)
+	printOneSymbolQuality("leg2_symbol", collectSymbolQuality(events, func(e Event) (string, float64) { return e.Leg2Symbol, e.Leg2AgeMs }), topN)
+	printOneSymbolQuality("leg3_symbol", collectSymbolQuality(events, func(e Event) (string, float64) { return e.Leg3Symbol, e.Leg3AgeMs }), topN)
+
+	fmt.Println("\n=== SYMBOL QUALITY (USABLE EVENTS) ===")
+	printOneSymbolQuality("leg1_symbol", collectSymbolQuality(usable, func(e Event) (string, float64) { return e.Leg1Symbol, e.Leg1AgeMs }), topN)
+	printOneSymbolQuality("leg2_symbol", collectSymbolQuality(usable, func(e Event) (string, float64) { return e.Leg2Symbol, e.Leg2AgeMs }), topN)
+	printOneSymbolQuality("leg3_symbol", collectSymbolQuality(usable, func(e Event) (string, float64) { return e.Leg3Symbol, e.Leg3AgeMs }), topN)
+}
+
+func collectSymbolQuality(events []Event, f func(Event) (string, float64)) []SymbolQuality {
+	m := map[string][]float64{}
+	for _, e := range events {
+		if e.A != "USDT" {
+			continue
+		}
+		symbol, age := f(e)
+		if symbol == "" {
+			continue
+		}
+		m[symbol] = append(m[symbol], age)
+	}
+
+	out := make([]SymbolQuality, 0, len(m))
+	for sym, ages := range m {
+		sort.Float64s(ages)
+		sum := 0.0
+		for _, a := range ages {
+			sum += a
+		}
+		out = append(out, SymbolQuality{
+			Symbol:    sym,
+			Count:     len(ages),
+			MeanAgeMs: sum / float64(len(ages)),
+			P50AgeMs:  percentileSorted(ages, 0.50),
+			P95AgeMs:  percentileSorted(ages, 0.95),
+			MaxAgeMs:  ages[len(ages)-1],
+		})
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count == out[j].Count {
+			return out[i].MeanAgeMs < out[j].MeanAgeMs
+		}
+		return out[i].Count > out[j].Count
+	})
+
+	return out
+}
+
+func printOneSymbolQuality(name string, rows []SymbolQuality, topN int) {
+	fmt.Printf("\n%s:\n", name)
+	limit := min(topN, len(rows))
+	for i := 0; i < limit; i++ {
+		r := rows[i]
+		fmt.Printf("%2d. %-20s count=%d mean_age=%.2f p50=%.2f p95=%.2f max=%.2f\n",
+			i+1, r.Symbol, r.Count, r.MeanAgeMs, r.P50AgeMs, r.P95AgeMs, r.MaxAgeMs)
+	}
+}
+
+func exportReports(dir string, events, usable []Event, rejects RejectStats) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	if err := writeEventsCSV(filepath.Join(dir, "usable_subset.csv"), usable); err != nil {
+		return err
+	}
+
+	if err := writeTriangleCountCSV(filepath.Join(dir, "top_triangles_by_count.csv"), events); err != nil {
+		return err
+	}
+
+	if err := writeTriangleSummaryCSV(filepath.Join(dir, "usable_triangles_summary.csv"), usable); err != nil {
+		return err
+	}
+
+	if err := writeRejectsCSV(filepath.Join(dir, "reject_summary.csv"), rejects); err != nil {
+		return err
+	}
+
+	if err := writeSymbolQualityCSV(filepath.Join(dir, "symbol_quality_leg1.csv"),
+		collectSymbolQuality(events, func(e Event) (string, float64) { return e.Leg1Symbol, e.Leg1AgeMs })); err != nil {
+		return err
+	}
+
+	if err := writeSymbolQualityCSV(filepath.Join(dir, "symbol_quality_leg2.csv"),
+		collectSymbolQuality(events, func(e Event) (string, float64) { return e.Leg2Symbol, e.Leg2AgeMs })); err != nil {
+		return err
+	}
+
+	if err := writeSymbolQualityCSV(filepath.Join(dir, "symbol_quality_leg3.csv"),
+		collectSymbolQuality(events, func(e Event) (string, float64) { return e.Leg3Symbol, e.Leg3AgeMs })); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeEventsCSV(path string, events []Event) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	header := []string{
+		"ts_unix_ms", "A", "B", "C", "triangle",
+		"profit_pct", "profit_usdt", "volume_usdt", "final_usdt", "opportunity_strength",
+		"age_min_ms", "age_max_ms", "age_spread_ms",
+		"leg1_symbol", "leg1_side", "leg1_age_ms",
+		"leg2_symbol", "leg2_side", "leg2_age_ms",
+		"leg3_symbol", "leg3_side", "leg3_age_ms",
+	}
+	if err := w.Write(header); err != nil {
+		return err
+	}
+
+	for _, e := range events {
+		row := []string{
+			strconv.FormatInt(e.TSUnixMs, 10),
+			e.A, e.B, e.C, e.Triangle,
+			ff(e.ProfitPct), ff(e.ProfitUSDT), ff(e.VolumeUSDT), ff(e.FinalUSDT), ff(e.OpportunityStrength),
+			ff(e.AgeMinMs), ff(e.AgeMaxMs), ff(e.AgeSpreadMs),
+			e.Leg1Symbol, e.Leg1Side, ff(e.Leg1AgeMs),
+			e.Leg2Symbol, e.Leg2Side, ff(e.Leg2AgeMs),
+			e.Leg3Symbol, e.Leg3Side, ff(e.Leg3AgeMs),
+		}
+		if err := w.Write(row); err != nil {
+			return err
+		}
+	}
+	return w.Error()
+}
+
+func writeRejectsCSV(path string, rs RejectStats) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write([]string{"metric", "value"}); err != nil {
+		return err
+	}
+	rows := [][]string{
+		{"total", strconv.Itoa(rs.Total)},
+		{"reject_age_max", strconv.Itoa(rs.RejectAgeMax)},
+		{"reject_age_spread", strconv.Itoa(rs.RejectAgeSpread)},
+		{"reject_volume", strconv.Itoa(rs.RejectVolume)},
+		{"reject_profit", strconv.Itoa(rs.RejectProfit)},
+		{"usable", strconv.Itoa(rs.Usable)},
+	}
+	for _, row := range rows {
+		if err := w.Write(row); err != nil {
+			return err
+		}
+	}
+	return w.Error()
+}
+
+func writeTriangleCountCSV(path string, events []Event) error {
+	cnt := map[string]int{}
+	for _, e := range events {
+		if e.A != "USDT" {
+			continue
+		}
+		cnt[e.Triangle]++
+	}
+
+	type row struct {
+		Triangle string
+		Count    int
+	}
+	rows := make([]row, 0, len(cnt))
+	for k, v := range cnt {
+		rows = append(rows, row{k, v})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Count == rows[j].Count {
+			return rows[i].Triangle < rows[j].Triangle
+		}
+		return rows[i].Count > rows[j].Count
+	})
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write([]string{"triangle", "count"}); err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if err := w.Write([]string{r.Triangle, strconv.Itoa(r.Count)}); err != nil {
+			return err
+		}
+	}
+	return w.Error()
+}
+
+func writeTriangleSummaryCSV(path string, events []Event) error {
+	group := map[string][]Event{}
+	for _, e := range events {
+		if e.A != "USDT" {
+			continue
+		}
+		group[e.Triangle] = append(group[e.Triangle], e)
+	}
+
+	rows := make([]TriangleAgg, 0, len(group))
+	for tri, evs := range group {
+		profits := make([]float64, 0, len(evs))
+		var sumProfit, sumVol, sumAgeMax, sumAgeSpread float64
+		maxProfit := -math.MaxFloat64
+
+		for _, e := range evs {
+			profits = append(profits, e.ProfitPct)
+			sumProfit += e.ProfitPct
+			sumVol += e.VolumeUSDT
+			sumAgeMax += e.AgeMaxMs
+			sumAgeSpread += e.AgeSpreadMs
+			if e.ProfitPct > maxProfit {
+				maxProfit = e.ProfitPct
+			}
+		}
+		sort.Float64s(profits)
+
+		rows = append(rows, TriangleAgg{
+			Triangle:        tri,
+			Count:           len(evs),
+			MeanProfitPct:   sumProfit / float64(len(evs)),
+			MedianProfitPct: percentileSorted(profits, 0.50),
+			MaxProfitPct:    maxProfit,
+			MeanVolumeUSDT:  sumVol / float64(len(evs)),
+			MeanAgeMaxMs:    sumAgeMax / float64(len(evs)),
+			MeanAgeSpreadMs: sumAgeSpread / float64(len(evs)),
+		})
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].MeanProfitPct == rows[j].MeanProfitPct {
+			return rows[i].Count > rows[j].Count
+		}
+		return rows[i].MeanProfitPct > rows[j].MeanProfitPct
+	})
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	header := []string{
+		"triangle", "count", "mean_profit_pct", "median_profit_pct",
+		"max_profit_pct", "mean_volume_usdt", "mean_age_max_ms", "mean_age_spread_ms",
+	}
+	if err := w.Write(header); err != nil {
+		return err
+	}
+
+	for _, r := range rows {
+		row := []string{
+			r.Triangle,
+			strconv.Itoa(r.Count),
+			ff(r.MeanProfitPct),
+			ff(r.MedianProfitPct),
+			ff(r.MaxProfitPct),
+			ff(r.MeanVolumeUSDT),
+			ff(r.MeanAgeMaxMs),
+			ff(r.MeanAgeSpreadMs),
+		}
+		if err := w.Write(row); err != nil {
+			return err
+		}
+	}
+	return w.Error()
+}
+
+func writeSymbolQualityCSV(path string, rows []SymbolQuality) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write([]string{"symbol", "count", "mean_age_ms", "p50_age_ms", "p95_age_ms", "max_age_ms"}); err != nil {
+		return err
+	}
+	for _, r := range rows {
+		row := []string{
+			r.Symbol,
+			strconv.Itoa(r.Count),
+			ff(r.MeanAgeMs),
+			ff(r.P50AgeMs),
+			ff(r.P95AgeMs),
+			ff(r.MaxAgeMs),
+		}
+		if err := w.Write(row); err != nil {
+			return err
+		}
+	}
+	return w.Error()
+}
+
+func printOneStats(name string, values []float64) {
+	s := calcStats(values)
+	fmt.Printf(
+		"\n%s:\ncount=%d min=%.6f max=%.6f mean=%.6f p50=%.6f p90=%.6f p95=%.6f p99=%.6f\n",
+		name, s.Count, s.Min, s.Max, s.Mean, s.P50, s.P90, s.P95, s.P99,
+	)
+}
+
+func calcStats(values []float64) Stats {
+	if len(values) == 0 {
+		return Stats{}
+	}
+
+	cp := append([]float64(nil), values...)
+	sort.Float64s(cp)
+
+	sum := 0.0
+	for _, v := range cp {
+		sum += v
+	}
+
+	return Stats{
+		Count: len(cp),
+		Min:   cp[0],
+		Max:   cp[len(cp)-1],
+		Mean:  sum / float64(len(cp)),
+		P50:   percentileSorted(cp, 0.50),
+		P90:   percentileSorted(cp, 0.90),
+		P95:   percentileSorted(cp, 0.95),
+		P99:   percentileSorted(cp, 0.99),
+	}
+}
+
+func percentileSorted(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if len(sorted) == 1 {
+		return sorted[0]
+	}
+	if p <= 0 {
+		return sorted[0]
+	}
+	if p >= 1 {
+		return sorted[len(sorted)-1]
+	}
+
+	pos := p * float64(len(sorted)-1)
+	lo := int(math.Floor(pos))
+	hi := int(math.Ceil(pos))
+	if lo == hi {
+		return sorted[lo]
+	}
+	w := pos - float64(lo)
+	return sorted[lo]*(1-w) + sorted[hi]*w
+}
+
+func collect(events []Event, f func(Event) float64) []float64 {
+	out := make([]float64, 0, len(events))
+	for _, e := range events {
+		out = append(out, f(e))
+	}
+	return out
+}
+
+func getString(row []string, header map[string]int, key string) string {
+	idx, ok := header[key]
+	if !ok || idx >= len(row) {
+		return ""
+	}
+	return strings.TrimSpace(row[idx])
+}
+
+func getFloat(row []string, header map[string]int, key string) float64 {
+	s := getString(row, header, key)
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", "."), 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func getInt64(row []string, header map[string]int, key string) int64 {
+	s := getString(row, header, key)
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func isRowEmpty(row []string) bool {
+	for _, s := range row {
+		if strings.TrimSpace(s) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func ff(v float64) string {
+	return strconv.FormatFloat(v, 'f', 6, 64)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
