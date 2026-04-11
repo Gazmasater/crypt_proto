@@ -10,10 +10,16 @@ git push origin new_arh --force
 
 
 
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ git rm --cached cmd/arb/metrics/arb_metrics.csv
-fatal: pathspec 'cmd/arb/metrics/arb_metrics.csv' did not match any files
-gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ 
+git filter-branch --force --index-filter \
+'git rm --cached --ignore-unmatch cmd/arb/metrics/arb_metrics.csv' \
+--prune-empty --tag-name-filter cat -- new_arh
 
 
+rm -rf .git/refs/original/
+git reflog expire --expire=now --all
+git gc --prune=now --aggressive
+
+
+git push origin new_arh --force
 
 
