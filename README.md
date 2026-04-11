@@ -979,3 +979,23 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+
+
+
+
+gaz358@gaz358-BOD-WXX9:~/myprog/crypt_proto$ git push origin new_arh
+Enumerating objects: 37, done.
+Counting objects: 100% (37/37), done.
+Delta compression using up to 8 threads
+Compressing objects: 100% (30/30), done.
+Writing objects: 100% (30/30), 50.59 MiB | 3.72 MiB/s, done.
+Total 30 (delta 9), reused 0 (delta 0), pack-reused 0
+remote: Resolving deltas: 100% (9/9), completed with 4 local objects.
+remote: error: Trace: b882d85c6ddbae59503df56bbe60a5a3489cad8394c7dd26fef4e3201bc41fc2
+remote: error: See https://gh.io/lfs for more information.
+remote: error: File cmd/arb/metrics/arb_metrics.csv is 223.65 MB; this exceeds GitHub's file size limit of 100.00 MB
+remote: error: GH001: Large files detected. You may want to try Git Large File Storage - https://git-lfs.github.com.
+To https://github.com/Gazmasater/crypt_proto.git
+ ! [remote rejected] new_arh -> new_arh (pre-receive hook declined)
+error: failed to push some refs to 'https://github.com/Gazmasater/crypt_proto.git'
