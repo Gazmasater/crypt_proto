@@ -54,17 +54,21 @@ func (s *MemoryStore) Get(exchange, symbol string) (Quote, bool) {
 
 // GetLatestBefore возвращает самую свежую котировку не позже ts и не старше maxAgeMS.
 func (s *MemoryStore) GetLatestBefore(exchange, symbol string, ts int64, maxAgeMS int64) (Quote, bool) {
-	if ts == 0 {
+	if ts <= 0 {
 		ts = time.Now().UnixMilli()
 	}
 
 	key := exchange + "|" + symbol
-	cutoff := ts - maxAgeMS
+	cutoff := int64(0)
+	if maxAgeMS > 0 {
+		cutoff = ts - maxAgeMS
+	}
 
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	buf, ok := s.history[key]
 	if !ok || len(buf.items) == 0 {
-		s.mu.RUnlock()
 		return Quote{}, false
 	}
 
@@ -76,10 +80,9 @@ func (s *MemoryStore) GetLatestBefore(exchange, symbol string, ts int64, maxAgeM
 		if maxAgeMS > 0 && q.Timestamp < cutoff {
 			break
 		}
-		s.mu.RUnlock()
 		return q, true
 	}
-	s.mu.RUnlock()
+
 	return Quote{}, false
 }
 
@@ -87,9 +90,10 @@ func (s *MemoryStore) GetLatestBefore(exchange, symbol string, ts int64, maxAgeM
 func (s *MemoryStore) apply(md *models.MarketData) {
 	key := md.Exchange + "|" + md.Symbol
 	timestamp := md.Timestamp
-	if timestamp == 0 {
+	if timestamp <= 0 {
 		timestamp = time.Now().UnixMilli()
 	}
+
 	quote := Quote{
 		Bid:       md.Bid,
 		Ask:       md.Ask,
@@ -101,7 +105,9 @@ func (s *MemoryStore) apply(md *models.MarketData) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.latest[key] = quote
+	if prev, ok := s.latest[key]; !ok || quote.Timestamp >= prev.Timestamp {
+		s.latest[key] = quote
+	}
 
 	buf, ok := s.history[key]
 	if !ok {

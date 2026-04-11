@@ -9,13 +9,15 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"crypt_proto/internal/queue"
 	"crypt_proto/pkg/models"
 )
 
-const feeM = 0.9992
+const (
+	feeM                 = 0.9992
+	defaultMaxQuoteAgeMS = int64(400)
+)
 
 type LegRule struct {
 	Index int
@@ -118,10 +120,11 @@ func (mw *metricsWriter) Write(record []string) error {
 }
 
 type Calculator struct {
-	mem      *queue.MemoryStore
-	bySymbol map[string][]*Triangle
-	fileLog  *log.Logger
-	metrics  *metricsWriter
+	mem           *queue.MemoryStore
+	bySymbol      map[string][]*Triangle
+	fileLog       *log.Logger
+	metrics       *metricsWriter
+	maxQuoteAgeMS int64
 }
 
 func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
@@ -148,10 +151,11 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 	log.Printf("[Calculator] indexed %d symbols\n", len(bySymbol))
 
 	return &Calculator{
-		mem:      mem,
-		bySymbol: bySymbol,
-		fileLog:  log.New(f, "", log.LstdFlags),
-		metrics:  metrics,
+		mem:           mem,
+		bySymbol:      bySymbol,
+		fileLog:       log.New(f, "", log.LstdFlags),
+		metrics:       metrics,
+		maxQuoteAgeMS: defaultMaxQuoteAgeMS,
 	}
 }
 
@@ -163,6 +167,9 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 	}()
 
 	for md := range in {
+		if md == nil {
+			continue
+		}
 		c.mem.Push(md)
 
 		tris := c.bySymbol[md.Symbol]
@@ -171,15 +178,20 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 		}
 
 		for _, tri := range tris {
-			c.calcTriangle(tri)
+			c.calcTriangle(md, tri)
 		}
 	}
 }
 
-func (c *Calculator) calcTriangle(tri *Triangle) {
+func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
+	anchorTS := md.Timestamp
+	if anchorTS <= 0 {
+		return
+	}
+
 	var q [3]queue.Quote
 	for i, leg := range tri.Legs {
-		quote, ok := c.mem.Get("KuCoin", leg.Symbol)
+		quote, ok := c.mem.GetLatestBefore(md.Exchange, leg.Symbol, anchorTS, c.maxQuoteAgeMS)
 		if !ok {
 			return
 		}
@@ -188,6 +200,13 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 		}
 		q[i] = quote
 	}
+
+	ages := [3]int64{
+		quoteLagMS(anchorTS, q[0]),
+		quoteLagMS(anchorTS, q[1]),
+		quoteLagMS(anchorTS, q[2]),
+	}
+	minAge, maxAge, spreadAge := minMaxSpread(ages)
 
 	maxStart, ok := computeMaxStartTopOfBook(tri, q)
 	if !ok || maxStart <= 0 {
@@ -201,17 +220,10 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 
 	profitUSDT := finalAmount - maxStart
 	profitPct := profitUSDT / maxStart
-	nowMS := time.Now().UnixMilli()
-	ages := [3]int64{
-		quoteAgeMS(nowMS, q[0]),
-		quoteAgeMS(nowMS, q[1]),
-		quoteAgeMS(nowMS, q[2]),
-	}
-	minAge, maxAge, spreadAge := minMaxSpread(ages)
 	strength := computeOpportunityStrength(profitPct, maxStart, spreadAge, maxAge)
 
 	record := []string{
-		strconv.FormatInt(nowMS, 10),
+		strconv.FormatInt(anchorTS, 10),
 		fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C),
 		tri.A, tri.B, tri.C,
 		fmtFloat(profitPct), fmtFloat(profitUSDT), fmtFloat(maxStart), fmtFloat(finalAmount),
@@ -227,11 +239,12 @@ func (c *Calculator) calcTriangle(tri *Triangle) {
 	if profitPct > 0.0 && maxStart > 50 {
 		msg := fmt.Sprintf(
 			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.6f USDT | "+
-				"l1=%s %s out=%.8f age=%dms | "+
+				"anchor=%d | l1=%s %s out=%.8f age=%dms | "+
 				"l2=%s %s out=%.8f age=%dms | "+
 				"l3=%s %s out=%.8f age=%dms",
 			tri.A, tri.B, tri.C,
 			profitPct*100, maxStart, profitUSDT,
+			anchorTS,
 			tri.Legs[0].Symbol, tri.Legs[0].Side, diag[0].Out, ages[0],
 			tri.Legs[1].Symbol, tri.Legs[1].Side, diag[1].Out, ages[1],
 			tri.Legs[2].Symbol, tri.Legs[2].Side, diag[2].Out, ages[2],
@@ -539,11 +552,14 @@ func firstPositive(vals ...float64) float64 {
 	return 0
 }
 
-func quoteAgeMS(nowMS int64, q queue.Quote) int64 {
-	if q.Timestamp <= 0 {
+func quoteLagMS(anchorTS int64, q queue.Quote) int64 {
+	if q.Timestamp <= 0 || anchorTS <= 0 {
 		return -1
 	}
-	return nowMS - q.Timestamp
+	if q.Timestamp > anchorTS {
+		return 0
+	}
+	return anchorTS - q.Timestamp
 }
 
 func minMaxSpread(ages [3]int64) (int64, int64, int64) {

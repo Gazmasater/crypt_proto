@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -254,6 +255,7 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 	ws.last[symbol] = Last{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
 
+	recvTS := time.Now().UnixMilli()
 	md := &models.MarketData{
 		Exchange:  "KuCoin",
 		Symbol:    symbol,
@@ -261,12 +263,70 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 		Ask:       ask,
 		BidSize:   bidSize,
 		AskSize:   askSize,
-		Timestamp: time.Now().UnixMilli(),
+		Timestamp: extractKuCoinTimestampMS(msg, recvTS),
 	}
 
 	select {
 	case c.out <- md:
 	case <-c.ctx.Done():
+	}
+}
+
+func extractKuCoinTimestampMS(msg []byte, fallback int64) int64 {
+	for _, path := range []string{"data.time", "data.ts", "data.timestamp", "ts", "time"} {
+		v := gjson.GetBytes(msg, path)
+		if !v.Exists() {
+			continue
+		}
+		ts := parseTSMillis(v)
+		if ts > 0 {
+			return ts
+		}
+	}
+	return fallback
+}
+
+func parseTSMillis(v gjson.Result) int64 {
+	s := strings.TrimSpace(v.String())
+	if s == "" {
+		return 0
+	}
+	n, err := timeFromNumericString(s)
+	if err == nil && n > 0 {
+		return n
+	}
+	return 0
+}
+
+func timeFromNumericString(s string) (int64, error) {
+	if strings.Contains(s, ".") {
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, err
+		}
+		return normalizeMillis(int64(f)), nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return normalizeMillis(n), nil
+}
+
+func normalizeMillis(ts int64) int64 {
+	switch {
+	case ts <= 0:
+		return 0
+	case ts >= 1_000_000_000_000_000_000:
+		return ts / 1_000_000
+	case ts >= 1_000_000_000_000_000:
+		return ts / 1_000
+	case ts >= 1_000_000_000_000:
+		return ts
+	case ts >= 1_000_000_000:
+		return ts * 1000
+	default:
+		return 0
 	}
 }
 
@@ -344,14 +404,18 @@ func readPairsFromCSV(path string) ([]string, error) {
 	return res, nil
 }
 
-func parseLeg(s string) string {
-	parts := strings.Fields(strings.ToUpper(strings.TrimSpace(s)))
+func parseLeg(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Fields(raw)
 	if len(parts) < 2 {
 		return ""
 	}
-	p := strings.Split(parts[1], "/")
-	if len(p) != 2 {
+	pair := strings.Split(parts[1], "/")
+	if len(pair) != 2 {
 		return ""
 	}
-	return p[0] + "-" + p[1]
+	return strings.TrimSpace(pair[0]) + "-" + strings.TrimSpace(pair[1])
 }
