@@ -26,6 +26,9 @@ const (
 	pingInterval   = 20 * time.Second
 	reconnectDelay = 3 * time.Second
 	readTimeout    = 45 * time.Second
+
+	snapshotTimeout = 10 * time.Second
+	httpTimeout     = 10 * time.Second
 )
 
 type KuCoinCollector struct {
@@ -42,11 +45,40 @@ type Last struct {
 	AskSize float64
 }
 
+type bookDelta struct {
+	SequenceStart int64
+	SequenceEnd   int64
+	Bids          []priceLevel
+	Asks          []priceLevel
+	TimestampMS   int64
+}
+
+type priceLevel struct {
+	Price float64
+	Size  float64
+}
+
+type bookState struct {
+	mu sync.Mutex
+
+	bids map[float64]float64
+	asks map[float64]float64
+
+	sequence int64
+	last     Last
+
+	ready       bool
+	needResync  bool
+	buffering   bool
+	buffered    []bookDelta
+	lastEventTS int64
+}
+
 type kucoinWS struct {
 	id      int
 	conn    *websocket.Conn
 	symbols []string
-	last    map[string]Last
+	books   map[string]*bookState
 	writeMu sync.Mutex
 }
 
@@ -68,14 +100,28 @@ func NewKuCoinCollectorFromCSV(path string) (*KuCoinCollector, []string, error) 
 			end = len(symbols)
 		}
 
-		wsList = append(wsList, &kucoinWS{
+		ws := &kucoinWS{
 			id:      len(wsList),
 			symbols: symbols[i:end],
-			last:    make(map[string]Last),
-		})
+			books:   make(map[string]*bookState, end-i),
+		}
+		for _, symbol := range symbols[i:end] {
+			ws.books[symbol] = &bookState{
+				bids:      make(map[float64]float64),
+				asks:      make(map[float64]float64),
+				buffering: true,
+				buffered:  make([]bookDelta, 0, 64),
+			}
+		}
+
+		wsList = append(wsList, ws)
 	}
 
-	c := &KuCoinCollector{ctx: ctx, cancel: cancel, wsList: wsList}
+	c := &KuCoinCollector{
+		ctx:    ctx,
+		cancel: cancel,
+		wsList: wsList,
+	}
 	return c, symbols, nil
 }
 
@@ -112,16 +158,40 @@ func (ws *kucoinWS) run(c *KuCoinCollector) {
 			continue
 		}
 
+		ws.resetBooksForReconnect()
+
 		connDone := make(chan struct{})
-		go ws.subscribeLoop(c.ctx, connDone)
+
 		go ws.pingLoop(c.ctx, connDone)
 
-		if err := ws.readLoop(c); err != nil {
-			log.Printf("[KuCoin WS %d] readLoop ended: %v\n", ws.id, err)
+		readErrCh := make(chan error, 1)
+		go func() {
+			readErrCh <- ws.readLoop(c)
+		}()
+
+		if err := ws.subscribeAll(c.ctx, connDone); err != nil {
+			close(connDone)
+			ws.closeConn()
+			log.Printf("[KuCoin WS %d] subscribe error: %v\n", ws.id, err)
+			time.Sleep(reconnectDelay)
+			continue
 		}
 
+		if err := ws.bootstrapAllBooks(c.ctx); err != nil {
+			close(connDone)
+			ws.closeConn()
+			log.Printf("[KuCoin WS %d] bootstrap error: %v\n", ws.id, err)
+			time.Sleep(reconnectDelay)
+			continue
+		}
+
+		err := <-readErrCh
 		close(connDone)
 		ws.closeConn()
+
+		if err != nil {
+			log.Printf("[KuCoin WS %d] readLoop ended: %v\n", ws.id, err)
+		}
 		log.Printf("[KuCoin WS %d] reconnecting in %v...\n", ws.id, reconnectDelay)
 		time.Sleep(reconnectDelay)
 	}
@@ -167,31 +237,35 @@ func (ws *kucoinWS) connect() error {
 	return nil
 }
 
-func (ws *kucoinWS) subscribeLoop(ctx context.Context, connDone <-chan struct{}) {
+func (ws *kucoinWS) subscribeAll(ctx context.Context, connDone <-chan struct{}) error {
 	t := time.NewTicker(subRate)
 	defer t.Stop()
+
 	for _, s := range ws.symbols {
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		case <-connDone:
-			return
+			return fmt.Errorf("connection closed")
 		case <-t.C:
 			if err := ws.writeJSON(map[string]any{
 				"id":       time.Now().UnixNano(),
 				"type":     "subscribe",
-				"topic":    "/market/ticker:" + s,
+				"topic":    "/market/level2:" + s,
 				"response": true,
 			}); err != nil {
-				return
+				return err
 			}
 		}
 	}
+
+	return nil
 }
 
 func (ws *kucoinWS) pingLoop(ctx context.Context, connDone <-chan struct{}) {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -199,7 +273,10 @@ func (ws *kucoinWS) pingLoop(ctx context.Context, connDone <-chan struct{}) {
 		case <-connDone:
 			return
 		case <-t.C:
-			if err := ws.writeJSON(map[string]any{"id": time.Now().UnixNano(), "type": "ping"}); err != nil {
+			if err := ws.writeJSON(map[string]any{
+				"id":   time.Now().UnixNano(),
+				"type": "ping",
+			}); err != nil {
 				return
 			}
 		}
@@ -211,18 +288,25 @@ func (ws *kucoinWS) readLoop(c *KuCoinCollector) error {
 		if ws.conn == nil {
 			return fmt.Errorf("connection closed")
 		}
+
 		_, msg, err := ws.conn.ReadMessage()
 		if err != nil {
 			return err
 		}
+
 		_ = ws.conn.SetReadDeadline(time.Now().Add(readTimeout))
 		ws.handle(c, msg)
 	}
 }
 
 func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
-	const prefix = "/market/ticker:"
+	const prefix = "/market/level2:"
 	const prefixLen = len(prefix)
+
+	msgType := gjson.GetBytes(msg, "type").String()
+	if msgType != "message" {
+		return
+	}
 
 	topicRes := gjson.GetBytes(msg, "topic")
 	if !topicRes.Exists() {
@@ -238,37 +322,384 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 
 	symbol := raw[1+prefixLen : len(raw)-1]
+	book := ws.books[symbol]
+	if book == nil {
+		return
+	}
+
 	data := gjson.GetBytes(msg, "data")
-	bid := data.Get("bestBid").Float()
-	ask := data.Get("bestAsk").Float()
-	if bid == 0 || ask == 0 {
-		return
-	}
-	bidSize := data.Get("bestBidSize").Float()
-	askSize := data.Get("bestAskSize").Float()
-	if bidSize == 0 || askSize == 0 {
+	if !data.Exists() {
 		return
 	}
 
-	if last, ok := ws.last[symbol]; ok && last.Bid == bid && last.Ask == ask && last.BidSize == bidSize && last.AskSize == askSize {
+	seqStart := data.Get("sequenceStart").Int()
+	seqEnd := data.Get("sequenceEnd").Int()
+	if seqStart == 0 || seqEnd == 0 {
 		return
 	}
-	ws.last[symbol] = Last{Bid: bid, Ask: ask, BidSize: bidSize, AskSize: askSize}
 
-	recvTS := time.Now().UnixMilli()
-	md := &models.MarketData{
-		Exchange:  "KuCoin",
-		Symbol:    symbol,
-		Bid:       bid,
-		Ask:       ask,
-		BidSize:   bidSize,
-		AskSize:   askSize,
-		Timestamp: extractKuCoinTimestampMS(msg, recvTS),
+	delta := bookDelta{
+		SequenceStart: seqStart,
+		SequenceEnd:   seqEnd,
+		Bids:          parseLevels(data.Get("changes.bids")),
+		Asks:          parseLevels(data.Get("changes.asks")),
+		TimestampMS:   extractKuCoinTimestampMS(msg, time.Now().UnixMilli()),
 	}
 
-	select {
-	case c.out <- md:
-	case <-c.ctx.Done():
+	var emit *models.MarketData
+	var needAsyncResync bool
+
+	book.mu.Lock()
+
+	book.lastEventTS = delta.TimestampMS
+
+	if book.buffering {
+		book.buffered = append(book.buffered, delta)
+		book.mu.Unlock()
+		return
+	}
+
+	if book.needResync || !book.ready {
+		book.mu.Unlock()
+		return
+	}
+
+	if delta.SequenceEnd <= book.sequence {
+		book.mu.Unlock()
+		return
+	}
+
+	if delta.SequenceStart > book.sequence+1 {
+		book.ready = false
+		book.needResync = true
+		needAsyncResync = true
+		log.Printf("[KuCoin WS %d] gap detected symbol=%s localSeq=%d seqStart=%d seqEnd=%d\n",
+			ws.id, symbol, book.sequence, delta.SequenceStart, delta.SequenceEnd)
+		book.mu.Unlock()
+
+		if needAsyncResync {
+			go ws.resyncBook(c.ctx, symbol)
+		}
+		return
+	}
+
+	applyDelta(book, delta)
+	top := computeTop(book.bids, book.asks)
+	if top.Bid > 0 && top.Ask > 0 && top.BidSize > 0 && top.AskSize > 0 && top != book.last {
+		book.last = top
+		emit = &models.MarketData{
+			Exchange:  "KuCoin",
+			Symbol:    symbol,
+			Bid:       top.Bid,
+			Ask:       top.Ask,
+			BidSize:   top.BidSize,
+			AskSize:   top.AskSize,
+			Timestamp: delta.TimestampMS,
+		}
+	}
+
+	book.mu.Unlock()
+
+	if emit != nil {
+		select {
+		case c.out <- emit:
+		case <-c.ctx.Done():
+		}
+	}
+}
+
+func (ws *kucoinWS) bootstrapAllBooks(ctx context.Context) error {
+	client := &http.Client{Timeout: httpTimeout}
+
+	for _, symbol := range ws.symbols {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if err := ws.bootstrapBook(ctx, client, symbol); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (ws *kucoinWS) bootstrapBook(ctx context.Context, client *http.Client, symbol string) error {
+	book := ws.books[symbol]
+	if book == nil {
+		return fmt.Errorf("book not found for symbol=%s", symbol)
+	}
+
+	snapshot, err := fetchSnapshot(ctx, client, symbol)
+	if err != nil {
+		return err
+	}
+
+	book.mu.Lock()
+	defer book.mu.Unlock()
+
+	book.bids = make(map[float64]float64, len(snapshot.Bids))
+	book.asks = make(map[float64]float64, len(snapshot.Asks))
+
+	for _, lvl := range snapshot.Bids {
+		if lvl.Size > 0 {
+			book.bids[lvl.Price] = lvl.Size
+		}
+	}
+	for _, lvl := range snapshot.Asks {
+		if lvl.Size > 0 {
+			book.asks[lvl.Price] = lvl.Size
+		}
+	}
+
+	book.sequence = snapshot.Sequence
+
+	replayed := make([]bookDelta, 0, len(book.buffered))
+	for _, d := range book.buffered {
+		if d.SequenceEnd <= snapshot.Sequence {
+			continue
+		}
+		replayed = append(replayed, d)
+	}
+
+	sort.Slice(replayed, func(i, j int) bool {
+		if replayed[i].SequenceStart == replayed[j].SequenceStart {
+			return replayed[i].SequenceEnd < replayed[j].SequenceEnd
+		}
+		return replayed[i].SequenceStart < replayed[j].SequenceStart
+	})
+
+	for _, d := range replayed {
+		if d.SequenceEnd <= book.sequence {
+			continue
+		}
+		if d.SequenceStart > book.sequence+1 {
+			return fmt.Errorf("bootstrap replay gap symbol=%s localSeq=%d seqStart=%d seqEnd=%d",
+				symbol, book.sequence, d.SequenceStart, d.SequenceEnd)
+		}
+		applyDelta(book, d)
+	}
+
+	book.last = computeTop(book.bids, book.asks)
+	book.ready = book.last.Bid > 0 && book.last.Ask > 0 && book.last.BidSize > 0 && book.last.AskSize > 0
+	book.needResync = false
+	book.buffering = false
+	book.buffered = nil
+
+	log.Printf("[KuCoin WS %d] bootstrap complete symbol=%s seq=%d bid=%.10f ask=%.10f\n",
+		ws.id, symbol, book.sequence, book.last.Bid, book.last.Ask)
+
+	return nil
+}
+
+func (ws *kucoinWS) resyncBook(ctx context.Context, symbol string) {
+	client := &http.Client{Timeout: httpTimeout}
+
+	book := ws.books[symbol]
+	if book == nil {
+		return
+	}
+
+	book.mu.Lock()
+	if book.buffering {
+		book.mu.Unlock()
+		return
+	}
+	book.buffering = true
+	book.buffered = book.buffered[:0]
+	book.mu.Unlock()
+
+	resyncCtx, cancel := context.WithTimeout(ctx, snapshotTimeout)
+	defer cancel()
+
+	if err := ws.bootstrapBook(resyncCtx, client, symbol); err != nil {
+		log.Printf("[KuCoin WS %d] resync failed symbol=%s: %v\n", ws.id, symbol, err)
+
+		book.mu.Lock()
+		book.ready = false
+		book.needResync = true
+		book.buffering = false
+		book.mu.Unlock()
+		return
+	}
+
+	log.Printf("[KuCoin WS %d] resync complete symbol=%s\n", ws.id, symbol)
+}
+
+type snapshotBook struct {
+	Sequence int64
+	Bids     []priceLevel
+	Asks     []priceLevel
+}
+
+func fetchSnapshot(ctx context.Context, client *http.Client, symbol string) (*snapshotBook, error) {
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"https://api.kucoin.com/api/v1/market/orderbook/level2_100?symbol="+symbol,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot request symbol=%s: %w", symbol, err)
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Code string `json:"code"`
+		Data struct {
+			Sequence string     `json:"sequence"`
+			Bids     [][]string `json:"bids"`
+			Asks     [][]string `json:"asks"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, fmt.Errorf("decode snapshot symbol=%s: %w", symbol, err)
+	}
+	if r.Code != "" && r.Code != "200000" {
+		return nil, fmt.Errorf("snapshot bad code symbol=%s code=%s", symbol, r.Code)
+	}
+
+	seq, err := strconv.ParseInt(r.Data.Sequence, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse snapshot sequence symbol=%s: %w", symbol, err)
+	}
+
+	out := &snapshotBook{
+		Sequence: seq,
+		Bids:     make([]priceLevel, 0, len(r.Data.Bids)),
+		Asks:     make([]priceLevel, 0, len(r.Data.Asks)),
+	}
+
+	for _, row := range r.Data.Bids {
+		if len(row) < 2 {
+			continue
+		}
+		price, err1 := strconv.ParseFloat(row[0], 64)
+		size, err2 := strconv.ParseFloat(row[1], 64)
+		if err1 != nil || err2 != nil || price <= 0 || size <= 0 {
+			continue
+		}
+		out.Bids = append(out.Bids, priceLevel{Price: price, Size: size})
+	}
+
+	for _, row := range r.Data.Asks {
+		if len(row) < 2 {
+			continue
+		}
+		price, err1 := strconv.ParseFloat(row[0], 64)
+		size, err2 := strconv.ParseFloat(row[1], 64)
+		if err1 != nil || err2 != nil || price <= 0 || size <= 0 {
+			continue
+		}
+		out.Asks = append(out.Asks, priceLevel{Price: price, Size: size})
+	}
+
+	return out, nil
+}
+
+func parseLevels(arr gjson.Result) []priceLevel {
+	if !arr.Exists() || !arr.IsArray() {
+		return nil
+	}
+
+	raw := arr.Array()
+	out := make([]priceLevel, 0, len(raw))
+
+	for _, lvl := range raw {
+		parts := lvl.Array()
+		if len(parts) < 2 {
+			continue
+		}
+
+		price, err1 := strconv.ParseFloat(parts[0].String(), 64)
+		size, err2 := strconv.ParseFloat(parts[1].String(), 64)
+		if err1 != nil || err2 != nil || price <= 0 {
+			continue
+		}
+
+		out = append(out, priceLevel{
+			Price: price,
+			Size:  size,
+		})
+	}
+
+	return out
+}
+
+func applyDelta(book *bookState, delta bookDelta) {
+	for _, lvl := range delta.Bids {
+		if lvl.Size == 0 {
+			delete(book.bids, lvl.Price)
+		} else {
+			book.bids[lvl.Price] = lvl.Size
+		}
+	}
+	for _, lvl := range delta.Asks {
+		if lvl.Size == 0 {
+			delete(book.asks, lvl.Price)
+		} else {
+			book.asks[lvl.Price] = lvl.Size
+		}
+	}
+	book.sequence = delta.SequenceEnd
+}
+
+func computeTop(bids, asks map[float64]float64) Last {
+	var out Last
+
+	bestBid := 0.0
+	for price, size := range bids {
+		if size <= 0 {
+			continue
+		}
+		if price > bestBid {
+			bestBid = price
+			out.Bid = price
+			out.BidSize = size
+		}
+	}
+
+	bestAsk := 0.0
+	for price, size := range asks {
+		if size <= 0 {
+			continue
+		}
+		if bestAsk == 0 || price < bestAsk {
+			bestAsk = price
+			out.Ask = price
+			out.AskSize = size
+		}
+	}
+
+	return out
+}
+
+func (ws *kucoinWS) resetBooksForReconnect() {
+	for _, symbol := range ws.symbols {
+		book := ws.books[symbol]
+		if book == nil {
+			continue
+		}
+
+		book.mu.Lock()
+		book.bids = make(map[float64]float64)
+		book.asks = make(map[float64]float64)
+		book.sequence = 0
+		book.last = Last{}
+		book.ready = false
+		book.needResync = false
+		book.buffering = true
+		book.buffered = book.buffered[:0]
+		book.lastEventTS = 0
+		book.mu.Unlock()
 	}
 }
 
@@ -333,6 +764,7 @@ func normalizeMillis(ts int64) int64 {
 func (ws *kucoinWS) writeJSON(v any) error {
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
+
 	if ws.conn == nil {
 		return fmt.Errorf("connection closed")
 	}
@@ -342,6 +774,7 @@ func (ws *kucoinWS) writeJSON(v any) error {
 func (ws *kucoinWS) closeConn() {
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
+
 	if ws.conn != nil {
 		_ = ws.conn.Close()
 		ws.conn = nil

@@ -16,7 +16,7 @@ import (
 
 const (
 	feeM                 = 0.9992
-	defaultMaxQuoteAgeMS = int64(400)
+	defaultMaxQuoteAgeMS = int64(300)
 )
 
 type LegRule struct {
