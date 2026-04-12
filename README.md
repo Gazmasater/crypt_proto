@@ -26,369 +26,787 @@ git push origin new_arh --force
 
 
 
-2026/04/12 11:10:29 [Calculator] summary checked=1294 written=0 profitable=0 best_pct=-0.2389% best_usdt=-1.885544 best_tri=USDT->ETH->BTC
-2026/04/12 11:10:39 [Calculator] summary checked=1682 written=0 profitable=0 best_pct=-0.2389% best_usdt=-1.885544 best_tri=USDT->ETH->BTC
-2026/04/12 11:10:49 [Calculator] summary checked=2077 written=0 profitable=0 best_pct=-0.2389% best_usdt=-1.885544 best_tri=USDT->ETH->BTC
-2026/04/12 11:10:59 [Calculator] summary checked=2948 written=0 profitable=0 best_pct=-0.2389% best_usdt=-1.885544 best_tri=USDT->ETH->BTC
-2026/04/12 11:11:09 [Calculator] summary checked=4165 written=0 profitable=0 best_pct=-0.2268% best_usdt=-1.789408 best_tri=USDT->ETH->BTC
-2026/04/12 11:11:19 [Calculator] summary checked=5526 written=0 profitable=0 best_pct=-0.2268% best_usdt=-1.789408 best_tri=USDT->ETH->BTC
-2026/04/12 11:11:29 [Calculator] summary checked=6349 written=0 profitable=0 best_pct=-0.2268% best_usdt=-1.789408 best_tri=USDT->ETH->BTC
-2026/04/12 11:11:39 [Calculator] summary checked=7488 written=0 profitable=0 best_pct=-0.2268% best_usdt=-1.789408 best_tri=USDT->ETH->BTC
-2026/04/12 11:11:49 [Calculator] summary checked=7990 written=0 profitable=0 best_pct=-0.2268% best_usdt=-1.789408 best_tri=USDT->ETH->BTC
-2026/04/12 11:11:59 [Calculator] summary checked=10018 written=0 profitable=0 best_pct=-0.2268% best_usdt=-1.789408 best_tri=USDT->ETH->BTC
-2026/04/12 11:12:09 [Calculator] summary checked=10898 written=0 profitable=0 best_pct=-0.2268% best_usdt=-1.789408 best_tri=USDT->ETH->BTC
-2026/04/12 11:12:19 [Calculator] summary checked=13117 written=0 profitable=0 best_pct=-0.2223% best_usdt=-1.753529 best_tri=USDT->ETH->BTC
-2026/04/12 11:12:29 [Calculator] summary checked=14045 written=0 profitable=0 best_pct=-0.2223% best_usdt=-1.753529 best_tri=USDT->ETH->BTC
-2026/04/12 11:12:39 [Calculator] summary checked=14863 written=0 profitable=0 best_pct=-0.2171% best_usdt=-0.332609 best_tri=USDT->ETH->BTC
-2026/04/12 11:12:49 [Calculator] summary checked=15180 written=0 profitable=0 best_pct=-0.2171% best_usdt=-0.332609 best_tri=USDT->ETH->BTC
-2026/04/12 11:12:59 [Calculator] summary checked=15888 written=0 profitable=0 best_pct=-0.2171% best_usdt=-0.332609 best_tri=USDT->ETH->BTC
-2026/04/12 11:13:09 [Calculator] summary checked=16594 written=0 profitable=0 best_pct=-0.2171% best_usdt=-0.332609 best_tri=USDT->ETH->BTC
-2026/04/12 11:13:19 [Calculator] summary checked=17341 written=0 profitable=0 best_pct=-0.2171% best_usdt=-0.332609 best_tri=USDT->ETH->BTC
-2026/04/12 11:13:29 [Calculator] summary checked=18304 written=0 profitable=0 best_pct=-0.2171% best_usdt=-0.332609 best_tri=USDT->ETH->BTC
-2026/04/12 11:13:39 [Calculator] summary checked=20670 written=0 profitable=0 best_pct=-0.2171% best_usdt=-0.332609 best_tri=USDT->ETH->BTC
-2026/04/12 11:13:49 [Calculator] summary checked=22268 written=0 profitable=0 best_pct=-0.2171% best_usdt=-0.332609 best_tri=USDT->ETH->BTC
-2026/04/12 11:13:59 [Calculator] summary checked=23221 written=0 profitable=0 best_pct=-0.2136% best_usdt=-0.120693 best_tri=USDT->BTC->KCS
-2026/04/12 11:14:09 [Calculator] summary checked=26202 written=0 profitable=0 best_pct=-0.2136% best_usdt=-0.120693 best_tri=USDT->BTC->KCS
-2026/04/12 11:14:19 [Calculator] summary checked=26663 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:14:29 [Calculator] summary checked=27236 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:14:39 [Calculator] summary checked=27475 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:14:49 [Calculator] summary checked=28048 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:14:59 [Calculator] summary checked=35844 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:15:09 [Calculator] summary checked=36895 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:15:19 [Calculator] summary checked=38803 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:15:29 [Calculator] summary checked=39006 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:15:39 [Calculator] summary checked=41902 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:15:49 [Calculator] summary checked=42836 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:15:59 [Calculator] summary checked=43163 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:16:09 [Calculator] summary checked=43551 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:16:19 [Calculator] summary checked=43840 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:16:29 [Calculator] summary checked=45000 written=0 profitable=0 best_pct=-0.1903% best_usdt=-0.021675 best_tri=USDT->BDX->BTC
-2026/04/12 11:16:39 [Calculator] summary checked=45433 written=0 profitable=0 best_pct=-0.0241% best_usdt=-0.001277 best_tri=USDT->BTC->DASH
-2026/04/12 11:16:49 [Calculator] summary checked=46845 written=0 profitable=0 best_pct=-0.0241% best_usdt=-0.001277 best_tri=USDT->BTC->DASH
-2026/04/12 11:16:59 [Calculator] summary checked=47101 written=0 profitable=0 best_pct=-0.0241% best_usdt=-0.001277 best_tri=USDT->BTC->DASH
-2026/04/12 11:17:09 [Calculator] summary checked=47707 written=0 profitable=0 best_pct=-0.0241% best_usdt=-0.001277 best_tri=USDT->BTC->DASH
-2026/04/12 11:17:19 [Calculator] summary checked=47954 written=0 profitable=0 best_pct=-0.0241% best_usdt=-0.001277 best_tri=USDT->BTC->DASH
-2026/04/12 11:17:29 [Calculator] summary checked=48409 written=0 profitable=0 best_pct=-0.0241% best_usdt=-0.001277 best_tri=USDT->BTC->DASH
-2026/04/12 11:17:39 [Calculator] summary checked=48610 written=0 profitable=0 best_pct=-0.0241% best_usdt=-0.001277 best_tri=USDT->BTC->DASH
-2026/04/12 11:17:49 [Calculator] summary checked=49112 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:17:59 [Calculator] summary checked=51655 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:18:09 [Calculator] summary checked=52500 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:18:19 [Calculator] summary checked=52989 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:18:29 [Calculator] summary checked=53526 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:18:39 [Calculator] summary checked=54301 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:18:49 [Calculator] summary checked=54591 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:18:59 [Calculator] summary checked=55185 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:19:09 [Calculator] summary checked=55532 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:19:19 [Calculator] summary checked=55831 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:19:29 [Calculator] summary checked=56233 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:19:39 [Calculator] summary checked=57739 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:19:49 [Calculator] summary checked=58633 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:19:59 [Calculator] summary checked=60746 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:20:09 [Calculator] summary checked=62293 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:20:19 [Calculator] summary checked=62730 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:20:29 [Calculator] summary checked=63116 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:20:39 [Calculator] summary checked=63422 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:20:49 [Calculator] summary checked=63925 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:20:59 [Calculator] summary checked=64418 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:21:09 [Calculator] summary checked=65011 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:21:19 [Calculator] summary checked=65385 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:21:29 [Calculator] summary checked=67315 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:21:39 [Calculator] summary checked=70304 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:21:49 [Calculator] summary checked=73463 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:21:59 [Calculator] summary checked=74204 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:22:09 [Calculator] summary checked=75454 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:22:19 [Calculator] summary checked=76219 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:22:29 [Calculator] summary checked=77734 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:22:39 [Calculator] summary checked=82391 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:22:49 [Calculator] summary checked=83723 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:22:59 [Calculator] summary checked=84425 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:23:10 [Calculator] summary checked=85616 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:23:20 [Calculator] summary checked=87172 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:23:30 [Calculator] summary checked=88504 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:23:40 [Calculator] summary checked=90749 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:23:50 [Calculator] summary checked=93158 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:24:00 [Calculator] summary checked=95885 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:24:10 [Calculator] summary checked=99913 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:24:20 [Calculator] summary checked=101594 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:24:30 [Calculator] summary checked=105551 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:24:40 [Calculator] summary checked=107398 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:24:50 [Calculator] summary checked=108726 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:25:00 [Calculator] summary checked=110655 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:25:10 [Calculator] summary checked=113129 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:25:20 [Calculator] summary checked=114255 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:25:30 [Calculator] summary checked=115017 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:25:40 [Calculator] summary checked=115794 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:25:50 [Calculator] summary checked=116702 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:26:00 [Calculator] summary checked=117506 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:26:10 [Calculator] summary checked=118248 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:26:20 [Calculator] summary checked=119215 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:26:30 [Calculator] summary checked=122980 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:26:40 [Calculator] summary checked=125830 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:26:50 [Calculator] summary checked=127003 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:27:00 [Calculator] summary checked=127990 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:27:10 [Calculator] summary checked=128507 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:27:20 [Calculator] summary checked=129145 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:27:30 [Calculator] summary checked=129486 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:27:40 [Calculator] summary checked=130068 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:27:50 [Calculator] summary checked=131172 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:28:00 [Calculator] summary checked=131594 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:28:10 [Calculator] summary checked=132059 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:28:20 [Calculator] summary checked=133163 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:28:30 [Calculator] summary checked=133640 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:28:40 [Calculator] summary checked=133863 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:28:50 [Calculator] summary checked=135424 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:29:00 [Calculator] summary checked=136448 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:29:10 [Calculator] summary checked=137128 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:29:20 [Calculator] summary checked=139032 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:29:30 [Calculator] summary checked=140970 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:29:40 [Calculator] summary checked=141145 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:29:50 [Calculator] summary checked=141832 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:30:00 [Calculator] summary checked=142552 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:30:10 [Calculator] summary checked=143540 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:30:20 [Calculator] summary checked=144259 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:30:30 [Calculator] summary checked=146200 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:30:40 [Calculator] summary checked=147171 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:30:50 [Calculator] summary checked=148520 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:31:00 [Calculator] summary checked=149493 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:31:10 [Calculator] summary checked=153013 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:31:20 [Calculator] summary checked=153653 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:31:30 [Calculator] summary checked=156486 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:31:40 [Calculator] summary checked=158283 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:31:50 [Calculator] summary checked=162244 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:32:00 [Calculator] summary checked=164939 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:32:10 [Calculator] summary checked=168117 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:32:20 [Calculator] summary checked=168875 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:32:30 [Calculator] summary checked=168961 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:32:40 [Calculator] summary checked=169646 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:32:50 [Calculator] summary checked=169956 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:33:00 [Calculator] summary checked=170471 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:33:10 [Calculator] summary checked=171541 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:33:20 [Calculator] summary checked=171869 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:33:30 [Calculator] summary checked=172097 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:33:40 [Calculator] summary checked=172672 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:33:50 [Calculator] summary checked=173883 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:34:00 [Calculator] summary checked=175223 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:34:10 [Calculator] summary checked=178308 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:34:20 [Calculator] summary checked=178960 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:34:30 [Calculator] summary checked=179341 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:34:40 [Calculator] summary checked=179643 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:34:50 [Calculator] summary checked=180011 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:35:00 [Calculator] summary checked=180350 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:35:10 [Calculator] summary checked=185244 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:35:20 [Calculator] summary checked=186965 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:35:30 [Calculator] summary checked=187243 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:35:40 [Calculator] summary checked=187763 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:35:50 [Calculator] summary checked=188512 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:36:00 [Calculator] summary checked=189188 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:36:10 [Calculator] summary checked=190932 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:36:20 [Calculator] summary checked=192003 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:36:30 [Calculator] summary checked=194133 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:36:40 [Calculator] summary checked=195289 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:36:50 [Calculator] summary checked=196239 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:37:00 [Calculator] summary checked=197016 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:37:10 [Calculator] summary checked=199496 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:37:20 [Calculator] summary checked=201332 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:37:30 [Calculator] summary checked=203777 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:37:40 [Calculator] summary checked=205319 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:37:50 [Calculator] summary checked=206979 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:38:00 [Calculator] summary checked=209499 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:38:10 [Calculator] summary checked=210753 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:38:20 [Calculator] summary checked=212538 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:38:30 [Calculator] summary checked=213361 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:38:40 [Calculator] summary checked=215022 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:38:50 [Calculator] summary checked=218690 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:39:00 [Calculator] summary checked=220643 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:39:10 [Calculator] summary checked=221652 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:39:20 [Calculator] summary checked=224757 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:39:30 [Calculator] summary checked=225586 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:39:40 [Calculator] summary checked=226526 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:39:50 [Calculator] summary checked=234950 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:40:00 [Calculator] summary checked=236020 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:40:10 [Calculator] summary checked=237380 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:40:20 [Calculator] summary checked=258471 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:40:30 [Calculator] summary checked=265654 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:40:40 [Calculator] summary checked=271156 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:40:50 [Calculator] summary checked=271715 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:41:00 [Calculator] summary checked=273006 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:41:10 [Calculator] summary checked=273941 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:41:20 [Calculator] summary checked=275363 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:41:30 [Calculator] summary checked=276397 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:41:40 [Calculator] summary checked=277044 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:41:50 [Calculator] summary checked=278188 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:42:00 [Calculator] summary checked=280201 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:42:10 [Calculator] summary checked=281557 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:42:20 [Calculator] summary checked=282956 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:42:30 [Calculator] summary checked=284106 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:42:40 [Calculator] summary checked=284445 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:42:50 [Calculator] summary checked=286708 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:43:00 [Calculator] summary checked=289216 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:43:10 [Calculator] summary checked=290953 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:43:20 [Calculator] summary checked=293014 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:43:30 [Calculator] summary checked=296080 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:43:40 [Calculator] summary checked=297849 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:43:50 [Calculator] summary checked=298197 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:44:00 [Calculator] summary checked=301493 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:44:10 [Calculator] summary checked=302134 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:44:20 [Calculator] summary checked=302748 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:44:30 [Calculator] summary checked=304308 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:44:40 [Calculator] summary checked=305649 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:44:50 [Calculator] summary checked=306855 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:45:00 [Calculator] summary checked=308278 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:45:10 [Calculator] summary checked=313270 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:45:20 [Calculator] summary checked=314365 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:45:30 [Calculator] summary checked=314666 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:45:40 [Calculator] summary checked=316339 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:45:50 [Calculator] summary checked=319439 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:46:00 [Calculator] summary checked=319637 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:46:10 [Calculator] summary checked=322935 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:46:20 [Calculator] summary checked=324325 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:46:30 [Calculator] summary checked=325698 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:46:40 [Calculator] summary checked=327428 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:46:50 [Calculator] summary checked=333802 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:47:00 [Calculator] summary checked=336385 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:47:10 [Calculator] summary checked=338603 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:47:20 [Calculator] summary checked=345776 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:47:30 [Calculator] summary checked=351726 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:47:40 [Calculator] summary checked=355328 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:47:50 [Calculator] summary checked=359673 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:48:00 [Calculator] summary checked=360432 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:48:10 [Calculator] summary checked=365323 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:48:20 [Calculator] summary checked=368832 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:48:30 [Calculator] summary checked=371286 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:48:40 [Calculator] summary checked=375829 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:48:50 [Calculator] summary checked=377376 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:49:00 [Calculator] summary checked=380317 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:49:10 [Calculator] summary checked=383483 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:49:20 [Calculator] summary checked=386362 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:49:30 [Calculator] summary checked=390645 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:49:40 [Calculator] summary checked=396833 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:49:50 [Calculator] summary checked=398254 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:50:00 [Calculator] summary checked=401229 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:50:10 [Calculator] summary checked=402448 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:50:20 [Calculator] summary checked=403998 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:50:30 [Calculator] summary checked=405203 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:50:40 [Calculator] summary checked=407075 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:50:50 [Calculator] summary checked=408694 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:51:00 [Calculator] summary checked=410339 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:51:10 [Calculator] summary checked=412692 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:51:20 [Calculator] summary checked=415014 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:51:30 [Calculator] summary checked=415897 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:51:40 [Calculator] summary checked=416952 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:51:50 [Calculator] summary checked=418609 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:52:00 [Calculator] summary checked=420432 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:52:11 [Calculator] summary checked=421540 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:52:21 [Calculator] summary checked=423191 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:52:31 [Calculator] summary checked=424182 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:52:41 [Calculator] summary checked=424902 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:52:51 [Calculator] summary checked=426577 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:53:01 [Calculator] summary checked=427595 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:53:11 [Calculator] summary checked=429146 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:53:21 [Calculator] summary checked=430216 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:53:31 [Calculator] summary checked=433044 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:53:41 [Calculator] summary checked=453540 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:53:51 [Calculator] summary checked=456446 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:54:01 [Calculator] summary checked=465756 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:54:11 [Calculator] summary checked=467294 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:54:21 [Calculator] summary checked=470007 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:54:31 [Calculator] summary checked=471864 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:54:41 [Calculator] summary checked=472928 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:54:51 [Calculator] summary checked=474896 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:55:01 [Calculator] summary checked=475740 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:55:11 [Calculator] summary checked=481538 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:55:21 [Calculator] summary checked=482892 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:55:31 [Calculator] summary checked=483860 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:55:41 [Calculator] summary checked=484685 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:55:51 [Calculator] summary checked=486483 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:56:01 [Calculator] summary checked=490762 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:56:11 [Calculator] summary checked=494350 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:56:21 [Calculator] summary checked=496225 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:56:31 [Calculator] summary checked=500349 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:56:41 [Calculator] summary checked=502935 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:56:51 [Calculator] summary checked=505317 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:57:01 [Calculator] summary checked=507477 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:57:11 [Calculator] summary checked=509858 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:57:21 [Calculator] summary checked=511165 written=0 profitable=0 best_pct=-0.0161% best_usdt=-0.004017 best_tri=USDT->ETH->ATOM
-2026/04/12 11:57:31 [Calculator] summary checked=512284 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:57:41 [Calculator] summary checked=514155 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:57:51 [Calculator] summary checked=515888 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:58:01 [Calculator] summary checked=517375 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:58:11 [Calculator] summary checked=518949 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:58:21 [Calculator] summary checked=520664 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:58:31 [Calculator] summary checked=526365 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:58:41 [Calculator] summary checked=529369 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:58:51 [Calculator] summary checked=530063 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:59:01 [Calculator] summary checked=533891 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:59:11 [Calculator] summary checked=534666 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:59:21 [Calculator] summary checked=535149 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:59:31 [Calculator] summary checked=536279 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:59:41 [Calculator] summary checked=537525 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 11:59:51 [Calculator] summary checked=538145 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:00:01 [Calculator] summary checked=539250 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:00:11 [Calculator] summary checked=541123 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:00:21 [Calculator] summary checked=543223 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:00:31 [Calculator] summary checked=544826 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:00:41 [Calculator] summary checked=546261 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:00:51 [Calculator] summary checked=546796 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:01:01 [Calculator] summary checked=548480 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:01:11 [Calculator] summary checked=557439 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:01:21 [Calculator] summary checked=561118 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:01:31 [Calculator] summary checked=563068 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:01:41 [Calculator] summary checked=563935 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:01:51 [Calculator] summary checked=564272 written=0 profitable=0 best_pct=-0.0047% best_usdt=-0.000461 best_tri=USDT->BTC->BDX
-2026/04/12 12:02:01 [Calculator] summary checked=566177 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:02:11 [Calculator] summary checked=567040 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:02:21 [Calculator] summary checked=567334 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:02:31 [Calculator] summary checked=569176 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:02:41 [Calculator] summary checked=570141 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:02:51 [Calculator] summary checked=579397 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:03:01 [Calculator] summary checked=583250 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:03:11 [Calculator] summary checked=584018 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:03:21 [Calculator] summary checked=586219 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:03:31 [Calculator] summary checked=593283 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:03:41 [Calculator] summary checked=599219 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:03:51 [Calculator] summary checked=602741 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:04:01 [Calculator] summary checked=605401 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:04:11 [Calculator] summary checked=611706 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:04:21 [Calculator] summary checked=614678 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:04:31 [Calculator] summary checked=617668 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:04:41 [Calculator] summary checked=621558 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:04:51 [Calculator] summary checked=622557 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:05:01 [Calculator] summary checked=625595 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:05:11 [Calculator] summary checked=641574 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:05:21 [Calculator] summary checked=645486 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:05:31 [Calculator] summary checked=649158 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:05:41 [Calculator] summary checked=650818 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:05:51 [Calculator] summary checked=652140 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:06:01 [Calculator] summary checked=653701 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:06:11 [Calculator] summary checked=656868 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:06:21 [Calculator] summary checked=657308 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:06:31 [Calculator] summary checked=666584 written=0 profitable=1 best_pct=0.0334% best_usdt=0.000896 best_tri=USDT->BTC->DASH
-2026/04/12 12:06:41 [Calculator] summary checked=669077 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:06:51 [Calculator] summary checked=670176 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:07:01 [Calculator] summary checked=672181 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:07:11 [Calculator] summary checked=674925 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:07:21 [Calculator] summary checked=677206 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:07:31 [Calculator] summary checked=679260 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:07:41 [Calculator] summary checked=681385 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:07:51 [Calculator] summary checked=682094 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:08:01 [Calculator] summary checked=683030 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:08:11 [Calculator] summary checked=689590 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:08:21 [Calculator] summary checked=690954 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:08:31 [Calculator] summary checked=694809 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:08:41 [Calculator] summary checked=695425 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:08:51 [Calculator] summary checked=707411 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:09:01 [Calculator] summary checked=707863 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:09:11 [Calculator] summary checked=709658 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:09:21 [Calculator] summary checked=710640 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:09:31 [Calculator] summary checked=712903 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:09:41 [Calculator] summary checked=713799 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:09:51 [Calculator] summary checked=714420 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:10:01 [Calculator] summary checked=714938 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:10:11 [Calculator] summary checked=716150 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:10:21 [Calculator] summary checked=719778 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:10:31 [Calculator] summary checked=721302 written=0 profitable=2 best_pct=0.0594% best_usdt=0.005861 best_tri=USDT->BTC->BDX
-2026/04/12 12:10:41 [Calculator] summary checked=722057 written=0 profit
+package calculator
 
+import (
+	"encoding/csv"
+	"fmt"
+	"log"
+	"math"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"crypt_proto/internal/queue"
+	"crypt_proto/pkg/models"
+)
+
+const (
+	feeM                 = 0.9992
+	defaultMaxQuoteAgeMS = int64(300)
+)
+
+type LegRule struct {
+	Index int
+
+	RawLeg      string
+	Step        float64
+	MinQty      float64
+	MinNotional float64
+
+	Symbol      string
+	Side        string
+	Base        string
+	Quote       string
+	QtyStep     float64
+	QuoteStep   float64
+	PriceStep   float64
+	LegMinQty   float64
+	LegMinQuote float64
+	LegMinNotnl float64
+
+	Key string
+}
+
+type Triangle struct {
+	A, B, C string
+	Legs    [3]LegRule
+}
+
+type metricsConfig struct {
+	MinProfitPct     float64
+	MinVolumeUSDT    float64
+	MaxAgeMS         int64
+	NearProfitPct    float64
+	SummaryEvery     time.Duration
+	DedupWindow      time.Duration
+	FlushEveryWrites int
+}
+
+type metricsWriter struct {
+	mu          sync.Mutex
+	file        *os.File
+	csv         *csv.Writer
+	enabled     bool
+	writeCount  int
+	lastKey     string
+	lastWriteAt time.Time
+	cfg         metricsConfig
+}
+
+type metricsSummary struct {
+	mu         sync.Mutex
+	startedAt  time.Time
+	lastLogAt  time.Time
+	checked    uint64
+	written    uint64
+	profitable uint64
+	bestPct    float64
+	bestUSDT   float64
+	bestTri    string
+}
+
+func newMetricsSummary() *metricsSummary {
+	now := time.Now()
+	return &metricsSummary{
+		startedAt: now,
+		lastLogAt: now,
+		bestPct:   math.Inf(-1),
+		bestUSDT:  math.Inf(-1),
+	}
+}
+
+func (ms *metricsSummary) Observe(tri string, profitPct, profitUSDT float64, written bool) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	ms.checked++
+	if written {
+		ms.written++
+	}
+	if profitPct > 0 {
+		ms.profitable++
+	}
+	if profitPct > ms.bestPct || (profitPct == ms.bestPct && profitUSDT > ms.bestUSDT) {
+		ms.bestPct = profitPct
+		ms.bestUSDT = profitUSDT
+		ms.bestTri = tri
+	}
+}
+
+func (ms *metricsSummary) MaybeLog(now time.Time, every time.Duration) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	if every <= 0 || now.Sub(ms.lastLogAt) < every {
+		return
+	}
+	ms.lastLogAt = now
+
+	bestPct := 0.0
+	bestUSDT := 0.0
+	bestTri := ""
+	if ms.checked > 0 && !math.IsInf(ms.bestPct, -1) {
+		bestPct = ms.bestPct * 100
+		bestUSDT = ms.bestUSDT
+		bestTri = ms.bestTri
+	}
+
+	log.Printf("[Calculator] summary checked=%d written=%d profitable=%d best_pct=%.4f%% best_usdt=%.6f best_tri=%s\n",
+		ms.checked, ms.written, ms.profitable, bestPct, bestUSDT, bestTri)
+}
+
+func defaultMetricsConfig() metricsConfig {
+	return metricsConfig{
+		MinProfitPct:     0.0,
+		MinVolumeUSDT:    50.0,
+		MaxAgeMS:         defaultMaxQuoteAgeMS,
+		NearProfitPct:    -0.0002, // -0.02%
+		SummaryEvery:     10 * time.Second,
+		DedupWindow:      250 * time.Millisecond,
+		FlushEveryWrites: 1,
+	}
+}
+
+func newMetricsWriter(path string, cfg metricsConfig) (*metricsWriter, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+
+	mw := &metricsWriter{
+		file:    f,
+		csv:     csv.NewWriter(f),
+		enabled: true,
+		cfg:     cfg,
+	}
+
+	stat, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if stat.Size() == 0 {
+		header := []string{
+			"ts_unix_ms", "tri", "A", "B", "C",
+			"profit_pct", "profit_usdt", "volume_usdt", "final_usdt",
+			"opportunity_strength", "age_min_ms", "age_max_ms", "age_spread_ms",
+			"leg1_symbol", "leg1_side", "leg1_bid", "leg1_ask", "leg1_bid_size", "leg1_ask_size", "leg1_age_ms", "leg1_in", "leg1_out", "leg1_trade_qty", "leg1_trade_notional", "leg1_book_limit_in",
+			"leg2_symbol", "leg2_side", "leg2_bid", "leg2_ask", "leg2_bid_size", "leg2_ask_size", "leg2_age_ms", "leg2_in", "leg2_out", "leg2_trade_qty", "leg2_trade_notional", "leg2_book_limit_in",
+			"leg3_symbol", "leg3_side", "leg3_bid", "leg3_ask", "leg3_bid_size", "leg3_ask_size", "leg3_age_ms", "leg3_in", "leg3_out", "leg3_trade_qty", "leg3_trade_notional", "leg3_book_limit_in",
+		}
+		if err := mw.csv.Write(header); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		mw.csv.Flush()
+		if err := mw.csv.Error(); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+	}
+	return mw, nil
+}
+
+func (mw *metricsWriter) Close() error {
+	if mw == nil || !mw.enabled {
+		return nil
+	}
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+
+	mw.csv.Flush()
+	if err := mw.csv.Error(); err != nil {
+		_ = mw.file.Close()
+		return err
+	}
+	return mw.file.Close()
+}
+
+// Прибыльные сигналы пишем всегда.
+// Для near-profit сигналов применяем фильтры и dedup.
+func (mw *metricsWriter) ShouldWrite(anchorTS int64, tri string, profitPct, volumeUSDT float64, maxAgeMS int64) bool {
+	if mw == nil || !mw.enabled {
+		return false
+	}
+
+	// Всегда пишем прибыльные окна.
+	if profitPct >= mw.cfg.MinProfitPct {
+		return true
+	}
+
+	// Ниже — только почти-прибыльные кандидаты.
+	if volumeUSDT < mw.cfg.MinVolumeUSDT {
+		return false
+	}
+	if maxAgeMS < 0 || maxAgeMS > mw.cfg.MaxAgeMS {
+		return false
+	}
+	if profitPct < mw.cfg.NearProfitPct {
+		return false
+	}
+
+	now := time.UnixMilli(anchorTS)
+	key := fmt.Sprintf("%s|%.4f|%.2f", tri, profitPct*100, volumeUSDT)
+
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+
+	if mw.lastKey == key && now.Sub(mw.lastWriteAt) < mw.cfg.DedupWindow {
+		return false
+	}
+	mw.lastKey = key
+	mw.lastWriteAt = now
+	return true
+}
+
+func (mw *metricsWriter) Write(record []string) error {
+	if mw == nil || !mw.enabled {
+		return nil
+	}
+
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+
+	if err := mw.csv.Write(record); err != nil {
+		return err
+	}
+	mw.writeCount++
+
+	if mw.cfg.FlushEveryWrites <= 1 || mw.writeCount%mw.cfg.FlushEveryWrites == 0 {
+		mw.csv.Flush()
+		return mw.csv.Error()
+	}
+	return nil
+}
+
+type Calculator struct {
+	mem           *queue.MemoryStore
+	bySymbol      map[string][]*Triangle
+	fileLog       *log.Logger
+	metrics       *metricsWriter
+	summary       *metricsSummary
+	maxQuoteAgeMS int64
+	metricsCfg    metricsConfig
+}
+
+func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
+	f, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Fatalf("failed to open log: %v", err)
+	}
+
+	cfg := defaultMetricsConfig()
+	metrics, err := newMetricsWriter("arb_metrics.csv", cfg)
+	if err != nil {
+		log.Fatalf("failed to open metrics file: %v", err)
+	}
+
+	bySymbol := make(map[string][]*Triangle, 1024)
+	for _, t := range triangles {
+		for _, leg := range t.Legs {
+			if leg.Symbol == "" {
+				continue
+			}
+			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
+		}
+	}
+
+	log.Printf("[Calculator] indexed %d symbols\n", len(bySymbol))
+
+	return &Calculator{
+		mem:           mem,
+		bySymbol:      bySymbol,
+		fileLog:       log.New(f, "", log.LstdFlags),
+		metrics:       metrics,
+		summary:       newMetricsSummary(),
+		maxQuoteAgeMS: defaultMaxQuoteAgeMS,
+		metricsCfg:    cfg,
+	}
+}
+
+func (c *Calculator) Run(in <-chan *models.MarketData) {
+	defer func() {
+		if c.metrics != nil {
+			_ = c.metrics.Close()
+		}
+	}()
+
+	for md := range in {
+		if md == nil {
+			continue
+		}
+		c.mem.Push(md)
+
+		if c.summary != nil {
+			c.summary.MaybeLog(time.Now(), c.metricsCfg.SummaryEvery)
+		}
+
+		tris := c.bySymbol[md.Symbol]
+		if len(tris) == 0 {
+			continue
+		}
+
+		for _, tri := range tris {
+			c.calcTriangle(md, tri)
+		}
+	}
+}
+
+func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
+	anchorTS := md.Timestamp
+	if anchorTS <= 0 {
+		return
+	}
+
+	var q [3]queue.Quote
+	for i, leg := range tri.Legs {
+		quote, ok := c.mem.GetLatestBefore(md.Exchange, leg.Symbol, anchorTS, c.maxQuoteAgeMS)
+		if !ok {
+			return
+		}
+		if quote.Bid <= 0 || quote.Ask <= 0 || quote.BidSize <= 0 || quote.AskSize <= 0 {
+			return
+		}
+		q[i] = quote
+	}
+
+	ages := [3]int64{
+		quoteLagMS(anchorTS, q[0]),
+		quoteLagMS(anchorTS, q[1]),
+		quoteLagMS(anchorTS, q[2]),
+	}
+	minAge, maxAge, spreadAge := minMaxSpread(ages)
+
+	maxStart, ok := computeMaxStartTopOfBook(tri, q)
+	if !ok || maxStart <= 0 {
+		return
+	}
+
+	finalAmount, diag, ok := simulateTriangle(maxStart, tri, q)
+	if !ok || finalAmount <= 0 {
+		return
+	}
+
+	profitUSDT := finalAmount - maxStart
+	profitPct := profitUSDT / maxStart
+	strength := computeOpportunityStrength(profitPct, maxStart, spreadAge, maxAge)
+	triName := fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C)
+
+	written := false
+
+	shouldWrite := c.metrics != nil && c.metrics.ShouldWrite(anchorTS, triName, profitPct, maxStart, maxAge)
+	if shouldWrite {
+		record := []string{
+			strconv.FormatInt(anchorTS, 10),
+			triName,
+			tri.A, tri.B, tri.C,
+			fmtFloat(profitPct), fmtFloat(profitUSDT), fmtFloat(maxStart), fmtFloat(finalAmount),
+			fmtFloat(strength), strconv.FormatInt(minAge, 10), strconv.FormatInt(maxAge, 10), strconv.FormatInt(spreadAge, 10),
+
+			tri.Legs[0].Symbol, tri.Legs[0].Side,
+			fmtFloat(q[0].Bid), fmtFloat(q[0].Ask), fmtFloat(q[0].BidSize), fmtFloat(q[0].AskSize),
+			strconv.FormatInt(ages[0], 10),
+			fmtFloat(diag[0].In), fmtFloat(diag[0].Out), fmtFloat(diag[0].TradeQty), fmtFloat(diag[0].TradeNotional), fmtFloat(diag[0].BookLimitIn),
+
+			tri.Legs[1].Symbol, tri.Legs[1].Side,
+			fmtFloat(q[1].Bid), fmtFloat(q[1].Ask), fmtFloat(q[1].BidSize), fmtFloat(q[1].AskSize),
+			strconv.FormatInt(ages[1], 10),
+			fmtFloat(diag[1].In), fmtFloat(diag[1].Out), fmtFloat(diag[1].TradeQty), fmtFloat(diag[1].TradeNotional), fmtFloat(diag[1].BookLimitIn),
+
+			tri.Legs[2].Symbol, tri.Legs[2].Side,
+			fmtFloat(q[2].Bid), fmtFloat(q[2].Ask), fmtFloat(q[2].BidSize), fmtFloat(q[2].AskSize),
+			strconv.FormatInt(ages[2], 10),
+			fmtFloat(diag[2].In), fmtFloat(diag[2].Out), fmtFloat(diag[2].TradeQty), fmtFloat(diag[2].TradeNotional), fmtFloat(diag[2].BookLimitIn),
+		}
+
+		if err := c.metrics.Write(record); err != nil {
+			log.Printf("[Calculator] metrics write error: %v", err)
+		} else {
+			written = true
+		}
+	}
+
+	if c.summary != nil {
+		c.summary.Observe(triName, profitPct, profitUSDT, written)
+	}
+
+	if profitPct > 0.0 && maxStart > 50 {
+		msg := fmt.Sprintf(
+			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.6f USDT | "+
+				"anchor=%d | l1=%s %s out=%.8f age=%dms | "+
+				"l2=%s %s out=%.8f age=%dms | "+
+				"l3=%s %s out=%.8f age=%dms",
+			tri.A, tri.B, tri.C,
+			profitPct*100, maxStart, profitUSDT,
+			anchorTS,
+			tri.Legs[0].Symbol, tri.Legs[0].Side, diag[0].Out, ages[0],
+			tri.Legs[1].Symbol, tri.Legs[1].Side, diag[1].Out, ages[1],
+			tri.Legs[2].Symbol, tri.Legs[2].Side, diag[2].Out, ages[2],
+		)
+		log.Println(msg)
+		c.fileLog.Println(msg)
+	}
+}
+
+type legExecution struct {
+	In            float64
+	Out           float64
+	Price         float64
+	BookLimitIn   float64
+	TradeQty      float64
+	TradeNotional float64
+}
+
+func simulateTriangle(startUSDT float64, tri *Triangle, q [3]queue.Quote) (float64, [3]legExecution, bool) {
+	var diag [3]legExecution
+	amount := startUSDT
+	for i := 0; i < 3; i++ {
+		out, d, ok := executeLeg(amount, tri.Legs[i], q[i])
+		if !ok {
+			return 0, diag, false
+		}
+		diag[i] = d
+		amount = out
+	}
+	return amount, diag, true
+}
+
+func executeLeg(in float64, leg LegRule, q queue.Quote) (float64, legExecution, bool) {
+	side := strings.ToUpper(strings.TrimSpace(leg.Side))
+	if side == "" {
+		side = detectSideFromRawLeg(leg.RawLeg)
+	}
+	if side != "BUY" && side != "SELL" {
+		return 0, legExecution{}, false
+	}
+	if in <= 0 {
+		return 0, legExecution{}, false
+	}
+
+	qtyStep := firstPositive(leg.QtyStep, leg.Step)
+	minQty := firstPositive(leg.LegMinQty, leg.MinQty)
+	minQuote := leg.LegMinQuote
+	minNotional := firstPositive(leg.LegMinNotnl, leg.MinNotional)
+
+	switch side {
+	case "BUY":
+		if q.Ask <= 0 || q.AskSize <= 0 {
+			return 0, legExecution{}, false
+		}
+		bookLimitIn := q.Ask * q.AskSize
+		spendQuote := math.Min(in, bookLimitIn)
+		if spendQuote <= 0 {
+			return 0, legExecution{}, false
+		}
+
+		rawQty := spendQuote / q.Ask
+		tradeQty := floorToStep(rawQty, qtyStep)
+		if tradeQty <= 0 {
+			return 0, legExecution{}, false
+		}
+
+		tradeNotional := tradeQty * q.Ask
+		if tradeNotional <= 0 || tradeNotional > spendQuote+eps() {
+			return 0, legExecution{}, false
+		}
+		if minQty > 0 && tradeQty+eps() < minQty {
+			return 0, legExecution{}, false
+		}
+		if minQuote > 0 && tradeNotional+eps() < minQuote {
+			return 0, legExecution{}, false
+		}
+		if minNotional > 0 && tradeNotional+eps() < minNotional {
+			return 0, legExecution{}, false
+		}
+
+		outBase := tradeQty * feeM
+		if outBase <= 0 {
+			return 0, legExecution{}, false
+		}
+
+		return outBase, legExecution{
+			In:            in,
+			Out:           outBase,
+			Price:         q.Ask,
+			BookLimitIn:   bookLimitIn,
+			TradeQty:      tradeQty,
+			TradeNotional: tradeNotional,
+		}, true
+
+	case "SELL":
+		if q.Bid <= 0 || q.BidSize <= 0 {
+			return 0, legExecution{}, false
+		}
+		bookLimitIn := q.BidSize
+		sellBase := math.Min(in, bookLimitIn)
+		tradeQty := floorToStep(sellBase, qtyStep)
+		if tradeQty <= 0 {
+			return 0, legExecution{}, false
+		}
+
+		tradeNotional := tradeQty * q.Bid
+		if tradeNotional <= 0 {
+			return 0, legExecution{}, false
+		}
+		if minQty > 0 && tradeQty+eps() < minQty {
+			return 0, legExecution{}, false
+		}
+		if minQuote > 0 && tradeNotional+eps() < minQuote {
+			return 0, legExecution{}, false
+		}
+		if minNotional > 0 && tradeNotional+eps() < minNotional {
+			return 0, legExecution{}, false
+		}
+
+		outQuote := tradeNotional * feeM
+		if outQuote <= 0 {
+			return 0, legExecution{}, false
+		}
+		return outQuote, legExecution{
+			In:            in,
+			Out:           outQuote,
+			Price:         q.Bid,
+			BookLimitIn:   bookLimitIn,
+			TradeQty:      tradeQty,
+			TradeNotional: tradeNotional,
+		}, true
+	}
+
+	return 0, legExecution{}, false
+}
+
+func computeMaxStartTopOfBook(tri *Triangle, q [3]queue.Quote) (float64, bool) {
+	kIn := 1.0
+	maxStart := math.MaxFloat64
+
+	for i := 0; i < 3; i++ {
+		leg := tri.Legs[i]
+		side := strings.ToUpper(strings.TrimSpace(leg.Side))
+		if side == "" {
+			side = detectSideFromRawLeg(leg.RawLeg)
+		}
+		if side != "BUY" && side != "SELL" {
+			return 0, false
+		}
+
+		var limitIn float64
+		switch side {
+		case "BUY":
+			if q[i].Ask <= 0 || q[i].AskSize <= 0 {
+				return 0, false
+			}
+			limitIn = q[i].Ask * q[i].AskSize
+			maxByThis := limitIn / kIn
+			if maxByThis < maxStart {
+				maxStart = maxByThis
+			}
+			kIn *= (1.0 / q[i].Ask) * feeM
+
+		case "SELL":
+			if q[i].Bid <= 0 || q[i].BidSize <= 0 {
+				return 0, false
+			}
+			limitIn = q[i].BidSize
+			maxByThis := limitIn / kIn
+			if maxByThis < maxStart {
+				maxStart = maxByThis
+			}
+			kIn *= q[i].Bid * feeM
+		}
+
+		if kIn <= 0 {
+			return 0, false
+		}
+	}
+
+	if maxStart <= 0 || !isFinite(maxStart) {
+		return 0, false
+	}
+	return maxStart, true
+}
+
+func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	rows, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) < 2 {
+		return nil, nil
+	}
+
+	header := make(map[string]int, len(rows[0]))
+	for i, col := range rows[0] {
+		header[strings.TrimSpace(col)] = i
+	}
+
+	var res []*Triangle
+	for _, row := range rows[1:] {
+		if len(strings.TrimSpace(strings.Join(row, ""))) == 0 {
+			continue
+		}
+
+		t := &Triangle{
+			A: getString(row, header, "A"),
+			B: getString(row, header, "B"),
+			C: getString(row, header, "C"),
+		}
+
+		for i := 1; i <= 3; i++ {
+			idx := i - 1
+			leg := LegRule{
+				Index:       idx,
+				RawLeg:      getString(row, header, fmt.Sprintf("Leg%d", i)),
+				Step:        getFloat(row, header, fmt.Sprintf("Step%d", i)),
+				MinQty:      getFloat(row, header, fmt.Sprintf("MinQty%d", i)),
+				MinNotional: getFloat(row, header, fmt.Sprintf("MinNotional%d", i)),
+				Symbol:      getString(row, header, fmt.Sprintf("Leg%dSymbol", i)),
+				Side:        strings.ToUpper(getString(row, header, fmt.Sprintf("Leg%dSide", i))),
+				Base:        getString(row, header, fmt.Sprintf("Leg%dBase", i)),
+				Quote:       getString(row, header, fmt.Sprintf("Leg%dQuote", i)),
+				QtyStep:     getFloat(row, header, fmt.Sprintf("Leg%dQtyStep", i)),
+				QuoteStep:   getFloat(row, header, fmt.Sprintf("Leg%dQuoteStep", i)),
+				PriceStep:   getFloat(row, header, fmt.Sprintf("Leg%dPriceStep", i)),
+				LegMinQty:   getFloat(row, header, fmt.Sprintf("Leg%dMinQty", i)),
+				LegMinQuote: getFloat(row, header, fmt.Sprintf("Leg%dMinQuote", i)),
+				LegMinNotnl: getFloat(row, header, fmt.Sprintf("Leg%dMinNotional", i)),
+			}
+			if leg.Symbol == "" {
+				leg.Symbol = symbolFromRawLeg(leg.RawLeg)
+			}
+			if leg.Side == "" {
+				leg.Side = detectSideFromRawLeg(leg.RawLeg)
+			}
+			if leg.Symbol == "" || leg.Side == "" {
+				continue
+			}
+			leg.Key = "KuCoin|" + leg.Symbol
+			t.Legs[idx] = leg
+		}
+
+		if t.Legs[0].Symbol == "" || t.Legs[1].Symbol == "" || t.Legs[2].Symbol == "" {
+			continue
+		}
+		res = append(res, t)
+	}
+	return res, nil
+}
+
+func symbolFromRawLeg(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Fields(raw)
+	if len(parts) != 2 {
+		return ""
+	}
+	pair := strings.Split(parts[1], "/")
+	if len(pair) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(pair[0]) + "-" + strings.TrimSpace(pair[1])
+}
+
+func detectSideFromRawLeg(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	if strings.HasPrefix(raw, "BUY ") {
+		return "BUY"
+	}
+	if strings.HasPrefix(raw, "SELL ") {
+		return "SELL"
+	}
+	return ""
+}
+
+func getString(row []string, header map[string]int, key string) string {
+	idx, ok := header[key]
+	if !ok || idx < 0 || idx >= len(row) {
+		return ""
+	}
+	return strings.TrimSpace(row[idx])
+}
+
+func getFloat(row []string, header map[string]int, key string) float64 {
+	s := getString(row, header, key)
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", "."), 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func floorToStep(v, step float64) float64 {
+	if v <= 0 {
+		return 0
+	}
+	if step <= 0 {
+		return v
+	}
+	n := math.Floor((v + eps()) / step)
+	if n <= 0 {
+		return 0
+	}
+	return n * step
+}
+
+func firstPositive(vals ...float64) float64 {
+	for _, v := range vals {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func quoteLagMS(anchorTS int64, q queue.Quote) int64 {
+	if q.Timestamp <= 0 || anchorTS <= 0 {
+		return -1
+	}
+	if q.Timestamp > anchorTS {
+		return 0
+	}
+	return anchorTS - q.Timestamp
+}
+
+func minMaxSpread(ages [3]int64) (int64, int64, int64) {
+	minAge := ages[0]
+	maxAge := ages[0]
+	for _, age := range ages[1:] {
+		if age < minAge {
+			minAge = age
+		}
+		if age > maxAge {
+			maxAge = age
+		}
+	}
+	return minAge, maxAge, maxAge - minAge
+}
+
+func computeOpportunityStrength(profitPct, volumeUSDT float64, ageSpreadMS, maxAgeMS int64) float64 {
+	base := profitPct * math.Log1p(math.Max(volumeUSDT, 0))
+	freshPenalty := 1.0 / (1.0 + math.Max(float64(maxAgeMS), 0)/180.0)
+	spreadPenalty := 1.0 / (1.0 + math.Max(float64(ageSpreadMS), 0)/180.0)
+	return base * freshPenalty * spreadPenalty
+}
+
+func fmtFloat(v float64) string {
+	return strconv.FormatFloat(v, 'f', 12, 64)
+}
+
+func isFinite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+func eps() float64            { return 1e-12 }
 
 
 
