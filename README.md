@@ -26,5 +26,772 @@ git push origin new_arh --force
 
 
 
+package calculator
+
+import (
+	"encoding/csv"
+	"fmt"
+	"log"
+	"math"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"crypt_proto/internal/queue"
+	"crypt_proto/pkg/models"
+)
+
+const (
+	feeM                 = 0.9992
+	defaultMaxQuoteAgeMS = int64(300)
+
+	// Пишем в CSV не весь шум, а только более-менее интересные кандидаты.
+	metricsMinProfitPct = -0.001 // -0.10%
+	metricsMinVolume    = 20.0   // USDT
+	metricsMaxAgeMS     = int64(300)
+
+	statsLogInterval = 10 * time.Second
+)
+
+type LegRule struct {
+	Index int
+
+	RawLeg      string
+	Step        float64
+	MinQty      float64
+	MinNotional float64
+
+	Symbol      string
+	Side        string
+	Base        string
+	Quote       string
+	QtyStep     float64
+	QuoteStep   float64
+	PriceStep   float64
+	LegMinQty   float64
+	LegMinQuote float64
+	LegMinNotnl float64
+
+	Key string
+}
+
+type Triangle struct {
+	A, B, C string
+	Legs    [3]LegRule
+}
+
+type metricsWriter struct {
+	mu      sync.Mutex
+	file    *os.File
+	csv     *csv.Writer
+	enabled bool
+}
+
+func newMetricsWriter(path string) (*metricsWriter, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+
+	mw := &metricsWriter{
+		file:    f,
+		csv:     csv.NewWriter(f),
+		enabled: true,
+	}
+
+	stat, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if stat.Size() == 0 {
+		header := []string{
+			"ts_unix_ms", "tri", "A", "B", "C",
+			"profit_pct", "profit_usdt", "volume_usdt", "final_usdt",
+			"opportunity_strength", "age_min_ms", "age_max_ms", "age_spread_ms",
+			"leg1_symbol", "leg1_side", "leg1_bid", "leg1_ask", "leg1_bid_size", "leg1_ask_size", "leg1_age_ms", "leg1_in", "leg1_out", "leg1_trade_qty", "leg1_trade_notional", "leg1_book_limit_in",
+			"leg2_symbol", "leg2_side", "leg2_bid", "leg2_ask", "leg2_bid_size", "leg2_ask_size", "leg2_age_ms", "leg2_in", "leg2_out", "leg2_trade_qty", "leg2_trade_notional", "leg2_book_limit_in",
+			"leg3_symbol", "leg3_side", "leg3_bid", "leg3_ask", "leg3_bid_size", "leg3_ask_size", "leg3_age_ms", "leg3_in", "leg3_out", "leg3_trade_qty", "leg3_trade_notional", "leg3_book_limit_in",
+		}
+		if err := mw.csv.Write(header); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		mw.csv.Flush()
+		if err := mw.csv.Error(); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+	}
+	return mw, nil
+}
+
+func (mw *metricsWriter) Close() error {
+	if mw == nil || !mw.enabled {
+		return nil
+	}
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+	mw.csv.Flush()
+	if err := mw.csv.Error(); err != nil {
+		_ = mw.file.Close()
+		return err
+	}
+	return mw.file.Close()
+}
+
+func (mw *metricsWriter) Write(record []string) error {
+	if mw == nil || !mw.enabled {
+		return nil
+	}
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+	if err := mw.csv.Write(record); err != nil {
+		return err
+	}
+	mw.csv.Flush()
+	return mw.csv.Error()
+}
+
+type calcStats struct {
+	totalChecked    uint64
+	metricsWritten  uint64
+	profitableSeen  uint64
+	bestProfitPct   float64
+	bestProfitUSDT  float64
+	bestTriangle    string
+	lastSummaryTime time.Time
+}
+
+type Calculator struct {
+	mem           *queue.MemoryStore
+	bySymbol      map[string][]*Triangle
+	fileLog       *log.Logger
+	metrics       *metricsWriter
+	maxQuoteAgeMS int64
+	stats         calcStats
+}
+
+func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
+	f, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Fatalf("failed to open log: %v", err)
+	}
+
+	metrics, err := newMetricsWriter("arb_metrics.csv")
+	if err != nil {
+		log.Fatalf("failed to open metrics file: %v", err)
+	}
+
+	bySymbol := make(map[string][]*Triangle, 1024)
+	for _, t := range triangles {
+		for _, leg := range t.Legs {
+			if leg.Symbol == "" {
+				continue
+			}
+			bySymbol[leg.Symbol] = append(bySymbol[leg.Symbol], t)
+		}
+	}
+
+	log.Printf("[Calculator] indexed %d symbols\n", len(bySymbol))
+
+	return &Calculator{
+		mem:           mem,
+		bySymbol:      bySymbol,
+		fileLog:       log.New(f, "", log.LstdFlags),
+		metrics:       metrics,
+		maxQuoteAgeMS: defaultMaxQuoteAgeMS,
+		stats: calcStats{
+			bestProfitPct:   math.Inf(-1),
+			bestProfitUSDT:  math.Inf(-1),
+			lastSummaryTime: time.Now(),
+		},
+	}
+}
+
+func (c *Calculator) Run(in <-chan *models.MarketData) {
+	defer func() {
+		if c.metrics != nil {
+			_ = c.metrics.Close()
+		}
+	}()
+
+	for md := range in {
+		if md == nil {
+			continue
+		}
+		c.mem.Push(md)
+
+		tris := c.bySymbol[md.Symbol]
+		if len(tris) == 0 {
+			continue
+		}
+
+		for _, tri := range tris {
+			c.calcTriangle(md, tri)
+		}
+
+		c.maybeLogSummary()
+	}
+}
+
+func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
+	anchorTS := md.Timestamp
+	if anchorTS <= 0 {
+		return
+	}
+
+	var q [3]queue.Quote
+	for i, leg := range tri.Legs {
+		quote, ok := c.mem.GetLatestBefore(md.Exchange, leg.Symbol, anchorTS, c.maxQuoteAgeMS)
+		if !ok {
+			return
+		}
+		if quote.Bid <= 0 || quote.Ask <= 0 || quote.BidSize <= 0 || quote.AskSize <= 0 {
+			return
+		}
+		q[i] = quote
+	}
+
+	ages := [3]int64{
+		quoteLagMS(anchorTS, q[0]),
+		quoteLagMS(anchorTS, q[1]),
+		quoteLagMS(anchorTS, q[2]),
+	}
+	minAge, maxAge, spreadAge := minMaxSpread(ages)
+
+	maxStart, ok := computeMaxStartTopOfBook(tri, q)
+	if !ok || maxStart <= 0 {
+		return
+	}
+
+	finalAmount, diag, ok := simulateTriangle(maxStart, tri, q)
+	if !ok || finalAmount <= 0 {
+		return
+	}
+
+	profitUSDT := finalAmount - maxStart
+	profitPct := profitUSDT / maxStart
+	strength := computeOpportunityStrength(profitPct, maxStart, spreadAge, maxAge)
+
+	c.observeSignal(tri, profitPct, profitUSDT)
+
+	if shouldWriteMetrics(profitPct, maxStart, maxAge) {
+		record := []string{
+			strconv.FormatInt(anchorTS, 10),
+			fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C),
+			tri.A, tri.B, tri.C,
+			fmtFloat(profitPct), fmtFloat(profitUSDT), fmtFloat(maxStart), fmtFloat(finalAmount),
+			fmtFloat(strength), strconv.FormatInt(minAge, 10), strconv.FormatInt(maxAge, 10), strconv.FormatInt(spreadAge, 10),
+			tri.Legs[0].Symbol, tri.Legs[0].Side, fmtFloat(q[0].Bid), fmtFloat(q[0].Ask), fmtFloat(q[0].BidSize), fmtFloat(q[0].AskSize), strconv.FormatInt(ages[0], 10), fmtFloat(diag[0].In), fmtFloat(diag[0].Out), fmtFloat(diag[0].TradeQty), fmtFloat(diag[0].TradeNotional), fmtFloat(diag[0].BookLimitIn),
+			tri.Legs[1].Symbol, tri.Legs[1].Side, fmtFloat(q[1].Bid), fmtFloat(q[1].Ask), fmtFloat(q[1].BidSize), fmtFloat(q[1].AskSize), strconv.FormatInt(ages[1], 10), fmtFloat(diag[1].In), fmtFloat(diag[1].Out), fmtFloat(diag[1].TradeQty), fmtFloat(diag[1].TradeNotional), fmtFloat(diag[1].BookLimitIn),
+			tri.Legs[2].Symbol, tri.Legs[2].Side, fmtFloat(q[2].Bid), fmtFloat(q[2].Ask), fmtFloat(q[2].BidSize), fmtFloat(q[2].AskSize), strconv.FormatInt(ages[2], 10), fmtFloat(diag[2].In), fmtFloat(diag[2].Out), fmtFloat(diag[2].TradeQty), fmtFloat(diag[2].TradeNotional), fmtFloat(diag[2].BookLimitIn),
+		}
+		if err := c.metrics.Write(record); err != nil {
+			log.Printf("[Calculator] metrics write error: %v", err)
+		} else {
+			c.stats.metricsWritten++
+		}
+	}
+
+	if profitPct > 0.0 && maxStart > 50 {
+		msg := fmt.Sprintf(
+			"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.6f USDT | "+
+				"anchor=%d | l1=%s %s out=%.8f age=%dms | "+
+				"l2=%s %s out=%.8f age=%dms | "+
+				"l3=%s %s out=%.8f age=%dms",
+			tri.A, tri.B, tri.C,
+			profitPct*100, maxStart, profitUSDT,
+			anchorTS,
+			tri.Legs[0].Symbol, tri.Legs[0].Side, diag[0].Out, ages[0],
+			tri.Legs[1].Symbol, tri.Legs[1].Side, diag[1].Out, ages[1],
+			tri.Legs[2].Symbol, tri.Legs[2].Side, diag[2].Out, ages[2],
+		)
+		log.Println(msg)
+		c.fileLog.Println(msg)
+	}
+}
+
+func shouldWriteMetrics(profitPct, volumeUSDT float64, maxAgeMS int64) bool {
+	if volumeUSDT < metricsMinVolume {
+		return false
+	}
+	if maxAgeMS > metricsMaxAgeMS {
+		return false
+	}
+	if profitPct < metricsMinProfitPct {
+		return false
+	}
+	return true
+}
+
+func (c *Calculator) observeSignal(tri *Triangle, profitPct, profitUSDT float64) {
+	c.stats.totalChecked++
+	if profitPct > 0 {
+		c.stats.profitableSeen++
+	}
+	if profitPct > c.stats.bestProfitPct {
+		c.stats.bestProfitPct = profitPct
+		c.stats.bestProfitUSDT = profitUSDT
+		c.stats.bestTriangle = fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C)
+	}
+}
+
+func (c *Calculator) maybeLogSummary() {
+	now := time.Now()
+	if now.Sub(c.stats.lastSummaryTime) < statsLogInterval {
+		return
+	}
+
+	bestPct := c.stats.bestProfitPct * 100
+	if !isFinite(c.stats.bestProfitPct) {
+		bestPct = 0
+	}
+	bestUSDT := c.stats.bestProfitUSDT
+	if !isFinite(bestUSDT) {
+		bestUSDT = 0
+	}
+
+	log.Printf(
+		"[Calculator] summary checked=%d written=%d profitable=%d best_pct=%.4f%% best_usdt=%.6f best_tri=%s\n",
+		c.stats.totalChecked,
+		c.stats.metricsWritten,
+		c.stats.profitableSeen,
+		bestPct,
+		bestUSDT,
+		c.stats.bestTriangle,
+	)
+	c.stats.lastSummaryTime = now
+}
+
+type legExecution struct {
+	In            float64
+	Out           float64
+	Price         float64
+	BookLimitIn   float64
+	TradeQty      float64
+	TradeNotional float64
+}
+
+func simulateTriangle(startUSDT float64, tri *Triangle, q [3]queue.Quote) (float64, [3]legExecution, bool) {
+	var diag [3]legExecution
+	amount := startUSDT
+	for i := 0; i < 3; i++ {
+		out, d, ok := executeLeg(amount, tri.Legs[i], q[i])
+		if !ok {
+			return 0, diag, false
+		}
+		diag[i] = d
+		amount = out
+	}
+	return amount, diag, true
+}
+
+func executeLeg(in float64, leg LegRule, q queue.Quote) (float64, legExecution, bool) {
+	side := strings.ToUpper(strings.TrimSpace(leg.Side))
+	if side == "" {
+		side = detectSideFromRawLeg(leg.RawLeg)
+	}
+	if side != "BUY" && side != "SELL" {
+		return 0, legExecution{}, false
+	}
+	if in <= 0 {
+		return 0, legExecution{}, false
+	}
+
+	qtyStep := firstPositive(leg.QtyStep, leg.Step)
+	minQty := firstPositive(leg.LegMinQty, leg.MinQty)
+	minQuote := leg.LegMinQuote
+	minNotional := firstPositive(leg.LegMinNotnl, leg.MinNotional)
+
+	switch side {
+	case "BUY":
+		if q.Ask <= 0 || q.AskSize <= 0 {
+			return 0, legExecution{}, false
+		}
+		bookLimitIn := q.Ask * q.AskSize
+		spendQuote := math.Min(in, bookLimitIn)
+		if spendQuote <= 0 {
+			return 0, legExecution{}, false
+		}
+
+		rawQty := spendQuote / q.Ask
+		tradeQty := floorToStep(rawQty, qtyStep)
+		if tradeQty <= 0 {
+			return 0, legExecution{}, false
+		}
+
+		tradeNotional := tradeQty * q.Ask
+		if tradeNotional <= 0 || tradeNotional > spendQuote+eps() {
+			return 0, legExecution{}, false
+		}
+		if minQty > 0 && tradeQty+eps() < minQty {
+			return 0, legExecution{}, false
+		}
+		if minQuote > 0 && tradeNotional+eps() < minQuote {
+			return 0, legExecution{}, false
+		}
+		if minNotional > 0 && tradeNotional+eps() < minNotional {
+			return 0, legExecution{}, false
+		}
+
+		outBase := tradeQty * feeM
+		if outBase <= 0 {
+			return 0, legExecution{}, false
+		}
+
+		return outBase, legExecution{In: in, Out: outBase, Price: q.Ask, BookLimitIn: bookLimitIn, TradeQty: tradeQty, TradeNotional: tradeNotional}, true
+
+	case "SELL":
+		if q.Bid <= 0 || q.BidSize <= 0 {
+			return 0, legExecution{}, false
+		}
+		bookLimitIn := q.BidSize
+		sellBase := math.Min(in, bookLimitIn)
+		tradeQty := floorToStep(sellBase, qtyStep)
+		if tradeQty <= 0 {
+			return 0, legExecution{}, false
+		}
+
+		tradeNotional := tradeQty * q.Bid
+		if tradeNotional <= 0 {
+			return 0, legExecution{}, false
+		}
+		if minQty > 0 && tradeQty+eps() < minQty {
+			return 0, legExecution{}, false
+		}
+		if minQuote > 0 && tradeNotional+eps() < minQuote {
+			return 0, legExecution{}, false
+		}
+		if minNotional > 0 && tradeNotional+eps() < minNotional {
+			return 0, legExecution{}, false
+		}
+
+		outQuote := tradeNotional * feeM
+		if outQuote <= 0 {
+			return 0, legExecution{}, false
+		}
+		return outQuote, legExecution{In: in, Out: outQuote, Price: q.Bid, BookLimitIn: bookLimitIn, TradeQty: tradeQty, TradeNotional: tradeNotional}, true
+	}
+
+	return 0, legExecution{}, false
+}
+
+func computeMaxStartTopOfBook(tri *Triangle, q [3]queue.Quote) (float64, bool) {
+	kIn := 1.0
+	maxStart := math.MaxFloat64
+
+	for i := 0; i < 3; i++ {
+		leg := tri.Legs[i]
+		side := strings.ToUpper(strings.TrimSpace(leg.Side))
+		if side == "" {
+			side = detectSideFromRawLeg(leg.RawLeg)
+		}
+		if side != "BUY" && side != "SELL" {
+			return 0, false
+		}
+
+		var limitIn float64
+		switch side {
+		case "BUY":
+			if q[i].Ask <= 0 || q[i].AskSize <= 0 {
+				return 0, false
+			}
+			limitIn = q[i].Ask * q[i].AskSize
+			maxByThis := limitIn / kIn
+			if maxByThis < maxStart {
+				maxStart = maxByThis
+			}
+			kIn *= (1.0 / q[i].Ask) * feeM
+		case "SELL":
+			if q[i].Bid <= 0 || q[i].BidSize <= 0 {
+				return 0, false
+			}
+			limitIn = q[i].BidSize
+			maxByThis := limitIn / kIn
+			if maxByThis < maxStart {
+				maxStart = maxByThis
+			}
+			kIn *= q[i].Bid * feeM
+		}
+
+		if kIn <= 0 {
+			return 0, false
+		}
+	}
+
+	if maxStart <= 0 || !isFinite(maxStart) {
+		return 0, false
+	}
+	return maxStart, true
+}
+
+func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	rows, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) < 2 {
+		return nil, nil
+	}
+
+	header := make(map[string]int, len(rows[0]))
+	for i, col := range rows[0] {
+		header[strings.TrimSpace(col)] = i
+	}
+
+	var res []*Triangle
+	for _, row := range rows[1:] {
+		if len(strings.TrimSpace(strings.Join(row, ""))) == 0 {
+			continue
+		}
+
+		t := &Triangle{A: getString(row, header, "A"), B: getString(row, header, "B"), C: getString(row, header, "C")}
+		for i := 1; i <= 3; i++ {
+			idx := i - 1
+			leg := LegRule{
+				Index:       idx,
+				RawLeg:      getString(row, header, fmt.Sprintf("Leg%d", i)),
+				Step:        getFloat(row, header, fmt.Sprintf("Step%d", i)),
+				MinQty:      getFloat(row, header, fmt.Sprintf("MinQty%d", i)),
+				MinNotional: getFloat(row, header, fmt.Sprintf("MinNotional%d", i)),
+				Symbol:      getString(row, header, fmt.Sprintf("Leg%dSymbol", i)),
+				Side:        strings.ToUpper(getString(row, header, fmt.Sprintf("Leg%dSide", i))),
+				Base:        getString(row, header, fmt.Sprintf("Leg%dBase", i)),
+				Quote:       getString(row, header, fmt.Sprintf("Leg%dQuote", i)),
+				QtyStep:     getFloat(row, header, fmt.Sprintf("Leg%dQtyStep", i)),
+				QuoteStep:   getFloat(row, header, fmt.Sprintf("Leg%dQuoteStep", i)),
+				PriceStep:   getFloat(row, header, fmt.Sprintf("Leg%dPriceStep", i)),
+				LegMinQty:   getFloat(row, header, fmt.Sprintf("Leg%dMinQty", i)),
+				LegMinQuote: getFloat(row, header, fmt.Sprintf("Leg%dMinQuote", i)),
+				LegMinNotnl: getFloat(row, header, fmt.Sprintf("Leg%dMinNotional", i)),
+			}
+			if leg.Symbol == "" {
+				leg.Symbol = symbolFromRawLeg(leg.RawLeg)
+			}
+			if leg.Side == "" {
+				leg.Side = detectSideFromRawLeg(leg.RawLeg)
+			}
+			if leg.Symbol == "" || leg.Side == "" {
+				continue
+			}
+			leg.Key = "KuCoin|" + leg.Symbol
+			t.Legs[idx] = leg
+		}
+		if t.Legs[0].Symbol == "" || t.Legs[1].Symbol == "" || t.Legs[2].Symbol == "" {
+			continue
+		}
+		res = append(res, t)
+	}
+	return res, nil
+}
+
+func symbolFromRawLeg(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Fields(raw)
+	if len(parts) != 2 {
+		return ""
+	}
+	pair := strings.Split(parts[1], "/")
+	if len(pair) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(pair[0]) + "-" + strings.TrimSpace(pair[1])
+}
+
+func detectSideFromRawLeg(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	if strings.HasPrefix(raw, "BUY ") {
+		return "BUY"
+	}
+	if strings.HasPrefix(raw, "SELL ") {
+		return "SELL"
+	}
+	return ""
+}
+
+func getString(row []string, header map[string]int, key string) string {
+	idx, ok := header[key]
+	if !ok || idx < 0 || idx >= len(row) {
+		return ""
+	}
+	return strings.TrimSpace(row[idx])
+}
+
+func getFloat(row []string, header map[string]int, key string) float64 {
+	s := getString(row, header, key)
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", "."), 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func floorToStep(v, step float64) float64 {
+	if v <= 0 {
+		return 0
+	}
+	if step <= 0 {
+		return v
+	}
+	n := math.Floor((v + eps()) / step)
+	if n <= 0 {
+		return 0
+	}
+	return n * step
+}
+
+func firstPositive(vals ...float64) float64 {
+	for _, v := range vals {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func quoteLagMS(anchorTS int64, q queue.Quote) int64 {
+	if q.Timestamp <= 0 || anchorTS <= 0 {
+		return -1
+	}
+	if q.Timestamp > anchorTS {
+		return 0
+	}
+	return anchorTS - q.Timestamp
+}
+
+func minMaxSpread(ages [3]int64) (int64, int64, int64) {
+	minAge := ages[0]
+	maxAge := ages[0]
+	for _, age := range ages[1:] {
+		if age < minAge {
+			minAge = age
+		}
+		if age > maxAge {
+			maxAge = age
+		}
+	}
+	return minAge, maxAge, maxAge - minAge
+}
+
+func computeOpportunityStrength(profitPct, volumeUSDT float64, ageSpreadMS, maxAgeMS int64) float64 {
+	base := profitPct * math.Log1p(math.Max(volumeUSDT, 0))
+	freshPenalty := 1.0 / (1.0 + math.Max(float64(maxAgeMS), 0)/180.0)
+	spreadPenalty := 1.0 / (1.0 + math.Max(float64(ageSpreadMS), 0)/180.0)
+	return base * freshPenalty * spreadPenalty
+}
+
+func fmtFloat(v float64) string {
+	return strconv.FormatFloat(v, 'f', 12, 64)
+}
+
+func isFinite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+func eps() float64            { return 1e-12 }
+
+
+
+
+
+
+package main
+
+import (
+	"encoding/csv"
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+)
+
+type Row struct {
+	Timestamp int64
+	Triangle  string
+	ProfitPct float64
+	Volume    float64
+	AgeMax    float64
+}
+
+func main() {
+	f, err := os.Open("arb_metrics.csv")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	rows, _ := r.ReadAll()
+
+	header := make(map[string]int)
+	for i, h := range rows[0] {
+		header[h] = i
+	}
+
+	var data []Row
+
+	for _, row := range rows[1:] {
+		ts, _ := strconv.ParseInt(row[header["timestamp"]], 10, 64)
+		profit, _ := strconv.ParseFloat(row[header["profit_pct"]], 64)
+		vol, _ := strconv.ParseFloat(row[header["volume_usdt"]], 64)
+		age, _ := strconv.ParseFloat(row[header["age_max_ms"]], 64)
+
+		data = append(data, Row{
+			Timestamp: ts,
+			Triangle:  row[header["triangle"]],
+			ProfitPct: profit,
+			Volume:    vol,
+			AgeMax:    age,
+		})
+	}
+
+	// фильтры
+	minProfit := 0.0001
+	minVolume := 50.0
+	maxAge := 150.0
+
+	total := len(data)
+	valid := 0
+
+	perTri := make(map[string]int)
+
+	for _, d := range data {
+		if d.ProfitPct > minProfit &&
+			d.Volume > minVolume &&
+			d.AgeMax < maxAge {
+
+			valid++
+			perTri[d.Triangle]++
+		}
+	}
+
+	fmt.Println("=== FILTERED ===")
+	fmt.Println("total:", total)
+	fmt.Println("valid:", valid)
+
+	if total > 0 {
+		fmt.Printf("valid %%: %.6f\n", float64(valid)/float64(total)*100)
+	}
+
+	fmt.Println("\n=== TOP TRIANGLES ===")
+	for tri, cnt := range perTri {
+		if cnt > 10 {
+			fmt.Println(tri, cnt)
+		}
+	}
+}
+
 
 
