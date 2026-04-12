@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"crypt_proto/internal/queue"
 	"crypt_proto/pkg/models"
@@ -46,14 +47,102 @@ type Triangle struct {
 	Legs    [3]LegRule
 }
 
-type metricsWriter struct {
-	mu      sync.Mutex
-	file    *os.File
-	csv     *csv.Writer
-	enabled bool
+type metricsConfig struct {
+	MinProfitPct     float64
+	MinVolumeUSDT    float64
+	MaxAgeMS         int64
+	NearProfitPct    float64
+	SummaryEvery     time.Duration
+	DedupWindow      time.Duration
+	FlushEveryWrites int
 }
 
-func newMetricsWriter(path string) (*metricsWriter, error) {
+type metricsWriter struct {
+	mu          sync.Mutex
+	file        *os.File
+	csv         *csv.Writer
+	enabled     bool
+	writeCount  int
+	lastKey     string
+	lastWriteAt time.Time
+	cfg         metricsConfig
+}
+
+type metricsSummary struct {
+	mu         sync.Mutex
+	startedAt  time.Time
+	lastLogAt  time.Time
+	checked    uint64
+	written    uint64
+	profitable uint64
+	bestPct    float64
+	bestUSDT   float64
+	bestTri    string
+}
+
+func newMetricsSummary() *metricsSummary {
+	now := time.Now()
+	return &metricsSummary{
+		startedAt: now,
+		lastLogAt: now,
+		bestPct:   math.Inf(-1),
+		bestUSDT:  math.Inf(-1),
+	}
+}
+
+func (ms *metricsSummary) Observe(tri string, profitPct, profitUSDT float64, written bool) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	ms.checked++
+	if written {
+		ms.written++
+	}
+	if profitPct > 0 {
+		ms.profitable++
+	}
+	if profitPct > ms.bestPct || (profitPct == ms.bestPct && profitUSDT > ms.bestUSDT) {
+		ms.bestPct = profitPct
+		ms.bestUSDT = profitUSDT
+		ms.bestTri = tri
+	}
+}
+
+func (ms *metricsSummary) MaybeLog(now time.Time, every time.Duration) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	if every <= 0 || now.Sub(ms.lastLogAt) < every {
+		return
+	}
+	ms.lastLogAt = now
+
+	bestPct := 0.0
+	bestUSDT := 0.0
+	bestTri := ""
+	if ms.checked > 0 && !math.IsInf(ms.bestPct, -1) {
+		bestPct = ms.bestPct * 100
+		bestUSDT = ms.bestUSDT
+		bestTri = ms.bestTri
+	}
+
+	log.Printf("[Calculator] summary checked=%d written=%d profitable=%d best_pct=%.4f%% best_usdt=%.6f best_tri=%s\n",
+		ms.checked, ms.written, ms.profitable, bestPct, bestUSDT, bestTri)
+}
+
+func defaultMetricsConfig() metricsConfig {
+	return metricsConfig{
+		MinProfitPct:     0.0,
+		MinVolumeUSDT:    50.0,
+		MaxAgeMS:         defaultMaxQuoteAgeMS,
+		NearProfitPct:    -0.0002,
+		SummaryEvery:     10 * time.Second,
+		DedupWindow:      250 * time.Millisecond,
+		FlushEveryWrites: 1,
+	}
+}
+
+func newMetricsWriter(path string, cfg metricsConfig) (*metricsWriter, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
@@ -63,6 +152,7 @@ func newMetricsWriter(path string) (*metricsWriter, error) {
 		file:    f,
 		csv:     csv.NewWriter(f),
 		enabled: true,
+		cfg:     cfg,
 	}
 
 	stat, err := f.Stat()
@@ -106,6 +196,38 @@ func (mw *metricsWriter) Close() error {
 	return mw.file.Close()
 }
 
+func (mw *metricsWriter) ShouldWrite(anchorTS int64, tri string, profitPct, volumeUSDT float64, maxAgeMS int64) bool {
+	if mw == nil || !mw.enabled {
+		return false
+	}
+	if volumeUSDT < mw.cfg.MinVolumeUSDT {
+		return false
+	}
+	if maxAgeMS < 0 || maxAgeMS > mw.cfg.MaxAgeMS {
+		return false
+	}
+	if profitPct < mw.cfg.NearProfitPct {
+		return false
+	}
+
+	if profitPct >= mw.cfg.MinProfitPct {
+		return true
+	}
+
+	now := time.UnixMilli(anchorTS)
+	key := fmt.Sprintf("%s|%.4f|%.2f", tri, profitPct*100, volumeUSDT)
+
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+
+	if mw.lastKey == key && now.Sub(mw.lastWriteAt) < mw.cfg.DedupWindow {
+		return false
+	}
+	mw.lastKey = key
+	mw.lastWriteAt = now
+	return true
+}
+
 func (mw *metricsWriter) Write(record []string) error {
 	if mw == nil || !mw.enabled {
 		return nil
@@ -115,8 +237,12 @@ func (mw *metricsWriter) Write(record []string) error {
 	if err := mw.csv.Write(record); err != nil {
 		return err
 	}
-	mw.csv.Flush()
-	return mw.csv.Error()
+	mw.writeCount++
+	if mw.cfg.FlushEveryWrites <= 1 || mw.writeCount%mw.cfg.FlushEveryWrites == 0 {
+		mw.csv.Flush()
+		return mw.csv.Error()
+	}
+	return nil
 }
 
 type Calculator struct {
@@ -124,7 +250,9 @@ type Calculator struct {
 	bySymbol      map[string][]*Triangle
 	fileLog       *log.Logger
 	metrics       *metricsWriter
+	summary       *metricsSummary
 	maxQuoteAgeMS int64
+	metricsCfg    metricsConfig
 }
 
 func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
@@ -133,7 +261,8 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 		log.Fatalf("failed to open log: %v", err)
 	}
 
-	metrics, err := newMetricsWriter("arb_metrics.csv")
+	cfg := defaultMetricsConfig()
+	metrics, err := newMetricsWriter("arb_metrics.csv", cfg)
 	if err != nil {
 		log.Fatalf("failed to open metrics file: %v", err)
 	}
@@ -155,7 +284,9 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 		bySymbol:      bySymbol,
 		fileLog:       log.New(f, "", log.LstdFlags),
 		metrics:       metrics,
+		summary:       newMetricsSummary(),
 		maxQuoteAgeMS: defaultMaxQuoteAgeMS,
+		metricsCfg:    cfg,
 	}
 }
 
@@ -171,6 +302,10 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 			continue
 		}
 		c.mem.Push(md)
+
+		if c.summary != nil {
+			c.summary.MaybeLog(time.Now(), c.metricsCfg.SummaryEvery)
+		}
 
 		tris := c.bySymbol[md.Symbol]
 		if len(tris) == 0 {
@@ -221,19 +356,27 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 	profitUSDT := finalAmount - maxStart
 	profitPct := profitUSDT / maxStart
 	strength := computeOpportunityStrength(profitPct, maxStart, spreadAge, maxAge)
+	triName := fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C)
 
-	record := []string{
-		strconv.FormatInt(anchorTS, 10),
-		fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C),
-		tri.A, tri.B, tri.C,
-		fmtFloat(profitPct), fmtFloat(profitUSDT), fmtFloat(maxStart), fmtFloat(finalAmount),
-		fmtFloat(strength), strconv.FormatInt(minAge, 10), strconv.FormatInt(maxAge, 10), strconv.FormatInt(spreadAge, 10),
-		tri.Legs[0].Symbol, tri.Legs[0].Side, fmtFloat(q[0].Bid), fmtFloat(q[0].Ask), fmtFloat(q[0].BidSize), fmtFloat(q[0].AskSize), strconv.FormatInt(ages[0], 10), fmtFloat(diag[0].In), fmtFloat(diag[0].Out), fmtFloat(diag[0].TradeQty), fmtFloat(diag[0].TradeNotional), fmtFloat(diag[0].BookLimitIn),
-		tri.Legs[1].Symbol, tri.Legs[1].Side, fmtFloat(q[1].Bid), fmtFloat(q[1].Ask), fmtFloat(q[1].BidSize), fmtFloat(q[1].AskSize), strconv.FormatInt(ages[1], 10), fmtFloat(diag[1].In), fmtFloat(diag[1].Out), fmtFloat(diag[1].TradeQty), fmtFloat(diag[1].TradeNotional), fmtFloat(diag[1].BookLimitIn),
-		tri.Legs[2].Symbol, tri.Legs[2].Side, fmtFloat(q[2].Bid), fmtFloat(q[2].Ask), fmtFloat(q[2].BidSize), fmtFloat(q[2].AskSize), strconv.FormatInt(ages[2], 10), fmtFloat(diag[2].In), fmtFloat(diag[2].Out), fmtFloat(diag[2].TradeQty), fmtFloat(diag[2].TradeNotional), fmtFloat(diag[2].BookLimitIn),
+	shouldWrite := c.metrics != nil && c.metrics.ShouldWrite(anchorTS, triName, profitPct, maxStart, maxAge)
+	if shouldWrite {
+		record := []string{
+			strconv.FormatInt(anchorTS, 10),
+			triName,
+			tri.A, tri.B, tri.C,
+			fmtFloat(profitPct), fmtFloat(profitUSDT), fmtFloat(maxStart), fmtFloat(finalAmount),
+			fmtFloat(strength), strconv.FormatInt(minAge, 10), strconv.FormatInt(maxAge, 10), strconv.FormatInt(spreadAge, 10),
+			tri.Legs[0].Symbol, tri.Legs[0].Side, fmtFloat(q[0].Bid), fmtFloat(q[0].Ask), fmtFloat(q[0].BidSize), fmtFloat(q[0].AskSize), strconv.FormatInt(ages[0], 10), fmtFloat(diag[0].In), fmtFloat(diag[0].Out), fmtFloat(diag[0].TradeQty), fmtFloat(diag[0].TradeNotional), fmtFloat(diag[0].BookLimitIn),
+			tri.Legs[1].Symbol, tri.Legs[1].Side, fmtFloat(q[1].Bid), fmtFloat(q[1].Ask), fmtFloat(q[1].BidSize), fmtFloat(q[1].AskSize), strconv.FormatInt(ages[1], 10), fmtFloat(diag[1].In), fmtFloat(diag[1].Out), fmtFloat(diag[1].TradeQty), fmtFloat(diag[1].TradeNotional), fmtFloat(diag[1].BookLimitIn),
+			tri.Legs[2].Symbol, tri.Legs[2].Side, fmtFloat(q[2].Bid), fmtFloat(q[2].Ask), fmtFloat(q[2].BidSize), fmtFloat(q[2].AskSize), strconv.FormatInt(ages[2], 10), fmtFloat(diag[2].In), fmtFloat(diag[2].Out), fmtFloat(diag[2].TradeQty), fmtFloat(diag[2].TradeNotional), fmtFloat(diag[2].BookLimitIn),
+		}
+		if err := c.metrics.Write(record); err != nil {
+			log.Printf("[Calculator] metrics write error: %v", err)
+		}
 	}
-	if err := c.metrics.Write(record); err != nil {
-		log.Printf("[Calculator] metrics write error: %v", err)
+
+	if c.summary != nil {
+		c.summary.Observe(triName, profitPct, profitUSDT, shouldWrite)
 	}
 
 	if profitPct > 0.0 && maxStart > 50 {
