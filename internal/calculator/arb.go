@@ -135,7 +135,7 @@ func defaultMetricsConfig() metricsConfig {
 		MinProfitPct:     0.0,
 		MinVolumeUSDT:    50.0,
 		MaxAgeMS:         defaultMaxQuoteAgeMS,
-		NearProfitPct:    -0.0002,
+		NearProfitPct:    -0.0002, // -0.02%
 		SummaryEvery:     10 * time.Second,
 		DedupWindow:      250 * time.Millisecond,
 		FlushEveryWrites: 1,
@@ -188,6 +188,7 @@ func (mw *metricsWriter) Close() error {
 	}
 	mw.mu.Lock()
 	defer mw.mu.Unlock()
+
 	mw.csv.Flush()
 	if err := mw.csv.Error(); err != nil {
 		_ = mw.file.Close()
@@ -196,10 +197,19 @@ func (mw *metricsWriter) Close() error {
 	return mw.file.Close()
 }
 
+// Прибыльные сигналы пишем всегда.
+// Для near-profit сигналов применяем фильтры и dedup.
 func (mw *metricsWriter) ShouldWrite(anchorTS int64, tri string, profitPct, volumeUSDT float64, maxAgeMS int64) bool {
 	if mw == nil || !mw.enabled {
 		return false
 	}
+
+	// Всегда пишем прибыльные окна.
+	if profitPct >= mw.cfg.MinProfitPct {
+		return true
+	}
+
+	// Ниже — только почти-прибыльные кандидаты.
 	if volumeUSDT < mw.cfg.MinVolumeUSDT {
 		return false
 	}
@@ -208,10 +218,6 @@ func (mw *metricsWriter) ShouldWrite(anchorTS int64, tri string, profitPct, volu
 	}
 	if profitPct < mw.cfg.NearProfitPct {
 		return false
-	}
-
-	if profitPct >= mw.cfg.MinProfitPct {
-		return true
 	}
 
 	now := time.UnixMilli(anchorTS)
@@ -232,12 +238,15 @@ func (mw *metricsWriter) Write(record []string) error {
 	if mw == nil || !mw.enabled {
 		return nil
 	}
+
 	mw.mu.Lock()
 	defer mw.mu.Unlock()
+
 	if err := mw.csv.Write(record); err != nil {
 		return err
 	}
 	mw.writeCount++
+
 	if mw.cfg.FlushEveryWrites <= 1 || mw.writeCount%mw.cfg.FlushEveryWrites == 0 {
 		mw.csv.Flush()
 		return mw.csv.Error()
@@ -348,6 +357,10 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 		return
 	}
 
+	if maxStart < 50 {
+		return
+	}
+
 	finalAmount, diag, ok := simulateTriangle(maxStart, tri, q)
 	if !ok || finalAmount <= 0 {
 		return
@@ -358,6 +371,8 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 	strength := computeOpportunityStrength(profitPct, maxStart, spreadAge, maxAge)
 	triName := fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C)
 
+	written := false
+
 	shouldWrite := c.metrics != nil && c.metrics.ShouldWrite(anchorTS, triName, profitPct, maxStart, maxAge)
 	if shouldWrite {
 		record := []string{
@@ -366,17 +381,32 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 			tri.A, tri.B, tri.C,
 			fmtFloat(profitPct), fmtFloat(profitUSDT), fmtFloat(maxStart), fmtFloat(finalAmount),
 			fmtFloat(strength), strconv.FormatInt(minAge, 10), strconv.FormatInt(maxAge, 10), strconv.FormatInt(spreadAge, 10),
-			tri.Legs[0].Symbol, tri.Legs[0].Side, fmtFloat(q[0].Bid), fmtFloat(q[0].Ask), fmtFloat(q[0].BidSize), fmtFloat(q[0].AskSize), strconv.FormatInt(ages[0], 10), fmtFloat(diag[0].In), fmtFloat(diag[0].Out), fmtFloat(diag[0].TradeQty), fmtFloat(diag[0].TradeNotional), fmtFloat(diag[0].BookLimitIn),
-			tri.Legs[1].Symbol, tri.Legs[1].Side, fmtFloat(q[1].Bid), fmtFloat(q[1].Ask), fmtFloat(q[1].BidSize), fmtFloat(q[1].AskSize), strconv.FormatInt(ages[1], 10), fmtFloat(diag[1].In), fmtFloat(diag[1].Out), fmtFloat(diag[1].TradeQty), fmtFloat(diag[1].TradeNotional), fmtFloat(diag[1].BookLimitIn),
-			tri.Legs[2].Symbol, tri.Legs[2].Side, fmtFloat(q[2].Bid), fmtFloat(q[2].Ask), fmtFloat(q[2].BidSize), fmtFloat(q[2].AskSize), strconv.FormatInt(ages[2], 10), fmtFloat(diag[2].In), fmtFloat(diag[2].Out), fmtFloat(diag[2].TradeQty), fmtFloat(diag[2].TradeNotional), fmtFloat(diag[2].BookLimitIn),
+
+			tri.Legs[0].Symbol, tri.Legs[0].Side,
+			fmtFloat(q[0].Bid), fmtFloat(q[0].Ask), fmtFloat(q[0].BidSize), fmtFloat(q[0].AskSize),
+			strconv.FormatInt(ages[0], 10),
+			fmtFloat(diag[0].In), fmtFloat(diag[0].Out), fmtFloat(diag[0].TradeQty), fmtFloat(diag[0].TradeNotional), fmtFloat(diag[0].BookLimitIn),
+
+			tri.Legs[1].Symbol, tri.Legs[1].Side,
+			fmtFloat(q[1].Bid), fmtFloat(q[1].Ask), fmtFloat(q[1].BidSize), fmtFloat(q[1].AskSize),
+			strconv.FormatInt(ages[1], 10),
+			fmtFloat(diag[1].In), fmtFloat(diag[1].Out), fmtFloat(diag[1].TradeQty), fmtFloat(diag[1].TradeNotional), fmtFloat(diag[1].BookLimitIn),
+
+			tri.Legs[2].Symbol, tri.Legs[2].Side,
+			fmtFloat(q[2].Bid), fmtFloat(q[2].Ask), fmtFloat(q[2].BidSize), fmtFloat(q[2].AskSize),
+			strconv.FormatInt(ages[2], 10),
+			fmtFloat(diag[2].In), fmtFloat(diag[2].Out), fmtFloat(diag[2].TradeQty), fmtFloat(diag[2].TradeNotional), fmtFloat(diag[2].BookLimitIn),
 		}
+
 		if err := c.metrics.Write(record); err != nil {
 			log.Printf("[Calculator] metrics write error: %v", err)
+		} else {
+			written = true
 		}
 	}
 
 	if c.summary != nil {
-		c.summary.Observe(triName, profitPct, profitUSDT, shouldWrite)
+		c.summary.Observe(triName, profitPct, profitUSDT, written)
 	}
 
 	if profitPct > 0.0 && maxStart > 50 {
@@ -473,7 +503,14 @@ func executeLeg(in float64, leg LegRule, q queue.Quote) (float64, legExecution, 
 			return 0, legExecution{}, false
 		}
 
-		return outBase, legExecution{In: in, Out: outBase, Price: q.Ask, BookLimitIn: bookLimitIn, TradeQty: tradeQty, TradeNotional: tradeNotional}, true
+		return outBase, legExecution{
+			In:            in,
+			Out:           outBase,
+			Price:         q.Ask,
+			BookLimitIn:   bookLimitIn,
+			TradeQty:      tradeQty,
+			TradeNotional: tradeNotional,
+		}, true
 
 	case "SELL":
 		if q.Bid <= 0 || q.BidSize <= 0 {
@@ -504,7 +541,14 @@ func executeLeg(in float64, leg LegRule, q queue.Quote) (float64, legExecution, 
 		if outQuote <= 0 {
 			return 0, legExecution{}, false
 		}
-		return outQuote, legExecution{In: in, Out: outQuote, Price: q.Bid, BookLimitIn: bookLimitIn, TradeQty: tradeQty, TradeNotional: tradeNotional}, true
+		return outQuote, legExecution{
+			In:            in,
+			Out:           outQuote,
+			Price:         q.Bid,
+			BookLimitIn:   bookLimitIn,
+			TradeQty:      tradeQty,
+			TradeNotional: tradeNotional,
+		}, true
 	}
 
 	return 0, legExecution{}, false
@@ -536,6 +580,7 @@ func computeMaxStartTopOfBook(tri *Triangle, q [3]queue.Quote) (float64, bool) {
 				maxStart = maxByThis
 			}
 			kIn *= (1.0 / q[i].Ask) * feeM
+
 		case "SELL":
 			if q[i].Bid <= 0 || q[i].BidSize <= 0 {
 				return 0, false
@@ -585,7 +630,12 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 			continue
 		}
 
-		t := &Triangle{A: getString(row, header, "A"), B: getString(row, header, "B"), C: getString(row, header, "C")}
+		t := &Triangle{
+			A: getString(row, header, "A"),
+			B: getString(row, header, "B"),
+			C: getString(row, header, "C"),
+		}
+
 		for i := 1; i <= 3; i++ {
 			idx := i - 1
 			leg := LegRule{
@@ -617,6 +667,7 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 			leg.Key = "KuCoin|" + leg.Symbol
 			t.Legs[idx] = leg
 		}
+
 		if t.Legs[0].Symbol == "" || t.Legs[1].Symbol == "" || t.Legs[2].Symbol == "" {
 			continue
 		}

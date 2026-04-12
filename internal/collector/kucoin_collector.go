@@ -45,6 +45,11 @@ type Last struct {
 	AskSize float64
 }
 
+type priceLevel struct {
+	Price float64
+	Size  float64
+}
+
 type bookDelta struct {
 	SequenceStart int64
 	SequenceEnd   int64
@@ -53,16 +58,16 @@ type bookDelta struct {
 	TimestampMS   int64
 }
 
-type priceLevel struct {
-	Price float64
-	Size  float64
-}
-
 type bookState struct {
 	mu sync.Mutex
 
 	bids map[float64]float64
 	asks map[float64]float64
+
+	bestBid     float64
+	bestBidSize float64
+	bestAsk     float64
+	bestAskSize float64
 
 	sequence int64
 	last     Last
@@ -161,7 +166,6 @@ func (ws *kucoinWS) run(c *KuCoinCollector) {
 		ws.resetBooksForReconnect()
 
 		connDone := make(chan struct{})
-
 		go ws.pingLoop(c.ctx, connDone)
 
 		readErrCh := make(chan error, 1)
@@ -347,10 +351,8 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	}
 
 	var emit *models.MarketData
-	var needAsyncResync bool
 
 	book.mu.Lock()
-
 	book.lastEventTS = delta.TimestampMS
 
 	if book.buffering {
@@ -372,19 +374,25 @@ func (ws *kucoinWS) handle(c *KuCoinCollector, msg []byte) {
 	if delta.SequenceStart > book.sequence+1 {
 		book.ready = false
 		book.needResync = true
-		needAsyncResync = true
-		log.Printf("[KuCoin WS %d] gap detected symbol=%s localSeq=%d seqStart=%d seqEnd=%d\n",
-			ws.id, symbol, book.sequence, delta.SequenceStart, delta.SequenceEnd)
 		book.mu.Unlock()
 
-		if needAsyncResync {
-			go ws.resyncBook(c.ctx, symbol)
-		}
+		log.Printf("[KuCoin WS %d] gap detected symbol=%s localSeq=%d seqStart=%d seqEnd=%d\n",
+			ws.id, symbol, book.sequence, delta.SequenceStart, delta.SequenceEnd)
+
+		go ws.resyncBook(c.ctx, symbol)
 		return
 	}
 
 	applyDelta(book, delta)
-	top := computeTop(book.bids, book.asks)
+	book.sequence = delta.SequenceEnd
+
+	top := Last{
+		Bid:     book.bestBid,
+		Ask:     book.bestAsk,
+		BidSize: book.bestBidSize,
+		AskSize: book.bestAskSize,
+	}
+
 	if top.Bid > 0 && top.Ask > 0 && top.BidSize > 0 && top.AskSize > 0 && top != book.last {
 		book.last = top
 		emit = &models.MarketData{
@@ -422,12 +430,10 @@ func (ws *kucoinWS) bootstrapAllBooks(ctx context.Context) error {
 
 	worker := func() {
 		defer wg.Done()
-
 		for symbol := range jobs {
 			if ctx.Err() != nil {
 				return
 			}
-
 			if err := ws.bootstrapBook(ctx, client, symbol); err != nil {
 				select {
 				case errCh <- fmt.Errorf("bootstrap %s: %w", symbol, err):
@@ -435,7 +441,6 @@ func (ws *kucoinWS) bootstrapAllBooks(ctx context.Context) error {
 				}
 				return
 			}
-
 			select {
 			case doneCh <- symbol:
 			case <-ctx.Done():
@@ -467,17 +472,14 @@ func (ws *kucoinWS) bootstrapAllBooks(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-
 		case err := <-errCh:
 			return err
-
 		case symbol := <-doneCh:
 			completed++
 			if completed%10 == 0 || completed == total {
 				log.Printf("[KuCoin WS %d] bootstrap progress %d/%d last=%s\n",
 					ws.id, completed, total, symbol)
 			}
-
 		case <-waitCh:
 			if completed == total {
 				log.Printf("[KuCoin WS %d] bootstrap finished %d/%d in %v\n",
@@ -538,6 +540,9 @@ func (ws *kucoinWS) bootstrapBook(ctx context.Context, client *http.Client, symb
 		return replayed[i].SequenceStart < replayed[j].SequenceStart
 	})
 
+	recomputeBestBid(book)
+	recomputeBestAsk(book)
+
 	for _, d := range replayed {
 		if d.SequenceEnd <= book.sequence {
 			continue
@@ -547,23 +552,25 @@ func (ws *kucoinWS) bootstrapBook(ctx context.Context, client *http.Client, symb
 				symbol, book.sequence, d.SequenceStart, d.SequenceEnd)
 		}
 		applyDelta(book, d)
+		book.sequence = d.SequenceEnd
 	}
 
-	book.last = computeTop(book.bids, book.asks)
+	book.last = Last{
+		Bid:     book.bestBid,
+		Ask:     book.bestAsk,
+		BidSize: book.bestBidSize,
+		AskSize: book.bestAskSize,
+	}
 	book.ready = book.last.Bid > 0 && book.last.Ask > 0 && book.last.BidSize > 0 && book.last.AskSize > 0
 	book.needResync = false
 	book.buffering = false
 	book.buffered = nil
-
-	log.Printf("[KuCoin WS %d] bootstrap complete symbol=%s seq=%d bid=%.10f ask=%.10f\n",
-		ws.id, symbol, book.sequence, book.last.Bid, book.last.Ask)
 
 	return nil
 }
 
 func (ws *kucoinWS) resyncBook(ctx context.Context, symbol string) {
 	client := &http.Client{Timeout: httpTimeout}
-
 	book := ws.books[symbol]
 	if book == nil {
 		return
@@ -703,50 +710,99 @@ func parseLevels(arr gjson.Result) []priceLevel {
 
 func applyDelta(book *bookState, delta bookDelta) {
 	for _, lvl := range delta.Bids {
-		if lvl.Size == 0 {
-			delete(book.bids, lvl.Price)
-		} else {
-			book.bids[lvl.Price] = lvl.Size
-		}
+		applyBidLevel(book, lvl.Price, lvl.Size)
 	}
 	for _, lvl := range delta.Asks {
-		if lvl.Size == 0 {
-			delete(book.asks, lvl.Price)
-		} else {
-			book.asks[lvl.Price] = lvl.Size
-		}
+		applyAskLevel(book, lvl.Price, lvl.Size)
 	}
-	book.sequence = delta.SequenceEnd
 }
 
-func computeTop(bids, asks map[float64]float64) Last {
-	var out Last
+func applyBidLevel(book *bookState, price, size float64) {
+	if price <= 0 {
+		return
+	}
 
-	bestBid := 0.0
-	for price, size := range bids {
+	if size <= 0 {
+		delete(book.bids, price)
+		if price == book.bestBid {
+			recomputeBestBid(book)
+		}
+		return
+	}
+
+	book.bids[price] = size
+
+	if price > book.bestBid || book.bestBid == 0 {
+		book.bestBid = price
+		book.bestBidSize = size
+		return
+	}
+
+	if price == book.bestBid {
+		book.bestBidSize = size
+	}
+}
+
+func applyAskLevel(book *bookState, price, size float64) {
+	if price <= 0 {
+		return
+	}
+
+	if size <= 0 {
+		delete(book.asks, price)
+		if price == book.bestAsk {
+			recomputeBestAsk(book)
+		}
+		return
+	}
+
+	book.asks[price] = size
+
+	if book.bestAsk == 0 || price < book.bestAsk {
+		book.bestAsk = price
+		book.bestAskSize = size
+		return
+	}
+
+	if price == book.bestAsk {
+		book.bestAskSize = size
+	}
+}
+
+func recomputeBestBid(book *bookState) {
+	bestPrice := 0.0
+	bestSize := 0.0
+
+	for price, size := range book.bids {
 		if size <= 0 {
 			continue
 		}
-		if price > bestBid {
-			bestBid = price
-			out.Bid = price
-			out.BidSize = size
+		if price > bestPrice {
+			bestPrice = price
+			bestSize = size
 		}
 	}
 
-	bestAsk := 0.0
-	for price, size := range asks {
+	book.bestBid = bestPrice
+	book.bestBidSize = bestSize
+}
+
+func recomputeBestAsk(book *bookState) {
+	bestPrice := 0.0
+	bestSize := 0.0
+
+	for price, size := range book.asks {
 		if size <= 0 {
 			continue
 		}
-		if bestAsk == 0 || price < bestAsk {
-			bestAsk = price
-			out.Ask = price
-			out.AskSize = size
+		if bestPrice == 0 || price < bestPrice {
+			bestPrice = price
+			bestSize = size
 		}
 	}
 
-	return out
+	book.bestAsk = bestPrice
+	book.bestAskSize = bestSize
 }
 
 func (ws *kucoinWS) resetBooksForReconnect() {
@@ -759,6 +815,10 @@ func (ws *kucoinWS) resetBooksForReconnect() {
 		book.mu.Lock()
 		book.bids = make(map[float64]float64)
 		book.asks = make(map[float64]float64)
+		book.bestBid = 0
+		book.bestBidSize = 0
+		book.bestAsk = 0
+		book.bestAskSize = 0
 		book.sequence = 0
 		book.last = Last{}
 		book.ready = false
