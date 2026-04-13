@@ -1,0 +1,14 @@
+2026/04/13 11:37:17 [EXEC PAPER OK] USDT→FET→BTC | safe=413.95 USDT | final=415.223056 | profit=1.270178 USDT | 0.3068% | age[min=0 max=196 spread=196] | l1=FET-USDT BUY out=1804.63223832 | l2=FET-BTC SELL out=0.00587479 | l3=BTC-USDT SELL out=415.22305629
+2026/04/13 11:37:17 [Executor] summary accepted=1 reject_duplicate=0 reject_bad_input_profit=0 reject_stale=0 reject_desync=0 reject_small_safe=0 reject_non_positive=0 reject_too_small_profit=0 reject_sim_failed=0
+2026/04/13 11:37:17 [EXEC PAPER REJECT] reason=desync tri=USDT->FET->BTC spread_age=203
+2026/04/13 11:37:17 [EXEC PAPER REJECT] reason=desync tri=USDT->FET->BTC spread_age=204
+2026/04/13 12:26:24 [EXEC PAPER OK] USDT→XRP→KCS | safe=35.97 USDT | final=35.978694 | profit=0.004476 USDT | 0.0124% | age[min=0 max=6 spread=6] | l1=XRP-USDT BUY out=27.09950304 | l2=XRP-KCS SELL out=4.29535465 | l3=KCS-USDT SELL out=35.97869390
+2026/04/13 12:26:24 [Executor] summary accepted=2 reject_duplicate=0 reject_bad_input_profit=0 reject_stale=0 reject_desync=2 reject_small_safe=0 reject_non_positive=0 reject_too_small_profit=0 reject_sim_failed=0
+2026/04/13 12:26:24 [EXEC PAPER OK] USDT→BTC→KCS | safe=104.97 USDT | final=105.027833 | profit=0.058118 USDT | 0.0554% | age[min=0 max=3 spread=3] | l1=BTC-USDT BUY out=0.00148201 | l2=KCS-BTC BUY out=12.53876096 | l3=KCS-USDT SELL out=105.02783256
+2026/04/13 12:26:24 [EXEC PAPER OK] USDT→BTC→KCS | safe=65.36 USDT | final=65.390374 | profit=0.034987 USDT | 0.0535% | age[min=0 max=5 spread=5] | l1=BTC-USDT BUY out=0.00092271 | l2=KCS-BTC BUY out=7.80664968 | l3=KCS-USDT SELL out=65.39037362
+2026/04/13 13:42:58 [EXEC PAPER OK] USDT→ETH→LYX | safe=138.11 USDT | final=140.747897 | profit=2.635077 USDT | 1.9079% | age[min=0 max=91 spread=91] | l1=ETH-USDT BUY out=0.06320110 | l2=LYX-ETH BUY out=591.85123992 | l3=LYX-USDT SELL out=140.74789713
+2026/04/13 13:42:58 [Executor] summary accepted=5 reject_duplicate=0 reject_bad_input_profit=0 reject_stale=0 reject_desync=2 reject_small_safe=0 reject_non_positive=0 reject_too_small_profit=0 reject_sim_failed=0
+2026/04/13 13:42:58 [EXEC PAPER REJECT] reason=duplicate tri=USDT->ETH->LYX 
+2026/04/13 13:42:58 [EXEC PAPER OK] USDT→ETH→LYX | safe=108.01 USDT | final=110.069912 | profit=2.060699 USDT | 1.9079% | age[min=0 max=5 spread=5] | l1=ETH-USDT BUY out=0.04942553 | l2=LYX-ETH BUY out=462.84892440 | l3=LYX-USDT SELL out=110.06991177
+2026/04/13 13:42:58 [EXEC PAPER OK] USDT→ETH→LYX | safe=109.53 USDT | final=110.069959 | profit=0.542341 USDT | 0.4952% | age[min=0 max=4 spread=4] | l1=ETH-USDT BUY out=0.05012037 | l2=LYX-ETH BUY out=462.84912424 | l3=LYX-USDT SELL out=110.06995933
+2026/04/13 13:42:58 [EXEC PAPER REJECT] reason=duplicate tri=USDT->ETH->LYX 

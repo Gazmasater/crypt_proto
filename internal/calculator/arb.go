@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"crypt_proto/internal/executor"
 	"crypt_proto/internal/queue"
 	"crypt_proto/pkg/models"
 )
@@ -262,9 +263,10 @@ type Calculator struct {
 	summary       *metricsSummary
 	maxQuoteAgeMS int64
 	metricsCfg    metricsConfig
+	oppOut        chan<- *executor.Opportunity
 }
 
-func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
+func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle, oppOut chan<- *executor.Opportunity) *Calculator {
 	f, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		log.Fatalf("failed to open log: %v", err)
@@ -296,6 +298,7 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle) *Calculator {
 		summary:       newMetricsSummary(),
 		maxQuoteAgeMS: defaultMaxQuoteAgeMS,
 		metricsCfg:    cfg,
+		oppOut:        oppOut,
 	}
 }
 
@@ -368,8 +371,40 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 
 	profitUSDT := finalAmount - maxStart
 	profitPct := profitUSDT / maxStart
+
+	if profitPct < 0 {
+		return
+	}
+
 	strength := computeOpportunityStrength(profitPct, maxStart, spreadAge, maxAge)
 	triName := fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C)
+
+	if c.oppOut != nil {
+		op := &executor.Opportunity{
+			Exchange: md.Exchange,
+			Triangle: toExecutorTriangle(tri),
+			AnchorTS: anchorTS,
+			Quotes: [3]queue.Quote{
+				q[0],
+				q[1],
+				q[2],
+			},
+			AgesMS: [3]int64{
+				ages[0],
+				ages[1],
+				ages[2],
+			},
+			MaxStart:   maxStart,
+			ProfitPct:  profitPct,
+			ProfitUSDT: profitUSDT,
+			FinalUSDT:  finalAmount,
+		}
+
+		select {
+		case c.oppOut <- op:
+		default:
+		}
+	}
 
 	written := false
 
@@ -783,3 +818,40 @@ func fmtFloat(v float64) string {
 
 func isFinite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 func eps() float64            { return 1e-12 }
+
+func toExecutorTriangle(t *Triangle) *executor.Triangle {
+	if t == nil {
+		return nil
+	}
+
+	out := &executor.Triangle{
+		A: t.A,
+		B: t.B,
+		C: t.C,
+	}
+
+	for i, leg := range t.Legs {
+		out.Legs[i] = executor.LegRule{
+			Index:       leg.Index,
+			RawLeg:      leg.RawLeg,
+			Step:        leg.Step,
+			MinQty:      leg.MinQty,
+			MinNotional: leg.MinNotional,
+
+			Symbol:      leg.Symbol,
+			Side:        leg.Side,
+			Base:        leg.Base,
+			Quote:       leg.Quote,
+			QtyStep:     leg.QtyStep,
+			QuoteStep:   leg.QuoteStep,
+			PriceStep:   leg.PriceStep,
+			LegMinQty:   leg.LegMinQty,
+			LegMinQuote: leg.LegMinQuote,
+			LegMinNotnl: leg.LegMinNotnl,
+
+			Key: leg.Key,
+		}
+	}
+
+	return out
+}
