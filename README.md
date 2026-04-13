@@ -23,496 +23,64 @@ git gc --prune=now --aggressive
 git push origin new_arh --force
 
 
-profitUSDT := finalAmount - maxStart
-profitPct := profitUSDT / maxStart
 
-// ❗ ВОТ СЮДА
-if profitPct < 0 {
-	return
-}
 
 
 
-
-
-
-package executor
-
-import (
-	"fmt"
-	"log"
-	"math"
-	"os"
-	"strings"
-	"sync"
-	"time"
-
-	"crypt_proto/internal/queue"
-)
-
-const feeM = 0.9992
-
-type LegRule struct {
-	Index int
-
-	RawLeg      string
-	Step        float64
-	MinQty      float64
-	MinNotional float64
-
-	Symbol      string
-	Side        string
-	Base        string
-	Quote       string
-	QtyStep     float64
-	QuoteStep   float64
-	PriceStep   float64
-	LegMinQty   float64
-	LegMinQuote float64
-	LegMinNotnl float64
-
-	Key string
-}
-
-type Triangle struct {
-	A, B, C string
-	Legs    [3]LegRule
-}
-
-type Opportunity struct {
-	Exchange string
-	Triangle *Triangle
-	AnchorTS int64
-
-	Quotes   [3]queue.Quote
-	AgesMS   [3]int64
-	MaxStart float64
-
-	ProfitPct  float64
-	ProfitUSDT float64
-	FinalUSDT  float64
-}
-
-type RejectReason string
-
-const (
-	RejectDuplicate          RejectReason = "duplicate"
-	RejectNilTriangle        RejectReason = "nil_triangle"
-	RejectBadAnchor          RejectReason = "bad_anchor"
-	RejectBadInputProfit     RejectReason = "bad_input_profit"
-	RejectNoQuotes           RejectReason = "no_quotes"
-	RejectStale              RejectReason = "stale"
-	RejectDesync             RejectReason = "desync"
-	RejectSmallMaxStart      RejectReason = "small_max_start"
-	RejectSmallSafeStart     RejectReason = "small_safe_start"
-	RejectSimulationFailed   RejectReason = "simulation_failed"
-	RejectNonPositiveProfit  RejectReason = "non_positive_profit"
-	RejectTooSmallProfitUSDT RejectReason = "too_small_profit_usdt"
-)
-
-type Config struct {
-	SafeStartFactor float64
-	MinSafeStart    float64
-	MaxQuoteAgeMS   int64
-	MaxAgeSpreadMS  int64
-	MinProfitUSDT   float64
-
-	// Что вообще пускать в executor из calculator.
-	// Всё что ниже этого значения - сразу reject без лишней работы.
-	MinInputProfitPct float64
-
-	DedupWindow  time.Duration
-	SummaryEvery time.Duration
-}
-
-func DefaultConfig() Config {
-	return Config{
-		SafeStartFactor:  0.70,
-		MinSafeStart:     20.0,
-		MaxQuoteAgeMS:    300,
-		MaxAgeSpreadMS:   200,
-		MinProfitUSDT:    0.001,
-		MinInputProfitPct: 0.0, // executor по умолчанию ждёт только неотрицательные окна
-		DedupWindow:      250 * time.Millisecond,
-		SummaryEvery:     10 * time.Second,
-	}
-}
-
-type Executor struct {
-	cfg Config
-
-	mu          sync.Mutex
-	lastKey     string
-	lastSeenAt  time.Time
-	fileLog     *log.Logger
-	rejects     map[RejectReason]uint64
-	accepted    uint64
-	lastSummary time.Time
-}
-
-func NewExecutor(cfg Config) *Executor {
-	f, err := os.OpenFile("executor_paper.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Fatalf("failed to open executor log: %v", err)
-	}
-
-	now := time.Now()
-
-	return &Executor{
-		cfg:         cfg,
-		fileLog:     log.New(f, "", log.LstdFlags),
-		rejects:     make(map[RejectReason]uint64),
-		lastSummary: now,
-	}
-}
-
-func (e *Executor) Handle(op *Opportunity) {
-	if op == nil || op.Triangle == nil {
-		e.reject(RejectNilTriangle, nil, "")
-		return
-	}
-	if op.AnchorTS <= 0 {
-		e.reject(RejectBadAnchor, op, "")
-		return
-	}
-
-	// Главная правка: executor не должен тратить время на явный минус.
-	if op.ProfitPct < e.cfg.MinInputProfitPct {
-		e.reject(RejectBadInputProfit, op, fmt.Sprintf("input_profit_pct=%.8f", op.ProfitPct))
-		return
-	}
-
-	if !e.hasValidQuotes(op) {
-		e.reject(RejectNoQuotes, op, "")
-		return
-	}
-
-	minAge, maxAge, spreadAge := minMaxSpread(op.AgesMS)
-	if maxAge < 0 || maxAge > e.cfg.MaxQuoteAgeMS {
-		e.reject(RejectStale, op, fmt.Sprintf("max_age=%d", maxAge))
-		return
-	}
-	if spreadAge > e.cfg.MaxAgeSpreadMS {
-		e.reject(RejectDesync, op, fmt.Sprintf("spread_age=%d", spreadAge))
-		return
-	}
-
-	if op.MaxStart <= 0 {
-		e.reject(RejectSmallMaxStart, op, "")
-		return
-	}
-
-	safeStart := floorToReasonable(op.MaxStart*e.cfg.SafeStartFactor, 1e-8)
-	if safeStart < e.cfg.MinSafeStart {
-		e.reject(RejectSmallSafeStart, op, fmt.Sprintf("safe_start=%.8f", safeStart))
-		return
-	}
-
-	if e.isDuplicate(op, safeStart) {
-		e.reject(RejectDuplicate, op, "")
-		return
-	}
-
-	finalAmount, diag, ok := simulateTriangle(safeStart, op.Triangle, op.Quotes)
-	if !ok || finalAmount <= 0 {
-		e.reject(RejectSimulationFailed, op, fmt.Sprintf("safe_start=%.8f", safeStart))
-		return
-	}
-
-	profitUSDT := finalAmount - safeStart
-	profitPct := profitUSDT / safeStart
-
-	if profitPct <= 0 {
-		e.reject(RejectNonPositiveProfit, op, fmt.Sprintf("safe_start=%.8f profit_pct=%.8f", safeStart, profitPct))
-		return
-	}
-	if profitUSDT < e.cfg.MinProfitUSDT {
-		e.reject(RejectTooSmallProfitUSDT, op, fmt.Sprintf("profit_usdt=%.8f", profitUSDT))
-		return
-	}
-
-	e.accept(op, safeStart, finalAmount, profitPct, profitUSDT, diag, minAge, maxAge, spreadAge)
-}
-
-func (e *Executor) hasValidQuotes(op *Opportunity) bool {
-	for _, q := range op.Quotes {
-		if q.Bid <= 0 || q.Ask <= 0 || q.BidSize <= 0 || q.AskSize <= 0 {
-			return false
-		}
-	}
-	return true
-}
-
-func (e *Executor) isDuplicate(op *Opportunity, safeStart float64) bool {
-	key := fmt.Sprintf("%s->%s->%s|%d|%.4f",
-		op.Triangle.A, op.Triangle.B, op.Triangle.C,
-		op.AnchorTS/100, // корзина 100мс
-		round4(safeStart),
-	)
-
-	now := time.UnixMilli(op.AnchorTS)
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.lastKey == key && now.Sub(e.lastSeenAt) < e.cfg.DedupWindow {
-		return true
-	}
-	e.lastKey = key
-	e.lastSeenAt = now
-	return false
-}
-
-func (e *Executor) accept(
-	op *Opportunity,
-	safeStart float64,
-	finalAmount float64,
-	profitPct float64,
-	profitUSDT float64,
-	diag [3]legExecution,
-	minAge, maxAge, spreadAge int64,
-) {
-	msg := fmt.Sprintf(
-		"[EXEC PAPER OK] %s→%s→%s | safe=%.2f USDT | final=%.6f | profit=%.6f USDT | %.4f%% | age[min=%d max=%d spread=%d] | l1=%s %s out=%.8f | l2=%s %s out=%.8f | l3=%s %s out=%.8f",
-		op.Triangle.A, op.Triangle.B, op.Triangle.C,
-		safeStart, finalAmount, profitUSDT, profitPct*100,
-		minAge, maxAge, spreadAge,
-		op.Triangle.Legs[0].Symbol, op.Triangle.Legs[0].Side, diag[0].Out,
-		op.Triangle.Legs[1].Symbol, op.Triangle.Legs[1].Side, diag[1].Out,
-		op.Triangle.Legs[2].Symbol, op.Triangle.Legs[2].Side, diag[2].Out,
-	)
-
-	log.Println(msg)
-	e.fileLog.Println(msg)
-
-	e.mu.Lock()
-	e.accepted++
-	e.maybeSummaryLocked()
-	e.mu.Unlock()
-}
-
-func (e *Executor) reject(reason RejectReason, op *Opportunity, extra string) {
-	e.mu.Lock()
-	e.rejects[reason]++
-	e.maybeSummaryLocked()
-	e.mu.Unlock()
-
-	if op == nil || op.Triangle == nil {
-		return
-	}
-
-	// Не шумим в stdout по каждому reject, только в файл.
-	msg := fmt.Sprintf("[EXEC PAPER REJECT] reason=%s tri=%s->%s->%s %s",
-		reason, op.Triangle.A, op.Triangle.B, op.Triangle.C, extra)
-	e.fileLog.Println(msg)
-}
-
-func (e *Executor) maybeSummaryLocked() {
-	now := time.Now()
-	if now.Sub(e.lastSummary) < e.cfg.SummaryEvery {
-		return
-	}
-	e.lastSummary = now
-
-	msg := fmt.Sprintf(
-		"[Executor] summary accepted=%d reject_duplicate=%d reject_bad_input_profit=%d reject_stale=%d reject_desync=%d reject_small_safe=%d reject_non_positive=%d reject_too_small_profit=%d reject_sim_failed=%d",
-		e.accepted,
-		e.rejects[RejectDuplicate],
-		e.rejects[RejectBadInputProfit],
-		e.rejects[RejectStale],
-		e.rejects[RejectDesync],
-		e.rejects[RejectSmallSafeStart],
-		e.rejects[RejectNonPositiveProfit],
-		e.rejects[RejectTooSmallProfitUSDT],
-		e.rejects[RejectSimulationFailed],
-	)
-
-	log.Println(msg)
-	e.fileLog.Println(msg)
-}
-
-type legExecution struct {
-	In            float64
-	Out           float64
-	Price         float64
-	BookLimitIn   float64
-	TradeQty      float64
-	TradeNotional float64
-}
-
-func simulateTriangle(startUSDT float64, tri *Triangle, q [3]queue.Quote) (float64, [3]legExecution, bool) {
-	var diag [3]legExecution
-	amount := startUSDT
-
-	for i := 0; i < 3; i++ {
-		out, d, ok := executeLeg(amount, tri.Legs[i], q[i])
-		if !ok {
-			return 0, diag, false
-		}
-		diag[i] = d
-		amount = out
-	}
-
-	return amount, diag, true
-}
-
-func executeLeg(in float64, leg LegRule, q queue.Quote) (float64, legExecution, bool) {
-	side := strings.ToUpper(strings.TrimSpace(leg.Side))
-	if side != "BUY" && side != "SELL" {
-		return 0, legExecution{}, false
-	}
-	if in <= 0 {
-		return 0, legExecution{}, false
-	}
-
-	qtyStep := firstPositive(leg.QtyStep, leg.Step)
-	minQty := firstPositive(leg.LegMinQty, leg.MinQty)
-	minQuote := leg.LegMinQuote
-	minNotional := firstPositive(leg.LegMinNotnl, leg.MinNotional)
-
-	switch side {
-	case "BUY":
-		if q.Ask <= 0 || q.AskSize <= 0 {
-			return 0, legExecution{}, false
-		}
-
-		bookLimitIn := q.Ask * q.AskSize
-		spendQuote := math.Min(in, bookLimitIn)
-		if spendQuote <= 0 {
-			return 0, legExecution{}, false
-		}
-
-		rawQty := spendQuote / q.Ask
-		tradeQty := floorToStep(rawQty, qtyStep)
-		if tradeQty <= 0 {
-			return 0, legExecution{}, false
-		}
-
-		tradeNotional := tradeQty * q.Ask
-		if tradeNotional <= 0 || tradeNotional > spendQuote+eps() {
-			return 0, legExecution{}, false
-		}
-		if minQty > 0 && tradeQty+eps() < minQty {
-			return 0, legExecution{}, false
-		}
-		if minQuote > 0 && tradeNotional+eps() < minQuote {
-			return 0, legExecution{}, false
-		}
-		if minNotional > 0 && tradeNotional+eps() < minNotional {
-			return 0, legExecution{}, false
-		}
-
-		outBase := tradeQty * feeM
-		if outBase <= 0 {
-			return 0, legExecution{}, false
-		}
-
-		return outBase, legExecution{
-			In:            in,
-			Out:           outBase,
-			Price:         q.Ask,
-			BookLimitIn:   bookLimitIn,
-			TradeQty:      tradeQty,
-			TradeNotional: tradeNotional,
-		}, true
-
-	case "SELL":
-		if q.Bid <= 0 || q.BidSize <= 0 {
-			return 0, legExecution{}, false
-		}
-
-		bookLimitIn := q.BidSize
-		sellBase := math.Min(in, bookLimitIn)
-		tradeQty := floorToStep(sellBase, qtyStep)
-		if tradeQty <= 0 {
-			return 0, legExecution{}, false
-		}
-
-		tradeNotional := tradeQty * q.Bid
-		if tradeNotional <= 0 {
-			return 0, legExecution{}, false
-		}
-		if minQty > 0 && tradeQty+eps() < minQty {
-			return 0, legExecution{}, false
-		}
-		if minQuote > 0 && tradeNotional+eps() < minQuote {
-			return 0, legExecution{}, false
-		}
-		if minNotional > 0 && tradeNotional+eps() < minNotional {
-			return 0, legExecution{}, false
-		}
-
-		outQuote := tradeNotional * feeM
-		if outQuote <= 0 {
-			return 0, legExecution{}, false
-		}
-
-		return outQuote, legExecution{
-			In:            in,
-			Out:           outQuote,
-			Price:         q.Bid,
-			BookLimitIn:   bookLimitIn,
-			TradeQty:      tradeQty,
-			TradeNotional: tradeNotional,
-		}, true
-	}
-
-	return 0, legExecution{}, false
-}
-
-func firstPositive(vals ...float64) float64 {
-	for _, v := range vals {
-		if v > 0 {
-			return v
-		}
-	}
-	return 0
-}
-
-func floorToStep(v, step float64) float64 {
-	if v <= 0 {
-		return 0
-	}
-	if step <= 0 {
-		return v
-	}
-	n := math.Floor((v + eps()) / step)
-	if n <= 0 {
-		return 0
-	}
-	return n * step
-}
-
-func floorToReasonable(v, step float64) float64 {
-	if v <= 0 {
-		return 0
-	}
-	if step <= 0 {
-		return v
-	}
-	n := math.Floor(v / step)
-	if n <= 0 {
-		return 0
-	}
-	return n * step
-}
-
-func minMaxSpread(ages [3]int64) (int64, int64, int64) {
-	minAge := ages[0]
-	maxAge := ages[0]
-	for _, age := range ages[1:] {
-		if age < minAge {
-			minAge = age
-		}
-		if age > maxAge {
-			maxAge = age
-		}
-	}
-	return minAge, maxAge, maxAge - minAge
-}
-
-func round4(v float64) float64 {
-	return math.Round(v*1e4) / 1e4
-}
-
-func eps() float64 { return 1e-12 }
+2026/04/13 17:10:14 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:10:24 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:10:34 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:10:44 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:10:54 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:11:04 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:11:15 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:11:25 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:11:35 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:11:45 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:11:55 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:12:05 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:12:15 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:12:25 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:12:35 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:12:45 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:12:55 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:13:05 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:13:15 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:13:25 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:13:35 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:13:45 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:13:55 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:14:05 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:14:15 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:14:25 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=DOGE-USDT localSeq=11689119590 seqStart=11689119594 seqEnd=11689119594
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=BNB-USDT localSeq=11274368401 seqStart=11274368403 seqEnd=11274368403
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=BTC-USDT localSeq=31698806564 seqStart=31698806572 seqEnd=31698806572
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=HYPE-USDT localSeq=4421157145 seqStart=4421157147 seqEnd=4421157147
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=ETC-USDT localSeq=3786010257 seqStart=3786010259 seqEnd=3786010259
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=AVAX-USDT localSeq=9259288270 seqStart=9259288275 seqEnd=9259288275
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=DASH-USDT localSeq=1552271896 seqStart=1552271898 seqEnd=1552271898
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=ETH-USDT localSeq=20731626194 seqStart=20731626198 seqEnd=20731626198
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=BNB-KCS localSeq=1207921797 seqStart=1207921799 seqEnd=1207921799
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=HBAR-USDT localSeq=5313266473 seqStart=5313266475 seqEnd=5313266475
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=LINK-USDT localSeq=13127188922 seqStart=13127188924 seqEnd=13127188924
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=NEAR-USDT localSeq=6888748993 seqStart=6888748996 seqEnd=6888748996
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=KCS-BTC localSeq=3182288135 seqStart=3182288137 seqEnd=3182288137
+2026/04/13 17:14:34 [KuCoin WS 0] gap detected symbol=FET-USDT localSeq=3633429941 seqStart=3633429943 seqEnd=3633429943
+2026/04/13 17:14:35 [KuCoin WS 0] resync complete symbol=DASH-USDT
+2026/04/13 17:14:35 [KuCoin WS 0] resync complete symbol=ETC-USDT
+2026/04/13 17:14:35 [KuCoin WS 0] resync complete symbol=HYPE-USDT
+2026/04/13 17:14:35 [Calculator] summary checked=0 written=0 profitable=0 best_pct=0.0000% best_usdt=0.000000 best_tri=
+2026/04/13 17:14:35 [KuCoin WS 0] resync complete symbol=LINK-USDT
+2026/04/13 17:14:35 [KuCoin WS 0] resync complete symbol=BNB-USDT
+2026/04/13 17:14:35 [KuCoin WS 0] resync complete symbol=NEAR-USDT
+2026/04/13 17:14:35 [KuCoin WS 0] resync complete symbol=BNB-KCS
+2026/04/13 17:14:35 [KuCoin WS 0] resync complete symbol=FET-USDT
+2026/04/13 17:14:35 [KuCoin WS 0] resync complete symbol=KCS-BTC
+2026/04/13 17:14:35 [KuCoin WS 0] resync complete symbol=HBAR-USDT
+2026/04/13 17:14:36 [KuCoin WS 0] resync complete symbol=ETH-USDT
+2026/04/13 17:14:38 [KuCoin WS 0] resync complete symbol=AVAX-USDT
+2026/04/13 17:14:38 [KuCoin WS 0] resync complete symbol=DOGE-USDT
+2026/04/13 17:14:39 [KuCoin WS 0] resync complete symbol=BTC-USDT
+2026/04/13 17:14:40 [KuCoin WS 0] gap detected symbol=OGN-BTC localSeq=191521559 seqStart=191521561 seqEnd=191521561
+2026/04/13 17:14:40 [KuCoin WS 0] resync complete symbol=OGN-BTC
