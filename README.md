@@ -2897,3 +2897,29 @@ func main() {
 
 	log.Println("[Main] exited")
 }
+
+
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/collector/book_snapshot.go",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: tasks",
+	"source": "compiler",
+	"startLineNumber": 43,
+	"startColumn": 18,
+	"endLineNumber": 43,
+	"endColumn": 23,
+	"modelVersionId": 3,
+	"origin": "extHost1"
+}]
