@@ -43,7 +43,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	calc := calculator.NewCalculator(mem, triangles, oppCh)
+	calc := calculator.NewCalculator(mem, kc, triangles, oppCh)
 	go calc.Run(out)
 
 	exec := executor.NewExecutor(executor.DefaultConfig())

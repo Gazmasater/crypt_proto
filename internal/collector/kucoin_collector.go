@@ -149,6 +149,15 @@ func (c *KuCoinCollector) Stop() error {
 	return nil
 }
 
+func (c *KuCoinCollector) GetBookSnapshot(symbol string, depth int) (BookSnapshot, bool) {
+	for _, ws := range c.wsList {
+		if book, ok := ws.books[symbol]; ok {
+			return buildSnapshot(symbol, book, depth)
+		}
+	}
+	return BookSnapshot{}, false
+}
+
 func (ws *kucoinWS) run(c *KuCoinCollector) {
 	for {
 		select {

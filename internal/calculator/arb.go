@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"crypt_proto/internal/collector"
 	"crypt_proto/internal/executor"
 	"crypt_proto/internal/queue"
 	"crypt_proto/pkg/models"
@@ -257,6 +258,7 @@ func (mw *metricsWriter) Write(record []string) error {
 
 type Calculator struct {
 	mem           *queue.MemoryStore
+	bookSource    collector.DepthBookSource
 	bySymbol      map[string][]*Triangle
 	fileLog       *log.Logger
 	metrics       *metricsWriter
@@ -266,7 +268,7 @@ type Calculator struct {
 	oppOut        chan<- *executor.Opportunity
 }
 
-func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle, oppOut chan<- *executor.Opportunity) *Calculator {
+func NewCalculator(mem *queue.MemoryStore, bookSource collector.DepthBookSource, triangles []*Triangle, oppOut chan<- *executor.Opportunity) *Calculator {
 	f, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		log.Fatalf("failed to open log: %v", err)
@@ -292,6 +294,7 @@ func NewCalculator(mem *queue.MemoryStore, triangles []*Triangle, oppOut chan<- 
 
 	return &Calculator{
 		mem:           mem,
+		bookSource:    bookSource,
 		bySymbol:      bySymbol,
 		fileLog:       log.New(f, "", log.LstdFlags),
 		metrics:       metrics,
@@ -376,6 +379,43 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 		return
 	}
 
+	var books [3]collector.BookSnapshot
+	if c.bookSource != nil {
+		for i, leg := range tri.Legs {
+			b, ok := c.bookSource.GetBookSnapshot(leg.Symbol, 32)
+			if !ok {
+				return
+			}
+			books[i] = b
+		}
+
+		depthMaxStart, ok := computeMaxStartByDepth(tri, books)
+		if !ok || depthMaxStart <= 0 {
+			return
+		}
+		if depthMaxStart < maxStart {
+			maxStart = depthMaxStart
+		}
+		if maxStart < 50 {
+			return
+		}
+
+		depthFinal, depthDiag, ok := simulateTriangleDepth(maxStart, tri, books)
+		if !ok || depthFinal <= 0 {
+			return
+		}
+		depthProfitUSDT := depthFinal - maxStart
+		depthProfitPct := depthProfitUSDT / maxStart
+		if depthProfitPct <= 0 {
+			return
+		}
+
+		finalAmount = depthFinal
+		diag = depthDiag
+		profitUSDT = depthProfitUSDT
+		profitPct = depthProfitPct
+	}
+
 	strength := computeOpportunityStrength(profitPct, maxStart, spreadAge, maxAge)
 	triName := fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C)
 
@@ -395,6 +435,7 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 				ages[2],
 			},
 			MaxStart:   maxStart,
+			Books:      books,
 			ProfitPct:  profitPct,
 			ProfitUSDT: profitUSDT,
 			FinalUSDT:  finalAmount,

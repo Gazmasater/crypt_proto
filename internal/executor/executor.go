@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"crypt_proto/internal/collector"
 	"crypt_proto/internal/queue"
 )
 
@@ -47,6 +48,7 @@ type Opportunity struct {
 	AnchorTS int64
 
 	Quotes   [3]queue.Quote
+	Books    [3]collector.BookSnapshot
 	AgesMS   [3]int64
 	MaxStart float64
 
@@ -176,6 +178,14 @@ func (e *Executor) Handle(op *Opportunity) {
 	}
 
 	finalAmount, diag, ok := simulateTriangle(safeStart, op.Triangle, op.Quotes)
+	if ok && hasAllBooks(op.Books) {
+		if depthFinal, depthDiag, depthOK := simulateTriangleDepth(safeStart, op.Triangle, op.Books); depthOK && depthFinal > 0 {
+			finalAmount = depthFinal
+			diag = depthDiag
+		} else {
+			ok = false
+		}
+	}
 	if !ok || finalAmount <= 0 {
 		e.reject(RejectSimulationFailed, op, fmt.Sprintf("safe_start=%.8f", safeStart))
 		return
@@ -194,6 +204,15 @@ func (e *Executor) Handle(op *Opportunity) {
 	}
 
 	e.accept(op, safeStart, finalAmount, profitPct, profitUSDT, diag, minAge, maxAge, spreadAge)
+}
+
+func hasAllBooks(books [3]collector.BookSnapshot) bool {
+	for _, b := range books {
+		if len(b.Bids) == 0 || len(b.Asks) == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Executor) hasValidQuotes(op *Opportunity) bool {
@@ -478,3 +497,126 @@ func round4(v float64) float64 {
 }
 
 func eps() float64 { return 1e-12 }
+
+func simulateTriangleDepth(startUSDT float64, tri *Triangle, books [3]collector.BookSnapshot) (float64, [3]legExecution, bool) {
+	var diag [3]legExecution
+	amount := startUSDT
+	for i := 0; i < 3; i++ {
+		out, d, ok := executeLegByDepth(amount, tri.Legs[i], books[i])
+		if !ok {
+			return 0, diag, false
+		}
+		diag[i] = d
+		amount = out
+	}
+	return amount, diag, true
+}
+
+func executeLegByDepth(in float64, leg LegRule, book collector.BookSnapshot) (float64, legExecution, bool) {
+	side := strings.ToUpper(strings.TrimSpace(leg.Side))
+	if side != "BUY" && side != "SELL" {
+		return 0, legExecution{}, false
+	}
+	if in <= 0 {
+		return 0, legExecution{}, false
+	}
+
+	qtyStep := firstPositive(leg.QtyStep, leg.Step)
+	minQty := firstPositive(leg.LegMinQty, leg.MinQty)
+	minQuote := leg.LegMinQuote
+	minNotional := firstPositive(leg.LegMinNotnl, leg.MinNotional)
+
+	switch side {
+	case "BUY":
+		if len(book.Asks) == 0 {
+			return 0, legExecution{}, false
+		}
+		remainingQuote := in
+		totalQty := 0.0
+		totalNotional := 0.0
+		bookLimitIn := 0.0
+		for _, lvl := range book.Asks {
+			if lvl.Price <= 0 || lvl.Size <= 0 {
+				continue
+			}
+			bookLimitIn += lvl.Price * lvl.Size
+			if remainingQuote <= eps() {
+				break
+			}
+			maxSpend := lvl.Price * lvl.Size
+			spend := math.Min(remainingQuote, maxSpend)
+			qty := spend / lvl.Price
+			totalQty += qty
+			totalNotional += qty * lvl.Price
+			remainingQuote -= qty * lvl.Price
+		}
+		tradeQty := floorToStep(totalQty, qtyStep)
+		if tradeQty <= 0 {
+			return 0, legExecution{}, false
+		}
+		avgPrice := totalNotional / totalQty
+		tradeNotional := tradeQty * avgPrice
+		if tradeNotional <= 0 || tradeNotional > in+1e-9 {
+			return 0, legExecution{}, false
+		}
+		if minQty > 0 && tradeQty+eps() < minQty {
+			return 0, legExecution{}, false
+		}
+		if minQuote > 0 && tradeNotional+eps() < minQuote {
+			return 0, legExecution{}, false
+		}
+		if minNotional > 0 && tradeNotional+eps() < minNotional {
+			return 0, legExecution{}, false
+		}
+		outBase := tradeQty * feeM
+		if outBase <= 0 {
+			return 0, legExecution{}, false
+		}
+		return outBase, legExecution{In: in, Out: outBase, Price: avgPrice, BookLimitIn: bookLimitIn, TradeQty: tradeQty, TradeNotional: tradeNotional}, true
+	case "SELL":
+		if len(book.Bids) == 0 {
+			return 0, legExecution{}, false
+		}
+		remainingBase := in
+		totalQty := 0.0
+		totalNotional := 0.0
+		bookLimitIn := 0.0
+		for _, lvl := range book.Bids {
+			if lvl.Price <= 0 || lvl.Size <= 0 {
+				continue
+			}
+			bookLimitIn += lvl.Size
+			if remainingBase <= eps() {
+				break
+			}
+			qty := math.Min(remainingBase, lvl.Size)
+			totalQty += qty
+			totalNotional += qty * lvl.Price
+			remainingBase -= qty
+		}
+		tradeQty := floorToStep(totalQty, qtyStep)
+		if tradeQty <= 0 {
+			return 0, legExecution{}, false
+		}
+		avgPrice := totalNotional / totalQty
+		tradeNotional := tradeQty * avgPrice
+		if tradeNotional <= 0 {
+			return 0, legExecution{}, false
+		}
+		if minQty > 0 && tradeQty+eps() < minQty {
+			return 0, legExecution{}, false
+		}
+		if minQuote > 0 && tradeNotional+eps() < minQuote {
+			return 0, legExecution{}, false
+		}
+		if minNotional > 0 && tradeNotional+eps() < minNotional {
+			return 0, legExecution{}, false
+		}
+		outQuote := tradeNotional * feeM
+		if outQuote <= 0 {
+			return 0, legExecution{}, false
+		}
+		return outQuote, legExecution{In: in, Out: outQuote, Price: avgPrice, BookLimitIn: bookLimitIn, TradeQty: tradeQty, TradeNotional: tradeNotional}, true
+	}
+	return 0, legExecution{}, false
+}

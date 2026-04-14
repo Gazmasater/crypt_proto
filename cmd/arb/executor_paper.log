@@ -1,18 +1,22 @@
-2026/04/14 08:57:20 [EXEC PAPER OK] USDT→XLM→BTC | safe=103.62 USDT | final=103.732905 | profit=0.112597 USDT | 0.1087% | age[min=0 max=10 spread=10] | l1=XLM-USDT BUY out=671.88206400 | l2=XLM-BTC SELL out=0.00139975 | l3=BTC-USDT SELL out=103.73290536
-2026/04/14 08:57:20 [Executor] summary accepted=1 reject_duplicate=0 reject_bad_input_profit=0 reject_stale=0 reject_desync=0 reject_small_safe=0 reject_non_positive=0 reject_too_small_profit=0 reject_sim_failed=0
-2026/04/14 08:57:41 [EXEC PAPER OK] USDT→XLM→BTC | safe=103.69 USDT | final=103.803407 | profit=0.115857 USDT | 0.1117% | age[min=0 max=12 spread=12] | l1=XLM-USDT BUY out=671.88206400 | l2=XLM-BTC SELL out=0.00140042 | l3=BTC-USDT SELL out=103.80340739
-2026/04/14 08:57:41 [Executor] summary accepted=2 reject_duplicate=0 reject_bad_input_profit=0 reject_stale=0 reject_desync=0 reject_small_safe=0 reject_non_positive=0 reject_too_small_profit=0 reject_sim_failed=0
-2026/04/14 08:57:41 [EXEC PAPER OK] USDT→XLM→BTC | safe=79.61 USDT | final=79.617055 | profit=0.012050 USDT | 0.0151% | age[min=0 max=16 spread=16] | l1=XLM-USDT BUY out=515.82700800 | l2=XLM-BTC SELL out=0.00107412 | l3=BTC-USDT SELL out=79.61705485
-2026/04/14 08:57:41 [EXEC PAPER REJECT] reason=duplicate tri=USDT->XLM->BTC 
-2026/04/14 08:57:41 [EXEC PAPER REJECT] reason=duplicate tri=USDT->XLM->BTC 
-2026/04/14 09:35:20 [Executor] summary accepted=3 reject_duplicate=2 reject_bad_input_profit=0 reject_stale=0 reject_desync=1 reject_small_safe=0 reject_non_positive=0 reject_too_small_profit=0 reject_sim_failed=0
-2026/04/14 09:35:20 [EXEC PAPER REJECT] reason=desync tri=USDT->BTC->STX spread_age=216
-2026/04/14 09:47:01 [Executor] summary accepted=3 reject_duplicate=2 reject_bad_input_profit=0 reject_stale=0 reject_desync=1 reject_small_safe=0 reject_non_positive=0 reject_too_small_profit=0 reject_sim_failed=1
-2026/04/14 09:47:01 [EXEC PAPER REJECT] reason=simulation_failed tri=USDT->BTC->BDX safe_start=52.10232999
-2026/04/14 09:47:01 [EXEC PAPER REJECT] reason=duplicate tri=USDT->BTC->BDX 
-2026/04/14 09:48:37 [EXEC PAPER OK] USDT→WAN→BTC | safe=733.01 USDT | final=740.253673 | profit=7.240612 USDT | 0.9878% | age[min=0 max=19 spread=19] | l1=WAN-USDT BUY out=13111.82684024 | l2=WAN-BTC SELL out=0.00995702 | l3=BTC-USDT SELL out=740.25367346
-2026/04/14 09:48:37 [Executor] summary accepted=4 reject_duplicate=3 reject_bad_input_profit=0 reject_stale=0 reject_desync=1 reject_small_safe=0 reject_non_positive=0 reject_too_small_profit=0 reject_sim_failed=1
-2026/04/14 09:48:37 [EXEC PAPER REJECT] reason=duplicate tri=USDT->WAN->BTC 
-2026/04/14 09:48:37 [EXEC PAPER OK] USDT→WAN→BTC | safe=569.38 USDT | final=574.999660 | profit=5.623926 USDT | 0.9877% | age[min=0 max=23 spread=23] | l1=WAN-USDT BUY out=10184.75167520 | l2=WAN-BTC SELL out=0.00773422 | l3=BTC-USDT SELL out=574.99965992
-2026/04/14 09:48:37 [EXEC PAPER OK] USDT→WAN→BTC | safe=52.86 USDT | final=53.381180 | profit=0.521976 USDT | 0.9875% | age[min=0 max=2 spread=2] | l1=WAN-USDT BUY out=945.52297600 | l2=WAN-BTC SELL out=0.00071802 | l3=BTC-USDT SELL out=53.38117995
-2026/04/14 09:48:37 [EXEC PAPER REJECT] reason=duplicate tri=USDT->WAN->BTC 
+2026/04/14 13:48:19 [Executor] summary accepted=0 reject_duplicate=0 reject_bad_input_profit=0 reject_stale=0 reject_desync=1 reject_small_safe=0 reject_non_positive=0 reject_too_small_profit=0 reject_sim_failed=0
+2026/04/14 13:48:19 [EXEC PAPER REJECT] reason=desync tri=USDT->LYX->ETH spread_age=234
+2026/04/14 14:40:32 [EXEC PAPER OK] USDT→LYX→ETH | safe=59.19 USDT | final=59.592503 | profit=0.400140 USDT | 0.6760% | age[min=0 max=3 spread=3] | l1=LYX-USDT BUY out=258.27511448 | l2=LYX-ETH SELL out=0.02513587 | l3=ETH-USDT SELL out=59.59250320
+2026/04/14 14:40:32 [Executor] summary accepted=1 reject_duplicate=0 reject_bad_input_profit=0 reject_stale=0 reject_desync=1 reject_small_safe=0 reject_non_positive=0 reject_too_small_profit=0 reject_sim_failed=0
+2026/04/14 14:40:32 [EXEC PAPER OK] USDT→LYX→ETH | safe=79.06 USDT | final=79.104130 | profit=0.044315 USDT | 0.0561% | age[min=0 max=4 spread=4] | l1=LYX-USDT BUY out=344.96310856 | l2=LYX-ETH SELL out=0.03336571 | l3=ETH-USDT SELL out=79.10412973
+2026/04/14 14:40:32 [EXEC PAPER REJECT] reason=duplicate tri=USDT->LYX->ETH 
+2026/04/14 14:40:32 [EXEC PAPER REJECT] reason=duplicate tri=USDT->LYX->ETH 
+2026/04/14 14:40:32 [EXEC PAPER OK] USDT→LYX→ETH | safe=79.03 USDT | final=79.078762 | profit=0.044104 USDT | 0.0558% | age[min=0 max=3 spread=3] | l1=LYX-USDT BUY out=344.85339640 | l2=LYX-ETH SELL out=0.03335509 | l3=ETH-USDT SELL out=79.07876194
+2026/04/14 14:40:32 [EXEC PAPER OK] USDT→LYX→ETH | safe=79.03 USDT | final=79.075206 | profit=0.044163 USDT | 0.0559% | age[min=0 max=4 spread=4] | l1=LYX-USDT BUY out=344.83760904 | l2=LYX-ETH SELL out=0.03335358 | l3=ETH-USDT SELL out=79.07520571
+2026/04/14 14:40:32 [EXEC PAPER REJECT] reason=duplicate tri=USDT->LYX->ETH 
+2026/04/14 14:40:32 [EXEC PAPER OK] USDT→LYX→ETH | safe=79.03 USDT | final=79.073546 | profit=0.044194 USDT | 0.0559% | age[min=0 max=2 spread=2] | l1=LYX-USDT BUY out=344.83021496 | l2=LYX-ETH SELL out=0.03335286 | l3=ETH-USDT SELL out=79.07354613
+2026/04/14 14:40:32 [EXEC PAPER REJECT] reason=duplicate tri=USDT->LYX->ETH 
+2026/04/14 14:40:32 [EXEC PAPER OK] USDT→LYX→ETH | safe=81.72 USDT | final=81.760873 | profit=0.045640 USDT | 0.0559% | age[min=0 max=4 spread=4] | l1=LYX-USDT BUY out=356.54953200 | l2=LYX-ETH SELL out=0.03448638 | l3=ETH-USDT SELL out=81.76087267
+2026/04/14 14:40:32 [EXEC PAPER REJECT] reason=duplicate tri=USDT->LYX->ETH 
+2026/04/14 14:40:32 [EXEC PAPER REJECT] reason=duplicate tri=USDT->LYX->ETH 
+2026/04/14 14:40:32 [EXEC PAPER OK] USDT→LYX→ETH | safe=78.90 USDT | final=78.940306 | profit=0.044192 USDT | 0.0560% | age[min=0 max=4 spread=4] | l1=LYX-USDT BUY out=344.24888040 | l2=LYX-ETH SELL out=0.03329663 | l3=ETH-USDT SELL out=78.94030594
+2026/04/14 14:40:32 [EXEC PAPER OK] USDT→LYX→ETH | safe=78.89 USDT | final=78.938172 | profit=0.044167 USDT | 0.0560% | age[min=0 max=5 spread=5] | l1=LYX-USDT BUY out=344.23968776 | l2=LYX-ETH SELL out=0.03329574 | l3=ETH-USDT SELL out=78.93817221
+2026/04/14 14:40:32 [EXEC PAPER REJECT] reason=duplicate tri=USDT->LYX->ETH 
+2026/04/14 14:40:32 [EXEC PAPER REJECT] reason=duplicate tri=USDT->LYX->ETH 
+2026/04/14 14:40:32 [EXEC PAPER REJECT] reason=duplicate tri=USDT->LYX->ETH 
+2026/04/14 14:40:32 [EXEC PAPER REJECT] reason=duplicate tri=USDT->LYX->ETH 
+2026/04/14 14:40:32 [EXEC PAPER REJECT] reason=duplicate tri=USDT->LYX->ETH 
