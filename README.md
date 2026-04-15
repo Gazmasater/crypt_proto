@@ -28,8 +28,7 @@ git push origin new_arh --force
 
 
 func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
-
-	triName := tri.String()
+	triName := fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C)
 
 	anchorTS := md.Timestamp
 	if anchorTS <= 0 {
@@ -72,9 +71,10 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 	profitUSDT := finalAmount - maxStart
 	profitPct := profitUSDT / maxStart
 
-	//if profitPct < 0 {
-	//	return
-	//}
+	// Если хочешь жёстко резать минусовые ещё до depth-stage — раскомментируй.
+	// if profitPct <= 0 {
+	// 	return
+	// }
 
 	var books [3]collector.BookSnapshot
 	if c.bookSource != nil {
@@ -90,8 +90,8 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 
 		depthMaxStart, ok := computeMaxStartByDepth(tri, books)
 		if !ok || depthMaxStart <= 0 {
-			log.Printf("[DEPTH REJECT] tri=%s reason=depth_max_start tri=%s depthMaxStart=%.8f",
-				triName, triName, depthMaxStart)
+			log.Printf("[DEPTH REJECT] tri=%s reason=depth_max_start depthMaxStart=%.8f",
+				triName, depthMaxStart)
 			return
 		}
 
@@ -131,7 +131,7 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 	}
 
 	strength := computeOpportunityStrength(profitPct, maxStart, spreadAge, maxAge)
-	triName := fmt.Sprintf("%s->%s->%s", tri.A, tri.B, tri.C)
+
 	maxLegTS := q[0].Timestamp
 	if q[1].Timestamp > maxLegTS {
 		maxLegTS = q[1].Timestamp
@@ -202,7 +202,6 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 		c.summary.Observe(triName, profitPct, profitUSDT, written)
 	}
 
-	//if profitPct > 0.0 && maxStart > 50 {
 	msg := fmt.Sprintf(
 		"[ARB] %s→%s→%s | %.4f%% | volume=%.2f USDT | profit=%.6f USDT | "+
 			"anchor=%d | l1=%s %s out=%.8f age=%dms | "+
@@ -217,7 +216,6 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 	)
 	log.Println(msg)
 	c.fileLog.Println(msg)
-	//}
 
 	if pendingOp != nil {
 		if !c.shouldEmitOpportunity(triName, maxLegTS, maxStart) {
@@ -230,59 +228,5 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 		}
 	}
 }
-
-
-
-
-  [{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/arb.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "MissingFieldOrMethod",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "MissingFieldOrMethod"
-		}
-	},
-	"severity": 8,
-	"message": "tri.String undefined (type *Triangle has no field or method String)",
-	"source": "compiler",
-	"startLineNumber": 346,
-	"startColumn": 17,
-	"endLineNumber": 346,
-	"endColumn": 23,
-	"modelVersionId": 5,
-	"origin": "extHost1"
-}]
-
-
-[{
-	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/arb.go",
-	"owner": "_generated_diagnostic_collection_name_#0",
-	"code": {
-		"value": "NoNewVar",
-		"target": {
-			"$mid": 1,
-			"path": "/golang.org/x/tools/internal/typesinternal",
-			"scheme": "https",
-			"authority": "pkg.go.dev",
-			"fragment": "NoNewVar"
-		}
-	},
-	"severity": 8,
-	"message": "no new variables on left side of :=",
-	"source": "compiler",
-	"startLineNumber": 448,
-	"startColumn": 2,
-	"endLineNumber": 448,
-	"endColumn": 59,
-	"modelVersionId": 5,
-	"origin": "extHost1"
-}]
-
-
 
 
