@@ -81,3 +81,28 @@ if c.bookSource != nil {
 }
 
 
+
+[{
+	"resource": "/home/gaz358/myprog/crypt_proto/internal/calculator/arb.go",
+	"owner": "_generated_diagnostic_collection_name_#0",
+	"code": {
+		"value": "UndeclaredName",
+		"target": {
+			"$mid": 1,
+			"path": "/golang.org/x/tools/internal/typesinternal",
+			"scheme": "https",
+			"authority": "pkg.go.dev",
+			"fragment": "UndeclaredName"
+		}
+	},
+	"severity": 8,
+	"message": "undefined: triName",
+	"source": "compiler",
+	"startLineNumber": 397,
+	"startColumn": 6,
+	"endLineNumber": 397,
+	"endColumn": 13,
+	"modelVersionId": 3,
+	"origin": "extHost1"
+}]
+
