@@ -26,6 +26,8 @@ git push origin new_arh --force
 
 
 
+depth.go
+
 package calculator
 
 import (
@@ -33,12 +35,12 @@ import (
 	"strings"
 
 	"crypt_proto/internal/collector"
-	"crypt_proto/internal/queue"
 )
 
 func simulateTriangleDepth(startUSDT float64, tri *Triangle, books [3]collector.BookSnapshot) (float64, [3]legExecution, bool) {
 	var diag [3]legExecution
 	amount := startUSDT
+
 	for i := 0; i < 3; i++ {
 		out, d, ok := executeLegByDepth(amount, tri.Legs[i], books[i])
 		if !ok {
@@ -47,6 +49,7 @@ func simulateTriangleDepth(startUSDT float64, tri *Triangle, books [3]collector.
 		diag[i] = d
 		amount = out
 	}
+
 	return amount, diag, true
 }
 
@@ -72,34 +75,45 @@ func executeLegByDepth(in float64, leg LegRule, book collector.BookSnapshot) (fl
 		if len(book.Asks) == 0 {
 			return 0, legExecution{}, false
 		}
+
 		remainingQuote := in
 		totalQty := 0.0
-		totalNotional := 0.0
 		bookLimitIn := 0.0
+
 		for _, lvl := range book.Asks {
 			if lvl.Price <= 0 || lvl.Size <= 0 {
 				continue
 			}
+
 			bookLimitIn += lvl.Price * lvl.Size
+
 			if remainingQuote <= eps() {
 				break
 			}
+
 			maxSpend := lvl.Price * lvl.Size
 			spend := math.Min(remainingQuote, maxSpend)
 			qty := spend / lvl.Price
+
 			totalQty += qty
-			totalNotional += qty * lvl.Price
-			remainingQuote -= qty * lvl.Price
+			remainingQuote -= spend
 		}
+
 		tradeQty := floorToStep(totalQty, qtyStep)
 		if tradeQty <= 0 {
 			return 0, legExecution{}, false
 		}
-		avgPrice := totalNotional / totalQty
-		tradeNotional := tradeQty * avgPrice
-		if tradeNotional <= 0 || tradeNotional > in+1e-9 {
+
+		tradeNotional, ok := exactBuyCost(tradeQty, book)
+		if !ok || tradeNotional <= 0 {
 			return 0, legExecution{}, false
 		}
+		if tradeNotional > in+1e-9 {
+			return 0, legExecution{}, false
+		}
+
+		avgPrice := tradeNotional / tradeQty
+
 		if minQty > 0 && tradeQty+eps() < minQty {
 			return 0, legExecution{}, false
 		}
@@ -109,41 +123,58 @@ func executeLegByDepth(in float64, leg LegRule, book collector.BookSnapshot) (fl
 		if minNotional > 0 && tradeNotional+eps() < minNotional {
 			return 0, legExecution{}, false
 		}
+
 		outBase := tradeQty * feeM
 		if outBase <= 0 {
 			return 0, legExecution{}, false
 		}
-		return outBase, legExecution{In: in, Out: outBase, Price: avgPrice, BookLimitIn: bookLimitIn, TradeQty: tradeQty, TradeNotional: tradeNotional}, true
+
+		return outBase, legExecution{
+			In:            in,
+			Out:           outBase,
+			Price:         avgPrice,
+			BookLimitIn:   bookLimitIn,
+			TradeQty:      tradeQty,
+			TradeNotional: tradeNotional,
+		}, true
+
 	case "SELL":
 		if len(book.Bids) == 0 {
 			return 0, legExecution{}, false
 		}
+
 		remainingBase := in
 		totalQty := 0.0
-		totalNotional := 0.0
 		bookLimitIn := 0.0
+
 		for _, lvl := range book.Bids {
 			if lvl.Price <= 0 || lvl.Size <= 0 {
 				continue
 			}
+
 			bookLimitIn += lvl.Size
+
 			if remainingBase <= eps() {
 				break
 			}
+
 			qty := math.Min(remainingBase, lvl.Size)
 			totalQty += qty
-			totalNotional += qty * lvl.Price
 			remainingBase -= qty
 		}
+
 		tradeQty := floorToStep(totalQty, qtyStep)
 		if tradeQty <= 0 {
 			return 0, legExecution{}, false
 		}
-		avgPrice := totalNotional / totalQty
-		tradeNotional := tradeQty * avgPrice
-		if tradeNotional <= 0 {
+
+		tradeNotional, ok := exactSellProceeds(tradeQty, book)
+		if !ok || tradeNotional <= 0 {
 			return 0, legExecution{}, false
 		}
+
+		avgPrice := tradeNotional / tradeQty
+
 		if minQty > 0 && tradeQty+eps() < minQty {
 			return 0, legExecution{}, false
 		}
@@ -153,18 +184,114 @@ func executeLegByDepth(in float64, leg LegRule, book collector.BookSnapshot) (fl
 		if minNotional > 0 && tradeNotional+eps() < minNotional {
 			return 0, legExecution{}, false
 		}
+
 		outQuote := tradeNotional * feeM
 		if outQuote <= 0 {
 			return 0, legExecution{}, false
 		}
-		return outQuote, legExecution{In: in, Out: outQuote, Price: avgPrice, BookLimitIn: bookLimitIn, TradeQty: tradeQty, TradeNotional: tradeNotional}, true
+
+		return outQuote, legExecution{
+			In:            in,
+			Out:           outQuote,
+			Price:         avgPrice,
+			BookLimitIn:   bookLimitIn,
+			TradeQty:      tradeQty,
+			TradeNotional: tradeNotional,
+		}, true
 	}
+
 	return 0, legExecution{}, false
 }
 
-func computeMaxStartByDepth(tri *Triangle, quotes [3]queue.Quote, books [3]collector.BookSnapshot) (float64, bool) {
-	high, ok := computeMaxStartTopOfBook(tri, quotes)
-	if !ok || high <= 0 || !isFinite(high) {
+func exactBuyCost(qty float64, book collector.BookSnapshot) (float64, bool) {
+	if qty <= 0 {
+		return 0, false
+	}
+
+	remaining := qty
+	cost := 0.0
+
+	for _, lvl := range book.Asks {
+		if lvl.Price <= 0 || lvl.Size <= 0 {
+			continue
+		}
+
+		take := math.Min(remaining, lvl.Size)
+		cost += take * lvl.Price
+		remaining -= take
+
+		if remaining <= eps() {
+			return cost, true
+		}
+	}
+
+	return 0, false
+}
+
+func exactSellProceeds(qty float64, book collector.BookSnapshot) (float64, bool) {
+	if qty <= 0 {
+		return 0, false
+	}
+
+	remaining := qty
+	proceeds := 0.0
+
+	for _, lvl := range book.Bids {
+		if lvl.Price <= 0 || lvl.Size <= 0 {
+			continue
+		}
+
+		take := math.Min(remaining, lvl.Size)
+		proceeds += take * lvl.Price
+		remaining -= take
+
+		if remaining <= eps() {
+			return proceeds, true
+		}
+	}
+
+	return 0, false
+}
+
+func computeMaxStartByDepth(tri *Triangle, books [3]collector.BookSnapshot) (float64, bool) {
+	high := math.MaxFloat64
+
+	for i := 0; i < 3; i++ {
+		leg := tri.Legs[i]
+		side := strings.ToUpper(strings.TrimSpace(leg.Side))
+		if side == "" {
+			side = detectSideFromRawLeg(leg.RawLeg)
+		}
+
+		var bookCap float64
+		switch side {
+		case "BUY":
+			for _, lvl := range books[i].Asks {
+				if lvl.Price <= 0 || lvl.Size <= 0 {
+					continue
+				}
+				bookCap += lvl.Price * lvl.Size
+			}
+		case "SELL":
+			for _, lvl := range books[i].Bids {
+				if lvl.Price <= 0 || lvl.Size <= 0 {
+					continue
+				}
+				bookCap += lvl.Size
+			}
+		default:
+			return 0, false
+		}
+
+		if bookCap <= 0 {
+			return 0, false
+		}
+		if bookCap < high {
+			high = bookCap
+		}
+	}
+
+	if !isFinite(high) || high <= 0 {
 		return 0, false
 	}
 
@@ -191,6 +318,8 @@ func computeMaxStartByDepth(tri *Triangle, quotes [3]queue.Quote, books [3]colle
 }
 
 
+
+arb.go
 
 
 package calculator
@@ -328,8 +457,10 @@ func (ms *metricsSummary) MaybeLog(now time.Time, every time.Duration) {
 		bestTri = ms.bestTri
 	}
 
-	log.Printf("[Calculator] summary checked=%d written=%d profitable=%d best_pct=%.4f%% best_usdt=%.6f best_tri=%s\n",
-		ms.checked, ms.written, ms.profitable, bestPct, bestUSDT, bestTri)
+	log.Printf(
+		"[Calculator] summary checked=%d written=%d profitable=%d best_pct=%.4f%% best_usdt=%.6f best_tri=%s\n",
+		ms.checked, ms.written, ms.profitable, bestPct, bestUSDT, bestTri,
+	)
 }
 
 func defaultMetricsConfig() metricsConfig {
@@ -362,6 +493,7 @@ func newMetricsWriter(path string, cfg metricsConfig) (*metricsWriter, error) {
 		_ = f.Close()
 		return nil, err
 	}
+
 	if stat.Size() == 0 {
 		header := []string{
 			"ts_unix_ms", "tri", "A", "B", "C",
@@ -381,6 +513,7 @@ func newMetricsWriter(path string, cfg metricsConfig) (*metricsWriter, error) {
 			return nil, err
 		}
 	}
+
 	return mw, nil
 }
 
@@ -388,6 +521,7 @@ func (mw *metricsWriter) Close() error {
 	if mw == nil || !mw.enabled {
 		return nil
 	}
+
 	mw.mu.Lock()
 	defer mw.mu.Unlock()
 
@@ -406,12 +540,10 @@ func (mw *metricsWriter) ShouldWrite(anchorTS int64, tri string, profitPct, volu
 		return false
 	}
 
-	// Всегда пишем прибыльные окна.
 	if profitPct >= mw.cfg.MinProfitPct {
 		return true
 	}
 
-	// Ниже — только почти-прибыльные кандидаты.
 	if volumeUSDT < mw.cfg.MinVolumeUSDT {
 		return false
 	}
@@ -433,6 +565,7 @@ func (mw *metricsWriter) ShouldWrite(anchorTS int64, tri string, profitPct, volu
 	}
 	mw.lastKey = key
 	mw.lastWriteAt = now
+
 	return true
 }
 
@@ -453,6 +586,7 @@ func (mw *metricsWriter) Write(record []string) error {
 		mw.csv.Flush()
 		return mw.csv.Error()
 	}
+
 	return nil
 }
 
@@ -466,11 +600,17 @@ type Calculator struct {
 	maxQuoteAgeMS int64
 	metricsCfg    metricsConfig
 	oppOut        chan<- *executor.Opportunity
-	emitMu        sync.Mutex
-	lastEmit      map[string]emitState
+
+	emitMu   sync.Mutex
+	lastEmit map[string]emitState
 }
 
-func NewCalculator(mem *queue.MemoryStore, bookSource collector.DepthBookSource, triangles []*Triangle, oppOut chan<- *executor.Opportunity) *Calculator {
+func NewCalculator(
+	mem *queue.MemoryStore,
+	bookSource collector.DepthBookSource,
+	triangles []*Triangle,
+	oppOut chan<- *executor.Opportunity,
+) *Calculator {
 	f, err := os.OpenFile("arb_opportunities.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		log.Fatalf("failed to open log: %v", err)
@@ -519,6 +659,7 @@ func (c *Calculator) Run(in <-chan *models.MarketData) {
 		if md == nil {
 			continue
 		}
+
 		c.mem.Push(md)
 
 		if c.summary != nil {
@@ -580,27 +721,18 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 	profitUSDT := finalAmount - maxStart
 	profitPct := profitUSDT / maxStart
 
-	// Если хочешь жёстко резать минусовые ещё до depth-stage — раскомментируй.
-	// if profitPct <= 0 {
-	// 	return
-	// }
-
 	var books [3]collector.BookSnapshot
 	if c.bookSource != nil {
 		for i, leg := range tri.Legs {
 			b, ok := c.bookSource.GetBookSnapshot(leg.Symbol, 32)
 			if !ok {
-				//log.Printf("[DEPTH REJECT] tri=%s reason=no_snapshot leg=%d symbol=%s",
-				//	triName, i+1, leg.Symbol)
 				return
 			}
 			books[i] = b
 		}
 
-		depthMaxStart, ok := computeMaxStartByDepth(tri, q, books)
+		depthMaxStart, ok := computeMaxStartByDepth(tri, books)
 		if !ok || depthMaxStart <= 0 {
-			//log.Printf("[DEPTH REJECT] tri=%s reason=depth_max_start depthMaxStart=%.8f",
-			//	triName, depthMaxStart)
 			return
 		}
 
@@ -609,15 +741,11 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 		}
 
 		if maxStart < 50 {
-			//log.Printf("[DEPTH REJECT] tri=%s reason=small_depth_volume maxStart=%.8f",
-			//	triName, maxStart)
 			return
 		}
 
 		depthFinal, depthDiag, ok := simulateTriangleDepth(maxStart, tri, books)
 		if !ok || depthFinal <= 0 {
-			//log.Printf("[DEPTH REJECT] tri=%s reason=depth_sim_failed maxStart=%.8f depthFinal=%.8f",
-			//	triName, maxStart, depthFinal)
 			return
 		}
 
@@ -625,13 +753,8 @@ func (c *Calculator) calcTriangle(md *models.MarketData, tri *Triangle) {
 		depthProfitPct := depthProfitUSDT / maxStart
 
 		if depthProfitPct <= 0 {
-			//log.Printf("[DEPTH REJECT] tri=%s reason=depth_non_positive maxStart=%.8f final=%.8f profit=%.8f pct=%.6f%%",
-			//	triName, maxStart, depthFinal, depthProfitUSDT, depthProfitPct*100)
 			return
 		}
-
-		//log.Printf("[DEPTH OK] tri=%s maxStart=%.8f final=%.8f profit=%.8f pct=%.6f%%",
-		//	triName, maxStart, depthFinal, depthProfitUSDT, depthProfitPct*100)
 
 		finalAmount = depthFinal
 		diag = depthDiag
@@ -746,17 +869,26 @@ func (c *Calculator) shouldEmitOpportunity(triName string, maxLegTS int64, safeU
 
 	prev, ok := c.lastEmit[triName]
 	if !ok {
-		c.lastEmit[triName] = emitState{LastMaxLegTS: maxLegTS, LastSafeUSDT: safeUSDT}
+		c.lastEmit[triName] = emitState{
+			LastMaxLegTS: maxLegTS,
+			LastSafeUSDT: safeUSDT,
+		}
 		return true
 	}
 
 	if maxLegTS > prev.LastMaxLegTS {
-		c.lastEmit[triName] = emitState{LastMaxLegTS: maxLegTS, LastSafeUSDT: safeUSDT}
+		c.lastEmit[triName] = emitState{
+			LastMaxLegTS: maxLegTS,
+			LastSafeUSDT: safeUSDT,
+		}
 		return true
 	}
 
 	if maxLegTS == prev.LastMaxLegTS && safeUSDT > prev.LastSafeUSDT*(1.0+volumeGrowThreshold) {
-		c.lastEmit[triName] = emitState{LastMaxLegTS: maxLegTS, LastSafeUSDT: safeUSDT}
+		c.lastEmit[triName] = emitState{
+			LastMaxLegTS: maxLegTS,
+			LastSafeUSDT: safeUSDT,
+		}
 		return true
 	}
 
@@ -775,6 +907,7 @@ type legExecution struct {
 func simulateTriangle(startUSDT float64, tri *Triangle, q [3]queue.Quote) (float64, [3]legExecution, bool) {
 	var diag [3]legExecution
 	amount := startUSDT
+
 	for i := 0; i < 3; i++ {
 		out, d, ok := executeLeg(amount, tri.Legs[i], q[i])
 		if !ok {
@@ -783,6 +916,7 @@ func simulateTriangle(startUSDT float64, tri *Triangle, q [3]queue.Quote) (float
 		diag[i] = d
 		amount = out
 	}
+
 	return amount, diag, true
 }
 
@@ -808,6 +942,7 @@ func executeLeg(in float64, leg LegRule, q queue.Quote) (float64, legExecution, 
 		if q.Ask <= 0 || q.AskSize <= 0 {
 			return 0, legExecution{}, false
 		}
+
 		bookLimitIn := q.Ask * q.AskSize
 		spendQuote := math.Min(in, bookLimitIn)
 		if spendQuote <= 0 {
@@ -852,6 +987,7 @@ func executeLeg(in float64, leg LegRule, q queue.Quote) (float64, legExecution, 
 		if q.Bid <= 0 || q.BidSize <= 0 {
 			return 0, legExecution{}, false
 		}
+
 		bookLimitIn := q.BidSize
 		sellBase := math.Min(in, bookLimitIn)
 		tradeQty := floorToStep(sellBase, qtyStep)
@@ -877,6 +1013,7 @@ func executeLeg(in float64, leg LegRule, q queue.Quote) (float64, legExecution, 
 		if outQuote <= 0 {
 			return 0, legExecution{}, false
 		}
+
 		return outQuote, legExecution{
 			In:            in,
 			Out:           outQuote,
@@ -905,6 +1042,7 @@ func computeMaxStartTopOfBook(tri *Triangle, q [3]queue.Quote) (float64, bool) {
 		}
 
 		var limitIn float64
+
 		switch side {
 		case "BUY":
 			if q[i].Ask <= 0 || q[i].AskSize <= 0 {
@@ -937,6 +1075,7 @@ func computeMaxStartTopOfBook(tri *Triangle, q [3]queue.Quote) (float64, bool) {
 	if maxStart <= 0 || !isFinite(maxStart) {
 		return 0, false
 	}
+
 	return maxStart, true
 }
 
@@ -961,6 +1100,7 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 	}
 
 	var res []*Triangle
+
 	for _, row := range rows[1:] {
 		if len(strings.TrimSpace(strings.Join(row, ""))) == 0 {
 			continue
@@ -974,6 +1114,7 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 
 		for i := 1; i <= 3; i++ {
 			idx := i - 1
+
 			leg := LegRule{
 				Index:       idx,
 				RawLeg:      getString(row, header, fmt.Sprintf("Leg%d", i)),
@@ -991,6 +1132,7 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 				LegMinQuote: getFloat(row, header, fmt.Sprintf("Leg%dMinQuote", i)),
 				LegMinNotnl: getFloat(row, header, fmt.Sprintf("Leg%dMinNotional", i)),
 			}
+
 			if leg.Symbol == "" {
 				leg.Symbol = symbolFromRawLeg(leg.RawLeg)
 			}
@@ -1000,6 +1142,7 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 			if leg.Symbol == "" || leg.Side == "" {
 				continue
 			}
+
 			leg.Key = "KuCoin|" + leg.Symbol
 			t.Legs[idx] = leg
 		}
@@ -1007,8 +1150,10 @@ func ParseTrianglesFromCSV(path string) ([]*Triangle, error) {
 		if t.Legs[0].Symbol == "" || t.Legs[1].Symbol == "" || t.Legs[2].Symbol == "" {
 			continue
 		}
+
 		res = append(res, t)
 	}
+
 	return res, nil
 }
 
@@ -1017,25 +1162,30 @@ func symbolFromRawLeg(raw string) string {
 	if raw == "" {
 		return ""
 	}
+
 	parts := strings.Fields(raw)
 	if len(parts) != 2 {
 		return ""
 	}
+
 	pair := strings.Split(parts[1], "/")
 	if len(pair) != 2 {
 		return ""
 	}
+
 	return strings.TrimSpace(pair[0]) + "-" + strings.TrimSpace(pair[1])
 }
 
 func detectSideFromRawLeg(raw string) string {
 	raw = strings.ToUpper(strings.TrimSpace(raw))
+
 	if strings.HasPrefix(raw, "BUY ") {
 		return "BUY"
 	}
 	if strings.HasPrefix(raw, "SELL ") {
 		return "SELL"
 	}
+
 	return ""
 }
 
@@ -1052,6 +1202,7 @@ func getFloat(row []string, header map[string]int, key string) float64 {
 	if s == "" {
 		return 0
 	}
+
 	v, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", "."), 64)
 	if err != nil {
 		return 0
@@ -1066,10 +1217,12 @@ func floorToStep(v, step float64) float64 {
 	if step <= 0 {
 		return v
 	}
+
 	n := math.Floor((v + eps()) / step)
 	if n <= 0 {
 		return 0
 	}
+
 	return n * step
 }
 
@@ -1095,6 +1248,7 @@ func quoteLagMS(anchorTS int64, q queue.Quote) int64 {
 func minMaxSpread(ages [3]int64) (int64, int64, int64) {
 	minAge := ages[0]
 	maxAge := ages[0]
+
 	for _, age := range ages[1:] {
 		if age < minAge {
 			minAge = age
@@ -1103,6 +1257,7 @@ func minMaxSpread(ages [3]int64) (int64, int64, int64) {
 			maxAge = age
 		}
 	}
+
 	return minAge, maxAge, maxAge - minAge
 }
 
@@ -1156,3 +1311,7 @@ func toExecutorTriangle(t *Triangle) *executor.Triangle {
 
 	return out
 }
+
+
+
+
