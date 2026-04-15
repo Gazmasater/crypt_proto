@@ -27,47 +27,57 @@ git push origin new_arh --force
 
 
 
-	if c.bookSource != nil {
-		for i, leg := range tri.Legs {
-			b, ok := c.bookSource.GetBookSnapshot(leg.Symbol, 32)
-			if !ok {
-				return
-			}
-			books[i] = b
-		}
-
-		depthMaxStart, ok := computeMaxStartByDepth(tri, books)
-		if !ok || depthMaxStart <= 0 {
+if c.bookSource != nil {
+	for i, leg := range tri.Legs {
+		b, ok := c.bookSource.GetBookSnapshot(leg.Symbol, 32)
+		if !ok {
+			log.Printf("[DEPTH REJECT] tri=%s reason=no_snapshot leg=%d symbol=%s",
+				triName, i+1, leg.Symbol)
 			return
 		}
-
-		if depthMaxStart < maxStart {
-			maxStart = depthMaxStart
-		}
-
-		if maxStart < 50 {
-			return
-		}
-
-		depthFinal, depthDiag, ok := simulateTriangleDepth(maxStart, tri, books)
-		if !ok || depthFinal <= 0 {
-			return
-		}
-
-		depthProfitUSDT := depthFinal - maxStart
-		depthProfitPct := depthProfitUSDT / maxStart
-
-		if depthProfitPct <= 0 {
-			return
-		}
-
-		fmt.Println("00000000000000000000000000000000000000000000000")
-
-		finalAmount = depthFinal
-		diag = depthDiag
-		profitUSDT = depthProfitUSDT
-		profitPct = depthProfitPct
+		books[i] = b
 	}
 
+	depthMaxStart, ok := computeMaxStartByDepth(tri, books)
+	if !ok || depthMaxStart <= 0 {
+		log.Printf("[DEPTH REJECT] tri=%s reason=depth_max_start tri=%s depthMaxStart=%.8f",
+			triName, triName, depthMaxStart)
+		return
+	}
+
+	if depthMaxStart < maxStart {
+		maxStart = depthMaxStart
+	}
+
+	if maxStart < 50 {
+		log.Printf("[DEPTH REJECT] tri=%s reason=small_depth_volume maxStart=%.8f",
+			triName, maxStart)
+		return
+	}
+
+	depthFinal, depthDiag, ok := simulateTriangleDepth(maxStart, tri, books)
+	if !ok || depthFinal <= 0 {
+		log.Printf("[DEPTH REJECT] tri=%s reason=depth_sim_failed maxStart=%.8f depthFinal=%.8f",
+			triName, maxStart, depthFinal)
+		return
+	}
+
+	depthProfitUSDT := depthFinal - maxStart
+	depthProfitPct := depthProfitUSDT / maxStart
+
+	if depthProfitPct <= 0 {
+		log.Printf("[DEPTH REJECT] tri=%s reason=depth_non_positive maxStart=%.8f final=%.8f profit=%.8f pct=%.6f%%",
+			triName, maxStart, depthFinal, depthProfitUSDT, depthProfitPct*100)
+		return
+	}
+
+	log.Printf("[DEPTH OK] tri=%s maxStart=%.8f final=%.8f profit=%.8f pct=%.6f%%",
+		triName, maxStart, depthFinal, depthProfitUSDT, depthProfitPct*100)
+
+	finalAmount = depthFinal
+	diag = depthDiag
+	profitUSDT = depthProfitUSDT
+	profitPct = depthProfitPct
+}
 
 
